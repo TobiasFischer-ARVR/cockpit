@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v17"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v18"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -665,6 +665,33 @@ async function sheetOneDrive() {
   }
 }
 
+// Marken-Filter des UGC-Dashboards (Tobias 29.08.): Rating exakt,
+// Skalen-Werte (1-5) als Mindestwert, Antworten aus den KPI-Zahlen.
+// Bleibt beim Navigieren erhalten (wie pf) und gilt auch in der Gruppen-
+// Ansicht, damit Dashboard-Zaehler und Gruppen-Liste dasselbe zeigen.
+const mf = { rating: "", fit: "", geist: "", chance: "", antwort: "" };
+
+function markenFilterAktiv() {
+  return Boolean(mf.rating || mf.fit || mf.geist || mf.chance || mf.antwort);
+}
+
+function markenFilter(m) {
+  const ki = (snap.kerninfos || {})[m.quelle] || {};
+  const zahl = (x) => parseInt(x, 10) || 0;
+  return (!mf.rating || String(ki["Rating (A-D)"] || "").trim() === mf.rating) &&
+    (!mf.fit || zahl(ki["Brand Fit"]) >= mf.fit) &&
+    (!mf.geist || zahl(ki["Begeisterung"]) >= mf.geist) &&
+    (!mf.chance || zahl(ki["Erfolgschance"]) >= mf.chance) &&
+    (!mf.antwort ||
+      (mf.antwort === "positiv" ? m.positiv > 0 : m.antworten > 0));
+}
+
+// Mindestwert-Chips fuer eine 1-5-Skala ("Fit ≥ 4" heisst: 4 oder besser)
+function skalenChips(titel) {
+  return [[5, `${titel} 5`], [4, `${titel} ≥ 4`],
+          [3, `${titel} ≥ 3`], [2, `${titel} ≥ 2`]];
+}
+
 function renderUgc() {
   kopfzeile("UGC KPI-Dashboard", true);
   const c = document.getElementById("inhalt");
@@ -703,12 +730,47 @@ function renderUgc() {
     c.append(el("div", "leerzustand", "Keine Aktivität in diesem Zeitraum."));
     return;
   }
-  const gruppen = el("div", "karten");
-  for (const [name, marken] of
-       [...gruppenMap(z)].sort((a, b) => a[0].localeCompare(b[0], "de"))) {
-    gruppen.append(gruppenBlock(name, marken));
+
+  // Marken-Filter: Antwort-Status + Rating + Skalen (Werte aus den Books)
+  c.append(chipFilter(
+    [["antwort", "Mit Antwort"], ["positiv", "Antwort positiv"]],
+    mf.antwort, (w) => { mf.antwort = w; }, zeichnen));
+  const ratings = [...new Set(Object.values(snap.kerninfos || {})
+    .map((k) => String(k["Rating (A-D)"] || "").trim()).filter(Boolean))].sort();
+  if (ratings.length > 1) {
+    c.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
+      mf.rating, (w) => { mf.rating = w; }, zeichnen));
   }
-  c.append(gruppen);
+  c.append(chipFilter(skalenChips("Fit"), mf.fit,
+    (w) => { mf.fit = w; }, zeichnen));
+  c.append(chipFilter(skalenChips("Begeisterung"), mf.geist,
+    (w) => { mf.geist = w; }, zeichnen));
+  c.append(chipFilter(skalenChips("Erfolgschance"), mf.chance,
+    (w) => { mf.chance = w; }, zeichnen));
+
+  const rumpf = el("div");
+  c.append(rumpf);
+  zeichnen();
+
+  function zeichnen() {
+    rumpf.innerHTML = "";
+    const sichtbar = z.marken.filter(markenFilter);
+    if (markenFilterAktiv()) {
+      rumpf.append(el("div", "stand",
+        `${sichtbar.length} von ${z.marken.length} Marken entsprechen den Filtern`));
+    }
+    if (!sichtbar.length) {
+      rumpf.append(el("div", "leerzustand", "Nichts passt zu den Filtern."));
+      return;
+    }
+    const zGefiltert = { ...z, marken: sichtbar };
+    const gruppen = el("div", "karten");
+    for (const [name, marken] of
+         [...gruppenMap(zGefiltert)].sort((a, b) => a[0].localeCompare(b[0], "de"))) {
+      gruppen.append(gruppenBlock(name, marken));
+    }
+    rumpf.append(gruppen);
+  }
 }
 
 function renderGruppe(name) {
@@ -717,13 +779,17 @@ function renderGruppe(name) {
   c.innerHTML = "";
 
   const z = zeitraum();
-  const marken = gruppenMap(z).get(name);
-  if (!marken) {
+  // Derselbe Marken-Filter wie im Dashboard - Block-Zaehler und
+  // Gruppen-Liste muessen dieselben Marken zeigen (Briefing 4.9)
+  const marken = (gruppenMap(z).get(name) || []).filter(markenFilter);
+  if (!marken.length) {
     c.append(el("div", "leerzustand",
-      `Gruppe "${name}" hat im Zeitraum "${z.label}" keine Einträge.`));
+      `Gruppe "${name}" hat im Zeitraum "${z.label}" keine Einträge` +
+      (markenFilterAktiv() ? " (Filter aktiv)" : "") + "."));
     return;
   }
-  c.append(el("div", "stand", `${z.label}: ${z.start} – ${z.ende}`));
+  c.append(el("div", "stand", `${z.label}: ${z.start} – ${z.ende}` +
+    (markenFilterAktiv() ? " · Filter aktiv" : "")));
   const karten = el("div", "karten");
   for (const m of marken) karten.append(markenKarte(m));
   c.append(karten);
