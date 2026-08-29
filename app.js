@@ -453,10 +453,11 @@ function renderHauptmenu() {
   const c = document.getElementById("inhalt");
   c.innerHTML = "";
 
-  const ugc = el("div", "karte menue-karte");
+  const ugc = el("div", "karte menue-karte" + (snap ? "" : " leer"));
   ugc.append(el("div", "titel", "UGC"),
     el("div", "kontext",
-      `KPI-Dashboard · ${snap.zeitraeume[0].marken.length} Marken`));
+      snap ? `KPI-Dashboard · ${snap.zeitraeume[0].marken.length} Marken`
+           : "Keine Daten — erst bei OneDrive anmelden"));
   ugc.onclick = () => { location.hash = "#/ugc"; };
 
   const buecher = el("div", "karte menue-karte leer");
@@ -607,7 +608,12 @@ function renderFehler() {
 
 function render() {
   sheetEntfernen(); // beim Ansichtswechsel darf kein Sheet haengenbleiben
-  if (!snap) { renderFehler(); return; }
+  if (!snap) {
+    // Ohne Daten muss das Hauptmenue erreichbar bleiben, sonst kommt man
+    // nie an die OneDrive-Anmeldung (Henne-Ei auf frischem Geraet).
+    if (location.hash && location.hash !== "#/") { renderFehler(); return; }
+    renderHauptmenu(); return;
+  }
   const h = location.hash;
   if (h.startsWith("#/ugc/")) {
     renderGruppe(decodeURIComponent(h.slice("#/ugc/".length)));
