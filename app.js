@@ -427,27 +427,85 @@ function pitchKarte(p) {
   return karte;
 }
 
+// Filterzustand der Pitchliste - bleibt beim Navigieren erhalten (wie zi).
+// faellig: "" = alle, sonst max. Rest-Tage (ueberfaellig zaehlt immer mit).
+const pf = { faellig: "", rating: "", kategorie: "", suche: "" };
+
+// Eine Chip-Reihe fuer einen Filter: aktiven Chip nochmal antippen = aus.
+function chipFilter(paare, aktiv, setzen) {
+  const zeile = el("div", "chips");
+  for (const [wert, label] of paare) {
+    const chip = el("button", "chip" + (wert === aktiv ? " aktiv" : ""), label);
+    chip.onclick = () => { setzen(wert === aktiv ? "" : wert); render(); };
+    zeile.append(chip);
+  }
+  return zeile;
+}
+
 function renderPitchliste() {
   kopfzeile("Pitchliste", true);
   const c = document.getElementById("inhalt");
   c.innerHTML = "";
   const heute = heuteNull();
-  const liste = (snap.pitchliste || [])
+  const alle = (snap.pitchliste || [])
     .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute) }))
     .sort((a, b) => (a.tage === null ? 1e9 : a.tage) -
                     (b.tage === null ? 1e9 : b.tage));
-  if (!liste.length) {
+  if (!alle.length) {
     c.append(el("div", "leerzustand",
       "Keine Pitchliste im Snapshot — einmal Update (↻) drücken."));
     return;
   }
-  // Zaehler und Liste aus derselben Bedingung (Briefing Abschnitt 4.9)
-  const rot = liste.filter((p) => p.klasse === "rot").length;
-  c.append(el("div", "stand",
-    `${liste.length} Marken · ${rot} fällig/überfällig · sortiert nach Dringlichkeit`));
-  const karten = el("div", "karten");
-  for (const p of liste) karten.append(pitchKarte(p));
-  c.append(karten);
+
+  // Suchfeld + Filter-Chips (Faellig / Rating / Kategorie), UND-verknuepft.
+  // Rating- und Kategorie-Werte kommen aus den Daten, nie hart verdrahtet.
+  const suche = el("input", "suche");
+  suche.type = "search";
+  suche.placeholder = "Suchen (Name, Status, Kooperation …)";
+  suche.value = pf.suche;
+  suche.oninput = () => { pf.suche = suche.value; zeichnen(); };
+  c.append(suche);
+  c.append(chipFilter([["", "Alle"], [7, "Fällig ≤ 7 Tage"], [14, "≤ 14 Tage"]],
+    pf.faellig, (w) => { pf.faellig = w; }));
+  const ratings = [...new Set(alle.map((p) => p.rating).filter(Boolean))].sort();
+  if (ratings.length > 1) {
+    c.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
+      pf.rating, (w) => { pf.rating = w; }));
+  }
+  const kategorien =
+    [...new Set(alle.map((p) => p.kategorie).filter(Boolean))].sort();
+  if (kategorien.length > 1) {
+    c.append(chipFilter(kategorien.map((k) => [k, k]),
+      pf.kategorie, (w) => { pf.kategorie = w; }));
+  }
+
+  // Zaehler + Karten werden beim Tippen im Suchfeld neu gezeichnet, ohne
+  // die ganze Ansicht zu rendern (sonst verliert das Suchfeld den Fokus)
+  const rumpf = el("div");
+  c.append(rumpf);
+  zeichnen();
+
+  function zeichnen() {
+    const s = pf.suche.trim().toLowerCase();
+    const liste = alle.filter((p) =>
+      (pf.faellig === "" || (p.tage !== null && p.tage <= pf.faellig)) &&
+      (!pf.rating || p.rating === pf.rating) &&
+      (!pf.kategorie || p.kategorie === pf.kategorie) &&
+      (!s || [p.name, p.status, p.naechste_aktion, p.kooperation, p.kategorie]
+        .join(" ").toLowerCase().includes(s)));
+    rumpf.innerHTML = "";
+    // Zaehler und Liste aus derselben Bedingung (Briefing Abschnitt 4.9)
+    const rot = liste.filter((p) => p.klasse === "rot").length;
+    rumpf.append(el("div", "stand",
+      `${liste.length} von ${alle.length} Marken · ${rot} fällig/überfällig · sortiert nach Dringlichkeit`));
+    if (!liste.length) {
+      rumpf.append(el("div", "leerzustand", "Nichts passt zu den Filtern."));
+      return;
+    }
+    const karten = el("div", "karten");
+    for (const p of liste) karten.append(pitchKarte(p));
+    rumpf.append(karten);
+  }
 }
 
 // ---------------------------------------------------------------- Ansichten
