@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v18"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v19"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -692,6 +692,35 @@ function skalenChips(titel) {
           [3, `${titel} ≥ 3`], [2, `${titel} ≥ 2`]];
 }
 
+function markenFilterAnzahl() {
+  return [mf.rating, mf.fit, mf.geist, mf.chance, mf.antwort]
+    .filter(Boolean).length;
+}
+
+// Die Marken-Filterzeilen, gemeinsam genutzt vom Dashboard-Filter-Sheet
+// (alle 5) und der Gruppen-Ansicht (ohne Antwort-Zeile, Tobias 30.08.)
+function filterZeilen(neuzeichnen, mitAntwort) {
+  const zeilen = [];
+  if (mitAntwort) {
+    zeilen.push(chipFilter(
+      [["antwort", "Mit Antwort"], ["positiv", "Antwort positiv"]],
+      mf.antwort, (w) => { mf.antwort = w; }, neuzeichnen));
+  }
+  const ratings = [...new Set(Object.values(snap.kerninfos || {})
+    .map((k) => String(k["Rating (A-D)"] || "").trim()).filter(Boolean))].sort();
+  if (ratings.length > 1) {
+    zeilen.push(chipFilter(ratings.map((r) => [r, "Rating " + r]),
+      mf.rating, (w) => { mf.rating = w; }, neuzeichnen));
+  }
+  zeilen.push(chipFilter(skalenChips("Fit"), mf.fit,
+    (w) => { mf.fit = w; }, neuzeichnen));
+  zeilen.push(chipFilter(skalenChips("Begeisterung"), mf.geist,
+    (w) => { mf.geist = w; }, neuzeichnen));
+  zeilen.push(chipFilter(skalenChips("Erfolgschance"), mf.chance,
+    (w) => { mf.chance = w; }, neuzeichnen));
+  return zeilen;
+}
+
 function renderUgc() {
   kopfzeile("UGC KPI-Dashboard", true);
   const c = document.getElementById("inhalt");
@@ -731,28 +760,26 @@ function renderUgc() {
     return;
   }
 
-  // Marken-Filter: Antwort-Status + Rating + Skalen (Werte aus den Books)
-  c.append(chipFilter(
-    [["antwort", "Mit Antwort"], ["positiv", "Antwort positiv"]],
-    mf.antwort, (w) => { mf.antwort = w; }, zeichnen));
-  const ratings = [...new Set(Object.values(snap.kerninfos || {})
-    .map((k) => String(k["Rating (A-D)"] || "").trim()).filter(Boolean))].sort();
-  if (ratings.length > 1) {
-    c.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
-      mf.rating, (w) => { mf.rating = w; }, zeichnen));
-  }
-  c.append(chipFilter(skalenChips("Fit"), mf.fit,
-    (w) => { mf.fit = w; }, zeichnen));
-  c.append(chipFilter(skalenChips("Begeisterung"), mf.geist,
-    (w) => { mf.geist = w; }, zeichnen));
-  c.append(chipFilter(skalenChips("Erfolgschance"), mf.chance,
-    (w) => { mf.chance = w; }, zeichnen));
+  // Ein Filter-Knopf statt fuenf Chip-Reihen (Tobias: "zu wuchtig") -
+  // die Filterzeilen wohnen in einem Sheet, der Knopf zeigt den Zustand
+  const filterBtn = el("button", "chip");
+  filterBtn.onclick = () => {
+    const wrap = el("div");
+    for (const zeile of filterZeilen(zeichnen, true)) wrap.append(zeile);
+    sheetOeffnen("Filter", wrap);
+  };
+  const filterReihe = el("div", "chips");
+  filterReihe.append(filterBtn);
+  c.append(filterReihe);
 
   const rumpf = el("div");
   c.append(rumpf);
   zeichnen();
 
   function zeichnen() {
+    const n = markenFilterAnzahl();
+    filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
+    filterBtn.classList.toggle("aktiv", n > 0);
     rumpf.innerHTML = "";
     const sichtbar = z.marken.filter(markenFilter);
     if (markenFilterAktiv()) {
@@ -779,20 +806,35 @@ function renderGruppe(name) {
   c.innerHTML = "";
 
   const z = zeitraum();
-  // Derselbe Marken-Filter wie im Dashboard - Block-Zaehler und
-  // Gruppen-Liste muessen dieselben Marken zeigen (Briefing 4.9)
-  const marken = (gruppenMap(z).get(name) || []).filter(markenFilter);
-  if (!marken.length) {
+  const alleG = gruppenMap(z).get(name) || [];
+  if (!alleG.length) {
     c.append(el("div", "leerzustand",
-      `Gruppe "${name}" hat im Zeitraum "${z.label}" keine Einträge` +
-      (markenFilterAktiv() ? " (Filter aktiv)" : "") + "."));
+      `Gruppe "${name}" hat im Zeitraum "${z.label}" keine Einträge.`));
     return;
   }
-  c.append(el("div", "stand", `${z.label}: ${z.start} – ${z.ende}` +
-    (markenFilterAktiv() ? " · Filter aktiv" : "")));
-  const karten = el("div", "karten");
-  for (const m of marken) karten.append(markenKarte(m));
-  c.append(karten);
+
+  // Zweite Ebene: dieselben 4 Filter (ohne Antwort-Zeile) direkt als Chips -
+  // wenige genug, dass sie keinen Extra-Knopf brauchen (Tobias 30.08.).
+  // Gemeinsamer Zustand mf: Dashboard-Zaehler und diese Liste bleiben synchron.
+  for (const zeile of filterZeilen(zeichnen, false)) c.append(zeile);
+
+  const rumpf = el("div");
+  c.append(rumpf);
+  zeichnen();
+
+  function zeichnen() {
+    rumpf.innerHTML = "";
+    const marken = alleG.filter(markenFilter);
+    rumpf.append(el("div", "stand", `${z.label}: ${z.start} – ${z.ende}` +
+      (markenFilterAktiv() ? ` · ${marken.length} von ${alleG.length} nach Filter` : "")));
+    if (!marken.length) {
+      rumpf.append(el("div", "leerzustand", "Nichts passt zu den Filtern."));
+      return;
+    }
+    const karten = el("div", "karten");
+    for (const m of marken) karten.append(markenKarte(m));
+    rumpf.append(karten);
+  }
 }
 
 function renderBuecher() {
