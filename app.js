@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v15"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v16"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -150,15 +150,21 @@ function chipZeile() {
     wrap.append(jz);
   }
   const zeile = el("div", "chips");
+  let aktivChip = null;
   snap.zeitraeume.forEach((z, i) => {
     if (i > 0 && jahre.length > 1 && z.label.slice(-4) !== jahr) return;
     // bei sichtbarer Jahres-Reihe reicht der Monatsname ("Jun" statt "Jun 2026")
     const text = i > 0 && jahre.length > 1 ? z.label.slice(0, -5) : z.label;
     const chip = el("button", "chip" + (i === zi ? " aktiv" : ""), text);
     chip.onclick = () => { zi = i; render(); };
+    if (i === zi) aktivChip = chip;
     zeile.append(chip);
   });
   wrap.append(zeile);
+  // Nach dem Neuaufbau (render nach Monatswahl) den aktiven Chip ins Bild
+  // holen - sonst steht die Leiste wieder links, obwohl z.B. "Dez" gewaehlt ist
+  if (aktivChip) requestAnimationFrame(() =>
+    aktivChip.scrollIntoView({ inline: "center", block: "nearest" }));
   return wrap;
 }
 
@@ -518,13 +524,21 @@ function pitchKarte(p) {
 const pf = { faellig: "", rating: "", kategorie: "", suche: "" };
 
 // Eine Chip-Reihe fuer einen Filter: aktiven Chip nochmal antippen = aus.
-function chipFilter(paare, aktiv, setzen) {
+// Zeichnet nur die Ergebnisliste neu (neuzeichnen), nie die ganze Ansicht -
+// sonst springt die gescrollte Chip-Leiste zurueck an den Anfang.
+function chipFilter(paare, aktiv, setzen, neuzeichnen) {
   const zeile = el("div", "chips");
-  for (const [wert, label] of paare) {
+  paare.forEach(([wert, label]) => {
     const chip = el("button", "chip" + (wert === aktiv ? " aktiv" : ""), label);
-    chip.onclick = () => { setzen(wert === aktiv ? "" : wert); render(); };
+    chip.onclick = () => {
+      const neu = chip.classList.contains("aktiv") ? "" : wert;
+      setzen(neu);
+      [...zeile.children].forEach(
+        (c, i) => c.classList.toggle("aktiv", paare[i][0] === neu));
+      neuzeichnen();
+    };
     zeile.append(chip);
-  }
+  });
   return zeile;
 }
 
@@ -552,17 +566,17 @@ function renderPitchliste() {
   suche.oninput = () => { pf.suche = suche.value; zeichnen(); };
   c.append(suche);
   c.append(chipFilter([["", "Alle"], [7, "Fällig ≤ 7 Tage"], [14, "≤ 14 Tage"]],
-    pf.faellig, (w) => { pf.faellig = w; }));
+    pf.faellig, (w) => { pf.faellig = w; }, zeichnen));
   const ratings = [...new Set(alle.map((p) => p.rating).filter(Boolean))].sort();
   if (ratings.length > 1) {
     c.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
-      pf.rating, (w) => { pf.rating = w; }));
+      pf.rating, (w) => { pf.rating = w; }, zeichnen));
   }
   const kategorien =
     [...new Set(alle.map((p) => p.kategorie).filter(Boolean))].sort();
   if (kategorien.length > 1) {
     c.append(chipFilter(kategorien.map((k) => [k, k]),
-      pf.kategorie, (w) => { pf.kategorie = w; }));
+      pf.kategorie, (w) => { pf.kategorie = w; }, zeichnen));
   }
 
   // Zaehler + Karten werden beim Tippen im Suchfeld neu gezeichnet, ohne
