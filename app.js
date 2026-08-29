@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v19"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v20"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -698,19 +698,20 @@ function markenFilterAnzahl() {
 }
 
 // Die Marken-Filterzeilen, gemeinsam genutzt vom Dashboard-Filter-Sheet
-// (alle 5) und der Gruppen-Ansicht (ohne Antwort-Zeile, Tobias 30.08.)
-function filterZeilen(neuzeichnen, mitAntwort) {
+// (alle 5) und der Gruppen-Ansicht (nur die 3 Skalen - Antwort waere
+// Dashboard-Sache, und Rating ist in "A Brands" immer A, Tobias 30.08.)
+function filterZeilen(neuzeichnen, alles) {
   const zeilen = [];
-  if (mitAntwort) {
+  if (alles) {
     zeilen.push(chipFilter(
       [["antwort", "Mit Antwort"], ["positiv", "Antwort positiv"]],
       mf.antwort, (w) => { mf.antwort = w; }, neuzeichnen));
-  }
-  const ratings = [...new Set(Object.values(snap.kerninfos || {})
-    .map((k) => String(k["Rating (A-D)"] || "").trim()).filter(Boolean))].sort();
-  if (ratings.length > 1) {
-    zeilen.push(chipFilter(ratings.map((r) => [r, "Rating " + r]),
-      mf.rating, (w) => { mf.rating = w; }, neuzeichnen));
+    const ratings = [...new Set(Object.values(snap.kerninfos || {})
+      .map((k) => String(k["Rating (A-D)"] || "").trim()).filter(Boolean))].sort();
+    if (ratings.length > 1) {
+      zeilen.push(chipFilter(ratings.map((r) => [r, "Rating " + r]),
+        mf.rating, (w) => { mf.rating = w; }, neuzeichnen));
+    }
   }
   zeilen.push(chipFilter(skalenChips("Fit"), mf.fit,
     (w) => { mf.fit = w; }, neuzeichnen));
@@ -813,8 +814,8 @@ function renderGruppe(name) {
     return;
   }
 
-  // Zweite Ebene: dieselben 4 Filter (ohne Antwort-Zeile) direkt als Chips -
-  // wenige genug, dass sie keinen Extra-Knopf brauchen (Tobias 30.08.).
+  // Zweite Ebene: die 3 Skalen-Filter direkt als Chips - wenige genug,
+  // dass sie keinen Extra-Knopf brauchen (Tobias 30.08.).
   // Gemeinsamer Zustand mf: Dashboard-Zaehler und diese Liste bleiben synchron.
   for (const zeile of filterZeilen(zeichnen, false)) c.append(zeile);
 
