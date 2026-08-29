@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v16"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v17"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -50,12 +50,6 @@ try { einst = JSON.parse(localStorage.getItem(EINST_KEY) || "{}"); } catch (_) {
 
 const EINST_GROESSEN = [["0.9", "Klein"], ["", "Normal"],
                         ["1.1", "Groß"], ["1.2", "Sehr groß"]];
-// Nur Systemschriften - laden nichts nach, sehen auf jedem Geraet gut aus
-const EINST_SCHRIFTEN = [["", "Standard"], ["Georgia, serif", "Serif"],
-                         ["Consolas, 'Roboto Mono', monospace", "Mono"]];
-const EINST_AKZENTE = [["", "Coral"], ["#4b7bd4", "Blau"], ["#3fa971", "Grün"],
-                       ["#8b5cf6", "Violett"], ["#ec4899", "Pink"],
-                       ["#14b8a6", "Türkis"]];
 
 function einstAnwenden() {
   // ponytail: zoom statt rem-Umbau - das ganze Layout ist in px; zoom
@@ -63,8 +57,6 @@ function einstAnwenden() {
   // Android kann es. Upgrade auf rem-Basis nur, falls je ein Zielbrowser
   // ohne zoom dazukommt.
   document.body.style.zoom = einst.groesse || "";
-  document.body.style.fontFamily = einst.schrift || "";
-  document.documentElement.style.setProperty("--coral", einst.akzent || "#f2664c");
 }
 
 function einstZeile(titel, paare, feld) {
@@ -74,7 +66,6 @@ function einstZeile(titel, paare, feld) {
   paare.forEach(([wert, label]) => {
     const chip = el("button",
       "chip" + ((einst[feld] || "") === wert ? " aktiv" : ""), label);
-    if (feld === "akzent" && wert) chip.style.color = wert;
     chip.onclick = () => {
       einst[feld] = wert;
       localStorage.setItem(EINST_KEY, JSON.stringify(einst));
@@ -92,8 +83,6 @@ function sheetEinstellungen() {
   const wrap = el("div");
   wrap.append(
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
-    einstZeile("Schriftart", EINST_SCHRIFTEN, "schrift"),
-    einstZeile("Akzentfarbe", EINST_AKZENTE, "akzent"),
     el("div", "stand", "Gilt nur für dieses Gerät · App-Version " + APP_VERSION));
   sheetOeffnen("Einstellungen", wrap);
 }
