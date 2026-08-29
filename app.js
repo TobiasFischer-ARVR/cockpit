@@ -38,6 +38,66 @@ function kopfzeile(titel, zurueckSichtbar) {
     zurueckSichtbar ? "visible" : "hidden";
 }
 
+// ------------------------------------------------------------ Einstellungen
+// Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
+// Geschmackssache gehoert aufs Geraet, nicht in die Daten.
+
+const APP_VERSION = "v15"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+
+const EINST_KEY = "cockpit-einst";
+let einst = {};
+try { einst = JSON.parse(localStorage.getItem(EINST_KEY) || "{}"); } catch (_) {}
+
+const EINST_GROESSEN = [["0.9", "Klein"], ["", "Normal"],
+                        ["1.1", "Groß"], ["1.2", "Sehr groß"]];
+// Nur Systemschriften - laden nichts nach, sehen auf jedem Geraet gut aus
+const EINST_SCHRIFTEN = [["", "Standard"], ["Georgia, serif", "Serif"],
+                         ["Consolas, 'Roboto Mono', monospace", "Mono"]];
+const EINST_AKZENTE = [["", "Coral"], ["#4b7bd4", "Blau"], ["#3fa971", "Grün"],
+                       ["#8b5cf6", "Violett"], ["#ec4899", "Pink"],
+                       ["#14b8a6", "Türkis"]];
+
+function einstAnwenden() {
+  // ponytail: zoom statt rem-Umbau - das ganze Layout ist in px; zoom
+  // skaliert alles zusammen (wie Androids "Anzeigegroesse") und Chrome/
+  // Android kann es. Upgrade auf rem-Basis nur, falls je ein Zielbrowser
+  // ohne zoom dazukommt.
+  document.body.style.zoom = einst.groesse || "";
+  document.body.style.fontFamily = einst.schrift || "";
+  document.documentElement.style.setProperty("--coral", einst.akzent || "#f2664c");
+}
+
+function einstZeile(titel, paare, feld) {
+  const wrap = el("div");
+  wrap.append(el("div", "stand", titel));
+  const zeile = el("div", "chips");
+  paare.forEach(([wert, label]) => {
+    const chip = el("button",
+      "chip" + ((einst[feld] || "") === wert ? " aktiv" : ""), label);
+    if (feld === "akzent" && wert) chip.style.color = wert;
+    chip.onclick = () => {
+      einst[feld] = wert;
+      localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+      einstAnwenden(); // sofort sichtbar, Sheet bleibt offen
+      [...zeile.children].forEach(
+        (c, i) => c.classList.toggle("aktiv", paare[i][0] === wert));
+    };
+    zeile.append(chip);
+  });
+  wrap.append(zeile);
+  return wrap;
+}
+
+function sheetEinstellungen() {
+  const wrap = el("div");
+  wrap.append(
+    einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
+    einstZeile("Schriftart", EINST_SCHRIFTEN, "schrift"),
+    einstZeile("Akzentfarbe", EINST_AKZENTE, "akzent"),
+    el("div", "stand", "Gilt nur für dieses Gerät · App-Version " + APP_VERSION));
+  sheetOeffnen("Einstellungen", wrap);
+}
+
 function banner(text) {
   const b = el("div", "banner", text);
   document.body.append(b);
@@ -66,14 +126,40 @@ function gruppenMap(z) {
 // ---------------------------------------------------------------- Bausteine
 
 // Filter-Chips fuer die Monatswahl (Briefing Abschnitt 5: waagerecht scrollend)
+// Jahres-Chips: gewaehltes Jahr ("" = neuestes). Die Jahres-Reihe erscheint
+// erst, wenn Monate aus mehr als einem Jahr im Snapshot sind - bis dahin
+// sieht die Zeitraum-Wahl aus wie immer. "Gesamt" rechnet immer ueber alles.
+let jahrWahl = "";
+
 function chipZeile() {
+  const wrap = el("div");
+  const jahre = [...new Set(monate().map((z) => z.label.slice(-4)))];
+  const jahr = jahre.includes(jahrWahl) ? jahrWahl : jahre[jahre.length - 1];
+  if (jahre.length > 1) {
+    const jz = el("div", "chips");
+    for (const j of jahre) {
+      const chip = el("button", "chip" + (j === jahr ? " aktiv" : ""), j);
+      chip.onclick = () => {
+        jahrWahl = j;
+        // gewaehlter Monat liegt nicht im neuen Jahr -> zurueck auf Gesamt
+        if (zi > 0 && snap.zeitraeume[zi].label.slice(-4) !== j) zi = 0;
+        render();
+      };
+      jz.append(chip);
+    }
+    wrap.append(jz);
+  }
   const zeile = el("div", "chips");
   snap.zeitraeume.forEach((z, i) => {
-    const chip = el("button", "chip" + (i === zi ? " aktiv" : ""), z.label);
+    if (i > 0 && jahre.length > 1 && z.label.slice(-4) !== jahr) return;
+    // bei sichtbarer Jahres-Reihe reicht der Monatsname ("Jun" statt "Jun 2026")
+    const text = i > 0 && jahre.length > 1 ? z.label.slice(0, -5) : z.label;
+    const chip = el("button", "chip" + (i === zi ? " aktiv" : ""), text);
     chip.onclick = () => { zi = i; render(); };
     zeile.append(chip);
   });
-  return zeile;
+  wrap.append(zeile);
+  return wrap;
 }
 
 // Sparkline in der KPI-Kachel (dataviz-Skill): Monatswerte als gedaempfte
@@ -745,6 +831,8 @@ async function update() {
   }
 }
 
+document.getElementById("einstellungen").onclick = sheetEinstellungen;
+
 document.getElementById("zurueck").onclick = () => {
   // Eine Ebene hoch, nicht Browser-History: vorhersagbar bei Direktaufruf
   const h = location.hash;
@@ -764,6 +852,8 @@ window.addEventListener("od-ready", async () => {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("service-worker.js").catch(() => {});
 }
+
+einstAnwenden(); // gespeicherten Stil sofort anwenden, vor dem ersten Rendern
 
 (async () => {
   try {
