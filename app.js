@@ -32,6 +32,10 @@ function kopfzeile(titel, zurueckSichtbar) {
   document.getElementById("titel").textContent = titel;
   document.getElementById("zurueck").style.visibility =
     zurueckSichtbar ? "visible" : "hidden";
+  // Hauptmenue ohne Update-Knopf (Tobias 29.08.) - der lebt in den
+  // Bereichen (UGC, Buecher), nicht auf der Startseite
+  document.getElementById("update").style.visibility =
+    zurueckSichtbar ? "visible" : "hidden";
 }
 
 function banner(text) {
@@ -657,18 +661,27 @@ async function update() {
   const btn = document.getElementById("update");
   btn.disabled = true;
   try {
-    const antwort = await fetch("/update", { method: "POST" });
     let ergebnis = null;
-    try { ergebnis = await antwort.json(); } catch (_) { /* kein JSON */ }
-    if (!ergebnis || !ergebnis.ok) {
-      throw new Error((ergebnis && ergebnis.fehler) ||
-        "Server kann kein Update — läuft server.py (nicht http.server)?");
+    try {
+      const antwort = await fetch("/update", { method: "POST" });
+      ergebnis = await antwort.json();
+    } catch (_) { /* kein Heimserver erreichbar (unterwegs/GitHub Pages) */ }
+    if (ergebnis && ergebnis.ok) {
+      await laden();
+      render();
+      banner(`${ergebnis.dateien} Dateien eingelesen · ${ergebnis.erzeugt.replace("T", " ")}`);
+    } else if (ergebnis) {
+      banner("Update fehlgeschlagen: " + (ergebnis.fehler || "unbekannt"));
+    } else {
+      // Ohne Heimserver kann niemand die Books neu einlesen - aber den
+      // aktuellsten Snapshot aus OneDrive holen geht von ueberall.
+      await laden();
+      render();
+      banner("Kein Heimserver — aktueller Stand aus OneDrive: " +
+        String(snap.erzeugt || "?").replace("T", " "));
     }
-    await laden();
-    render();
-    banner(`${ergebnis.dateien} Dateien eingelesen · ${ergebnis.erzeugt.replace("T", " ")}`);
   } catch (fehler) {
-    banner("Update fehlgeschlagen: " + fehler.message);
+    banner("Keine Datenquelle erreichbar: " + fehler.message);
   } finally {
     btn.disabled = false;
   }
