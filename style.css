@@ -1,0 +1,365 @@
+/* Design-System uebernommen aus ../Design-Briefing fuer Nachbau.md, Abschnitt 2.
+   Werte bewusst 1:1 wie dort spezifiziert - nicht neu erfunden. */
+
+:root {
+  --bg: #0c1322;
+  --panel: #151d30;
+  --panel-hoch: #1b2438;
+  --rand: #232e46;
+  --text: #e7ecf6;
+  --text-leise: #8492ab;
+  --coral: #f2664c;
+  --coral-dunkel: #c94f38;
+  --gelb: #e0a83c;
+  --blau: #4b7bd4;
+  --gruen: #3fa971;
+  --grau: #5b6577;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rand);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 5;
+}
+
+header h1 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Antippflaeche >= 44px (Briefing Abschnitt 5) */
+header button {
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--panel-hoch);
+  border: 1px solid var(--rand);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 19px;
+  cursor: pointer;
+}
+header button:disabled { opacity: .5; }
+
+.stand {
+  font-size: 11.5px;
+  color: var(--text-leise);
+  margin-bottom: 14px;
+}
+
+main {
+  padding: 16px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+/* KPI-Kachelreihe: 1 Spalte < 480px, 2 ab ~480px, wie im Briefing (Abschnitt 5) */
+.kacheln {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+@media (min-width: 700px) {
+  .kacheln { grid-template-columns: repeat(5, 1fr); }
+}
+
+.kachel {
+  background: var(--panel);
+  border: 1px solid var(--rand);
+  border-radius: 14px;
+  padding: 12px 14px 14px;
+  border-top: 3px solid var(--blau);
+}
+.kachel.kritisch {
+  border-color: rgba(242, 102, 76, .5);
+  background: rgba(242, 102, 76, .10);
+  border-top-color: var(--coral);
+}
+.kachel .titel {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-leise);
+  margin-bottom: 4px;
+}
+.kachel .wert {
+  font-size: 30px;
+  font-weight: 600;
+}
+
+/* Marken-Kacheln (Kennzahl-Karte, Abschnitt 3 + 7) */
+.karten {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+@media (min-width: 600px) {
+  .karten { grid-template-columns: 1fr 1fr; }
+}
+@media (min-width: 900px) {
+  .karten { grid-template-columns: 1fr 1fr 1fr; }
+}
+
+.karte {
+  background: linear-gradient(160deg, var(--panel-hoch), #141c2d);
+  border-radius: 14px;
+  box-shadow: 12px 14px 26px rgba(0,0,0,.45);
+  padding: 13px 15px;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-left: 4px solid var(--blau);
+}
+.karte.leer {
+  border-left-color: var(--grau);
+  opacity: .58;
+}
+.karte .kopf {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: var(--text-leise);
+}
+.karte .titel {
+  font-size: 12.5px;
+  line-height: 1.34;
+  font-weight: 600;
+}
+.karte .kontext {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-leise);
+}
+.karte .fuss {
+  margin-top: auto;
+  font-size: 11.5px;
+  color: var(--text-leise);
+}
+
+.leerzustand {
+  color: var(--text-leise);
+  text-align: center;
+  padding: 40px 16px;
+}
+.leerzustand.kompakt {
+  text-align: left;
+  padding: 10px 0;
+  font-size: 12.5px;
+}
+
+/* Block (Sammelbehaelter, Briefing Abschnitt 3): gestrichelter Rahmen =
+   "Behaelter, nicht Inhalt". Antippen oeffnet die Gruppe. */
+.karte.block {
+  border: 1px dashed var(--text-leise);
+  border-left: 1px dashed var(--text-leise);
+  background: var(--panel);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.pill {
+  border: 1px solid var(--rand);
+  border-radius: 20px;
+  padding: 2px 9px;
+  color: var(--text-leise);
+}
+
+.badge {
+  background: rgba(75, 123, 212, .18);
+  border: 1px solid rgba(75, 123, 212, .5);
+  color: #90b3f0;
+  border-radius: 9px;
+  padding: 1px 7px;
+  font-weight: 600;
+}
+.badge.voll {
+  background: rgba(242, 102, 76, .18);
+  border-color: rgba(242, 102, 76, .5);
+  color: #ff9a83;
+}
+
+.menue-karte {
+  min-height: 84px;
+  justify-content: center;
+  cursor: pointer;
+}
+.menue-karte .titel { font-size: 15px; }
+
+/* Tipp-Rueckmeldung statt Hover (Briefing Abschnitt 5) */
+.karte.block:active,
+.menue-karte:active { transform: scale(.98); }
+
+/* Filter-Chips fuer die Monatswahl (Briefing Abschnitt 5): eine waagerecht
+   scrollende Reihe, Antippflaeche >= 44px, aktiver Chip blau hinterlegt
+   (18% Flaeche + 50% Rahmen, wie alle Hervorhebungen im Design-System) */
+.chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+.chip {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 20px;
+  border: 1px solid var(--rand);
+  background: var(--panel);
+  color: var(--text-leise);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.chip.aktiv {
+  background: rgba(75, 123, 212, .18);
+  border-color: rgba(75, 123, 212, .5);
+  color: #90b3f0;
+  font-weight: 600;
+}
+
+/* Sparkline in der KPI-Kachel */
+.spark { display: block; width: 100%; height: 30px; margin-top: 6px; }
+.kachel.tippbar { cursor: pointer; }
+.kachel.tippbar:active { transform: scale(.98); }
+.karte.tippbar { cursor: pointer; }
+.karte.tippbar:active { transform: scale(.98); }
+
+/* Sheet von unten (Briefing Abschnitt 5): volle Breite, max. 90% Hoehe,
+   Kopf + Knopfleiste angeheftet (die Knopfleiste rutscht sonst aus dem
+   Bild - dokumentierter Fehler aus dem Original, Abschnitt 6.6) */
+.schleier {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 10, 18, .72);
+  backdrop-filter: blur(2px);
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.sheet {
+  background: var(--panel);
+  border: 1px solid var(--rand);
+  border-bottom: none;
+  border-radius: 14px 14px 0 0;
+  width: min(560px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 70px rgba(0,0,0,.6);
+}
+.sheet-kopf {
+  padding: 16px 18px 10px;
+  border-bottom: 1px solid var(--rand);
+}
+.sheet-kopf .titel { font-size: 17px; font-weight: 600; line-height: 1.35; }
+.sheet-inhalt { padding: 14px 18px; overflow-y: auto; flex: 1; }
+.sheet-inhalt .kontext {
+  font-size: 11.5px;
+  color: var(--text-leise);
+  margin-bottom: 12px;
+}
+.sheet-fuss {
+  padding: 10px 18px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--rand);
+}
+.sheet-fuss button {
+  min-height: 44px;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--rand);
+  background: var(--panel-hoch);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Verlaufs-Diagramm + Tabelle im Sheet */
+.readout { font-size: 11.5px; color: var(--text-leise); margin-bottom: 8px; }
+.verlauf { display: block; width: 100%; height: auto; margin-bottom: 14px; }
+.tabelle { font-size: 12.5px; }
+.tabelle .zeile {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rand);
+  align-items: baseline;
+}
+.tabelle .zeile.historie { justify-content: flex-start; }
+.tabelle .num { font-variant-numeric: tabular-nums; }
+.tabelle .leise { color: var(--text-leise); }
+.tabelle .datum { flex: 0 0 auto; }
+.punkt {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 7px;
+}
+/* Pitchliste: Farbstreifen links = Ampel (Briefing: Farbstreifen kodiert
+   den Status). Coral nur fuer faellig/ueberfaellig - bleibt die Ausnahme. */
+.karte.ampel-rot { border-left-color: var(--coral); }
+.karte.ampel-gelb { border-left-color: var(--gelb); }
+.karte.ampel-gruen { border-left-color: var(--gruen); }
+.karte.ampel-neutral { border-left-color: var(--blau); }
+.karte.ampel-grau { border-left-color: var(--grau); opacity: .58; }
+.karte.zugang { margin-bottom: 12px; }
+
+.abschnitt {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--text-leise);
+  margin: 16px 0 2px;
+}
+.abschnitt:first-of-type { margin-top: 4px; }
+/* Link-Farbe = blauer Hervorhebungstext aus dem Design-System */
+.link { color: #90b3f0; word-break: break-all; text-decoration: underline; }
+.tabelle .zeile a.link { text-align: right; }
+.punkt-pitch { background: var(--blau); }
+.punkt-followup { background: var(--gelb); }
+.punkt-antwort { background: var(--grau); }
+.punkt-positiv { background: var(--gruen); }
+
+/* Meldungs-Banner (Briefing Abschnitt 3): unten, coral umrandet, kurzlebig */
+.banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  max-width: min(360px, calc(100vw - 32px));
+  background: var(--panel);
+  border: 1px solid var(--coral);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  box-shadow: 0 24px 70px rgba(0,0,0,.6);
+  z-index: 10;
+}
