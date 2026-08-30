@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v29"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v30"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -607,6 +607,24 @@ function sheetPitch(p) {
       wrap.append(el("div", "leerzustand kompakt",
         "Kein Brand-Book im aktuellen Datenordner — liegt im echten Verzeichnis (kommt mit Phase 3 / OneDrive)."));
     }
+
+    // Löschen nur für App-angelegte Brands (erstellt-Marker) - Andreas
+    // gewachsene Excel-/Book-Daten fasst die App nicht an
+    const mv = datenstand ? markeZuName(p.name) : null;
+    if (mv && mv.erstellt) {
+      wrap.append(el("div", "abschnitt", "Verwaltung"));
+      const lz = el("div", "chips");
+      const lk = el("button", "chip", "🗑 Brand löschen");
+      lk.onclick = () => {
+        if (!confirm(`„${mv.name}“ komplett löschen?\n` +
+            "Verschwindet aus Pitchliste und Brandrating-Export.")) return;
+        brandLoeschen(mv);
+        history.back(); // Sheet zu, popstate zeichnet die Liste frisch
+      };
+      lz.append(lk);
+      wrap.append(lz, el("div", "stand",
+        "Nur möglich, weil diese Brand in der App angelegt wurde."));
+    }
   }
 
   function bereichErledigen(q) {
@@ -707,7 +725,18 @@ function pitchMitDatenstand(p) {
 }
 
 function pitchlisteAktuell() {
-  return (snap.pitchliste || []).map(pitchMitDatenstand);
+  const liste = (snap.pitchliste || []).map(pitchMitDatenstand);
+  // In der App angelegte Brands ergänzen, bis der PC-Export sie kennt
+  // (dann greift die Dublettenprüfung über den Namens-Schlüssel)
+  if (datenstand) {
+    const da = new Set(liste.map((p) => schluessel(p.name)));
+    for (const m of datenstand.marken || []) {
+      if (m.erstellt && m.pitchliste && !da.has(schluessel(m.name))) {
+        liste.push({ name: m.name, ...m.pitchliste });
+      }
+    }
+  }
+  return liste;
 }
 
 // Ampel der Excel-Pitchliste, live gerechnet (Regeln siehe Projektnotiz):
@@ -784,6 +813,14 @@ function renderPitchliste() {
       "Keine Pitchliste im Snapshot — einmal Update (↻) drücken."));
     return;
   }
+
+  // Neue Brand anlegen (Phase 5) - Ablauf 1-3 + 6 in einem Formular
+  const neuZeile = el("div", "chips");
+  const neu = el("button", "chip", "＋ Neue Brand");
+  neu.onclick = () => datenstand ? sheetNeueBrand()
+    : banner("Braucht den Datenstand — App einmal mit Internet öffnen.");
+  neuZeile.append(neu);
+  c.append(neuZeile);
 
   // Suchfeld + Filter-Chips (Faellig / Rating / Kategorie), UND-verknuepft.
   // Rating- und Kategorie-Werte kommen aus den Daten, nie hart verdrahtet.
@@ -1205,6 +1242,89 @@ function rueckgaengig(m, la) {
   if (ev.length && ev[ev.length - 1].aktion === la.aktion) ev.pop();
   m.pitchliste = la.vorher;
   delete datenstand.letzteAktion;
+  listeVeraltet = true;
+  datenstandPersistieren();
+}
+
+// ----------------------------------------------- Neue Brand (Phase 5)
+
+// Formular für Ablauf 1-3 + 6: Brandrating-Werte (Rating trägt Andrea
+// selbst ein — NICHT berechnen, Tobias 29.08.) + Pitchlisten-Eintrag
+// "nächste Aktion: Pitch, heute". Löschen-Gegenstück: brandLoeschen()
+// in der Detailansicht (Regel: Erstellen nur zusammen mit Löschen).
+function sheetNeueBrand() {
+  const wrap = el("div");
+  const name = el("input", "suche");
+  name.placeholder = "Name der Brand";
+  const kategorie = el("input", "suche");
+  kategorie.placeholder = "Kategorie/Nische";
+  kategorie.setAttribute("list", "kategorien-liste");
+  const dl = el("datalist"); // native Vorschläge aus den vorhandenen Kategorien
+  dl.id = "kategorien-liste";
+  for (const k of [...new Set((snap.pitchliste || [])
+      .map((p) => p.kategorie).filter(Boolean))].sort()) {
+    const o = el("option");
+    o.value = k;
+    dl.append(o);
+  }
+  wrap.append(name, kategorie, dl);
+  const f = { rating: "", fit: "", geist: "", chance: "" };
+  const skala = [1, 2, 3, 4, 5].map((n) => [n, String(n)]);
+  const zeile = (titel, paare, feld) => wrap.append(
+    el("div", "stand", titel),
+    chipFilter(paare, f[feld], (w) => { f[feld] = w; }, () => {}));
+  zeile("Rating (A–D)", ["A", "B", "C", "D"].map((r) => [r, r]), "rating");
+  zeile("Brand Fit", skala, "fit");
+  zeile("Begeisterung", skala, "geist");
+  zeile("Erfolgschance", skala, "chance");
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip aktiv", "✓ Brand anlegen");
+  ok.onclick = () => {
+    const n = name.value.trim();
+    if (!n) { banner("Name fehlt."); return; }
+    if ((datenstand.marken || []).some(
+        (m) => schluessel(m.name) === schluessel(n))) {
+      banner("Diese Brand gibt es schon."); return;
+    }
+    brandAnlegen(n, kategorie.value.trim(), f);
+    history.back(); // Sheet zu, popstate zeichnet die Liste frisch
+  };
+  okZ.append(ok);
+  wrap.append(okZ, el("div", "stand",
+    "Landet in der Pitchliste (nächste Aktion: Pitch, heute) und beim " +
+    "Excel-Export im Brandrating. Löschen: in der Detailansicht der Brand."));
+  sheetOeffnen("Neue Brand", wrap);
+}
+
+function brandAnlegen(name, kategorie, f) {
+  const jetzt = lokalIso();
+  datenstand.marken.push({
+    name, quelle: "", gruppe: "", kerninfos: {}, events: [],
+    pitchliste: {
+      rating: f.rating, kategorie, status: "", letzter_kontakt: "",
+      naechste_aktion: "Pitch", datum_naechste_aktion: isoInTagen(0),
+      zaehler: "0", kooperation: "", geaendert: jetzt,
+    },
+    // Feldnamen + Symbol-Skalen exakt wie im Brandrating-Blatt
+    brandrating: {
+      status: "Neu", kategorie,
+      brandfit: "⭐".repeat(f.fit || 0),
+      begeisterung: "❤️".repeat(f.geist || 0),
+      erfolgschance: "⭐".repeat(f.chance || 0),
+      rating: f.rating, brandbook: "", notizen: "",
+    },
+    erstellt: jetzt, // von der App angelegt -> darf gelöscht werden
+  });
+  listeVeraltet = true;
+  datenstandPersistieren();
+}
+
+function brandLoeschen(m) {
+  datenstand.marken = datenstand.marken.filter((x) => x !== m);
+  if (datenstand.letzteAktion &&
+      schluessel(datenstand.letzteAktion.name) === schluessel(m.name)) {
+    delete datenstand.letzteAktion;
+  }
   listeVeraltet = true;
   datenstandPersistieren();
 }
