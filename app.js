@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v22"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v23"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -214,6 +214,7 @@ function kpiKacheln(gesamt) {
   const reihe = el("div", "kacheln");
   for (const [schluessel, titel] of Object.entries(KACHEL_TITEL)) {
     const kachel = el("div", "kachel");
+    kachel.dataset.k = schluessel; // Anker fuer gezielten Sparkline-Tausch
     kachel.append(el("div", "titel", titel),
                   el("div", "wert", String(gesamt[schluessel])));
     const sp = sparkline(schluessel);
@@ -382,8 +383,8 @@ function sheetVerlauf(schluessel) {
   const readout = el("div", "readout", "Diagramm antippen für Monatswerte");
   let svg = verlaufsDiagramm(schluessel, readout);
   // Diagrammtyp-Chips: Wahl gilt sofort hier UND fuer die Sparkline der
-  // Kachel dahinter (render() zeichnet das Dashboard neu, das Sheet lebt
-  // auf document.body und bleibt dabei offen).
+  // Kachel dahinter. Bewusst KEIN render() - das raeumt jedes offene Sheet
+  // weg (Router-Regel). Stattdessen nur die eine Sparkline austauschen.
   const typZeile = el("div", "chips");
   CHART_TYPEN.forEach(([wert, label]) => {
     const chip = el("button",
@@ -396,7 +397,9 @@ function sheetVerlauf(schluessel) {
       const neu = verlaufsDiagramm(schluessel, readout);
       svg.replaceWith(neu);
       svg = neu;
-      render();
+      const spark = document.querySelector(
+        `.kachel[data-k="${schluessel}"] svg.spark`);
+      if (spark) spark.replaceWith(sparkline(schluessel));
     };
     typZeile.append(chip);
   });
