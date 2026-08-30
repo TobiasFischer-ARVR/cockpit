@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v20"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v21"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -962,7 +962,17 @@ window.addEventListener("od-ready", async () => {
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("service-worker.js").catch(() => {});
+  navigator.serviceWorker.register("service-worker.js")
+    .then((reg) => reg.update())      // beim App-Start aktiv nach Update fragen
+    .catch(() => {});
+  // Neuer Service Worker uebernimmt (skipWaiting) -> Seite einmal neu laden,
+  // damit sofort die neue Version laeuft statt erst beim uebernaechsten Start.
+  let neuGeladen = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (neuGeladen) return; // Schutz gegen Reload-Schleife
+    neuGeladen = true;
+    location.reload();
+  });
 }
 
 einstAnwenden(); // gespeicherten Stil sofort anwenden, vor dem ersten Rendern
