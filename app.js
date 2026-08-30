@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v23"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v24"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1035,8 +1035,19 @@ window.addEventListener("od-ready", async () => {
 });
 
 if ("serviceWorker" in navigator) {
+  // Soll/Ist-Abgleich (Tobias 30.08.): reg.update() vergleicht den
+  // installierten Service Worker byteweise mit dem auf GitHub und laedt
+  // bei Abweichung die neue Version. Laeuft beim App-Start UND bei jeder
+  // Rueckkehr in die App - Android weckt PWAs oft nur auf statt sie neu
+  // zu starten, dann laeuft kein Startcode und der Start-Check allein
+  // wuerde Updates verpassen (so blieb v22 haengen).
   navigator.serviceWorker.register("service-worker.js")
-    .then((reg) => reg.update())      // beim App-Start aktiv nach Update fragen
+    .then((reg) => {
+      reg.update();
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") reg.update();
+      });
+    })
     .catch(() => {});
   // Neuer Service Worker uebernimmt (skipWaiting) -> Seite einmal neu laden,
   // damit sofort die neue Version laeuft statt erst beim uebernaechsten Start.
@@ -1044,8 +1055,13 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (neuGeladen) return; // Schutz gegen Reload-Schleife
     neuGeladen = true;
+    sessionStorage.setItem("cockpit-update", "1"); // Banner nach dem Reload
     location.reload();
   });
+  if (sessionStorage.getItem("cockpit-update")) {
+    sessionStorage.removeItem("cockpit-update");
+    banner("App aktualisiert auf " + APP_VERSION);
+  }
 }
 
 einstAnwenden(); // gespeicherten Stil sofort anwenden, vor dem ersten Rendern
