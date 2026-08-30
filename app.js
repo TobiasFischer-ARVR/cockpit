@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v27"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v28"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -84,6 +84,17 @@ function sheetEinstellungen() {
   wrap.append(
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
     el("div", "stand", "Gilt nur für dieses Gerät"));
+  // Datenstand-Sicherung (Tobias 30.08.): hier statt im OneDrive-Sheet -
+  // das Zahnrad ist auch im UGC Dashboard immer erreichbar
+  wrap.append(el("div", "abschnitt", "Datenstand-Sicherung"));
+  const sStatus = el("div", "stand", sicherungsText());
+  const sZeile = el("div", "chips");
+  const sichern = el("button", "chip", "Jetzt sichern");
+  sichern.onclick = () => datenstandSichern(sStatus);
+  const backup = el("button", "chip", "Backup herunterladen");
+  backup.onclick = datenstandBackup;
+  sZeile.append(sichern, backup);
+  wrap.append(sStatus, sZeile);
   sheetOeffnen("Einstellungen", wrap);
 }
 
@@ -763,18 +774,6 @@ async function sheetOneDrive() {
   const wrap = el("div");
   wrap.append(el("div", "kontext",
     `Verbunden als ${konto.name || konto.username}`));
-
-  // Datenstand-Sicherung (Phase 4): manuell nach OneDrive + Backup-Datei
-  wrap.append(el("div", "abschnitt", "Datenstand-Sicherung"));
-  const sStatus = el("div", "stand", sicherungsText());
-  const sZeile = el("div", "chips");
-  const sichern = el("button", "chip", "Jetzt sichern");
-  sichern.onclick = () => datenstandSichern(sStatus);
-  const backup = el("button", "chip", "Backup herunterladen");
-  backup.onclick = datenstandBackup;
-  sZeile.append(sichern, backup);
-  wrap.append(sStatus, sZeile);
-
   wrap.append(el("div", "abschnitt", "Oberste Ordner-Ebene"));
   const status = el("div", "leerzustand kompakt", "Lade OneDrive …");
   wrap.append(status);
