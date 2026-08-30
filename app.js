@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v25"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v26"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -83,12 +83,56 @@ function sheetEinstellungen() {
   const wrap = el("div");
   wrap.append(
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
-    el("div", "stand", datenstand
-      ? `Datenstand: ${datenstand.marken.length} Marken · Stand ` +
-        `${String(datenstand.geaendert).replace("T", " ")} · Quelle: ${datenstandQuelle}`
-      : "Datenstand: noch nicht geladen"),
-    el("div", "stand", "Gilt nur für dieses Gerät · App-Version " + APP_VERSION));
+    el("div", "stand", "Gilt nur für dieses Gerät"));
   sheetOeffnen("Einstellungen", wrap);
+}
+
+// Info-Button (Tobias 30.08.): kontextabhaengig - im Hauptmenue Infos zur
+// App allgemein, im UGC-Bereich Infos zum Dashboard (was zaehlen die
+// Kacheln? Genau die Fragen, die sonst per Chat geklaert werden muessen).
+function sheetInfo() {
+  const wrap = el("div");
+  const titel = (t) => el("div", "info-titel", t);
+  const zeile = (t) => el("div", "stand", t);
+  if (location.hash.startsWith("#/ugc") || location.hash === "#/pitchliste") {
+    wrap.append(
+      titel("Was zählen die Kacheln?"),
+      zeile("Kontaktierte Marken: Marken mit mindestens einem Pitch oder " +
+            "Follow-up im Zeitraum. „Gesamt“ zählt jede Marke nur einmal — " +
+            "deshalb ist Gesamt kleiner als die Summe der Monate."),
+      zeile("Follow-ups / Antworten: alle Einträge im Zeitraum."),
+      zeile("Davon positiv: Antworten, die in den Books mit „X“ markiert sind."),
+      zeile("Nach Erstkontakt: Antworten direkt auf einen Pitch, " +
+            "ohne Follow-up dazwischen."),
+      titel("Bedienung"),
+      zeile("Kachel antippen → Verlauf über die Monate. Diagrammtyp " +
+            "(Linie / Punkte / Balken / Fläche) je Kachel wählbar."),
+      zeile("Brand-Block: Zahl rechts oben = Marken in der Gruppe, " +
+            "ab 5 coral (nur Optik, keine Warnung)."),
+      zeile("Wiedervorlage-Ampel: coral = überfällig oder ≤ 7 Tage · " +
+            "gelb ≤ 14 · grün ≤ 21 · blau später · grau ohne Termin."));
+    if (snap) {
+      wrap.append(titel("Datenbasis"),
+        zeile(`${snap.quelldateien} Dateien · Stand ` +
+              String(snap.erzeugt).replace("T", " ")));
+    }
+    sheetOeffnen("Info: UGC Dashboard", wrap);
+  } else {
+    wrap.append(
+      titel("Cockpit"),
+      zeile("Installierbare Web-App (PWA). Daten liegen auf dem Gerät und " +
+            "in OneDrive — nichts auf GitHub."),
+      zeile("App-Version " + APP_VERSION + " · Updates holt die App beim " +
+            "Öffnen selbst und meldet sich mit einem Banner."),
+      zeile(datenstand
+        ? `Datenstand: ${datenstand.marken.length} Marken · Stand ` +
+          `${String(datenstand.geaendert).replace("T", " ")} · ` +
+          `Quelle: ${datenstandQuelle}`
+        : "Datenstand: noch nicht geladen"),
+      zeile("Ohne Internet zeigt die App den zuletzt geladenen Stand — " +
+            "wie alt er ist, steht in der Stand-Zeile."));
+    sheetOeffnen("Info: App", wrap);
+  }
 }
 
 function banner(text) {
@@ -1047,9 +1091,17 @@ async function laden() {
   const cloud = typeof OD !== "undefined"
     ? await OD.graphLeise("/me/drive/root:/Apps/Cockpit/snapshot.json:/content")
     : null;
-  const beste = [lokal, cloud].filter(Boolean).sort(
+  // Dritte Quelle: letzter aufs Geraet gesicherter Snapshot (IndexedDB).
+  // Ohne die zeigte die App im Flugmodus "Keine Daten" (Tobias 30.08.) -
+  // auf GitHub Pages kommt der Snapshot nur aus OneDrive, offline = nichts.
+  let geraet = null;
+  try { geraet = await idbLies("snapshot"); } catch (_) {}
+  const beste = [lokal, cloud, geraet].filter(Boolean).sort(
     (a, b) => String(b.erzeugt || "").localeCompare(String(a.erzeugt || "")))[0];
   if (!beste) throw new Error(lokalFehler);
+  if (beste !== geraet) {
+    try { await idbSchreib("snapshot", beste); } catch (_) {}
+  }
   snap = beste;
   ladefehler = null;
   if (zi >= snap.zeitraeume.length) zi = 0; // Snapshot kann kuerzer geworden sein
@@ -1086,6 +1138,7 @@ async function update() {
 }
 
 document.getElementById("einstellungen").onclick = sheetEinstellungen;
+document.getElementById("info").onclick = sheetInfo;
 
 document.getElementById("zurueck").onclick = () => {
   // Eine Ebene hoch, nicht Browser-History: vorhersagbar bei Direktaufruf
