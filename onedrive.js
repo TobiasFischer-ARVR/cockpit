@@ -82,6 +82,29 @@ const OD = {
     }
   },
 
+  // Schreiben ohne Login-Redirect (Phase 4): JSON per PUT nach OneDrive.
+  // Gibt true/false zurueck statt zu werfen - der Aufrufer meldet per Banner.
+  async graphPutLeise(pfad, daten) {
+    if (!odBereit || !odApp.getActiveAccount()) return false;
+    try {
+      const r = await odApp.acquireTokenSilent({
+        scopes: OD_SCOPES,
+        account: odApp.getActiveAccount(),
+      });
+      const antwort = await fetch("https://graph.microsoft.com/v1.0" + pfad, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer " + r.accessToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(daten),
+      });
+      return antwort.ok;
+    } catch (_) {
+      return false;
+    }
+  },
+
   // Graph-API-Aufruf, z.B. OD.graph("/me/drive/root/children")
   async graph(pfad) {
     const token = await this.token();

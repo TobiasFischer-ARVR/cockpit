@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v26"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v27"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -763,6 +763,18 @@ async function sheetOneDrive() {
   const wrap = el("div");
   wrap.append(el("div", "kontext",
     `Verbunden als ${konto.name || konto.username}`));
+
+  // Datenstand-Sicherung (Phase 4): manuell nach OneDrive + Backup-Datei
+  wrap.append(el("div", "abschnitt", "Datenstand-Sicherung"));
+  const sStatus = el("div", "stand", sicherungsText());
+  const sZeile = el("div", "chips");
+  const sichern = el("button", "chip", "Jetzt sichern");
+  sichern.onclick = () => datenstandSichern(sStatus);
+  const backup = el("button", "chip", "Backup herunterladen");
+  backup.onclick = datenstandBackup;
+  sZeile.append(sichern, backup);
+  wrap.append(sStatus, sZeile);
+
   wrap.append(el("div", "abschnitt", "Oberste Ordner-Ebene"));
   const status = el("div", "leerzustand kompakt", "Lade OneDrive …");
   wrap.append(status);
@@ -1068,7 +1080,51 @@ async function datenstandLaden() {
   [datenstand, datenstandQuelle] = kandidaten[0];
   if (datenstandQuelle !== "Gerät") {
     try { await idbSchreib("datenstand", datenstand); } catch (_) {}
+  } else if (cloud &&
+             String(cloud.geaendert || "") < String(datenstand.geaendert || "")) {
+    // Auto-Abgleich: Geraet ist neuer als OneDrive -> still zuruecksichern.
+    // ponytail: keine WLAN-Erkennung (koennen Browser nicht zuverlaessig),
+    // die Datei ist winzig - Abgleich laeuft einfach bei jedem Laden.
+    OD.graphPutLeise("/me/drive/root:/Apps/Cockpit/datenstand.json:/content",
+                     datenstand);
   }
+}
+
+// "Jetzt sichern" (Phase 4): Datenstand aktiv nach OneDrive schreiben,
+// Zeitstempel pro Geraet in den Einstellungen (localStorage).
+function sicherungsText() {
+  return einst.gesichert
+    ? "Zuletzt gesichert: " + einst.gesichert
+    : "Noch nicht von diesem Gerät gesichert";
+}
+
+async function datenstandSichern(statusEl) {
+  if (!datenstand) { banner("Kein Datenstand geladen."); return; }
+  statusEl.textContent = "Sichere …";
+  const ok = typeof OD !== "undefined" && await OD.graphPutLeise(
+    "/me/drive/root:/Apps/Cockpit/datenstand.json:/content", datenstand);
+  if (ok) {
+    einst.gesichert = new Date().toISOString().slice(0, 16).replace("T", " ");
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  }
+  statusEl.textContent = sicherungsText();
+  banner(ok ? "Datenstand nach OneDrive gesichert."
+            : "Sichern fehlgeschlagen — bei OneDrive angemeldet?");
+}
+
+// Backup-Datei in den Download-Ordner (Phase 4): ueberlebt auch das
+// Loeschen der Browserdaten. Wiederherstellen bei Bedarf von Hand
+// (Datei zurueck nach OneDrive/Apps/Cockpit legen).
+function datenstandBackup() {
+  if (!datenstand) { banner("Kein Datenstand geladen."); return; }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(
+    [JSON.stringify(datenstand, null, 2)], { type: "application/json" }));
+  a.download = "cockpit-datenstand-" +
+    new Date().toISOString().slice(0, 10) + ".json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  banner("Backup liegt im Download-Ordner.");
 }
 
 // Snapshot aus zwei Quellen, die neuere gewinnt (Feld "erzeugt"):
