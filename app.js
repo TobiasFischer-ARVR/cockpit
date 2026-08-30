@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v21"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v22"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -157,11 +157,23 @@ function chipZeile() {
   return wrap;
 }
 
+// Diagrammtyp je KPI (Tobias 30.08.): eine Wahl pro Kennzahl, gilt fuer
+// Sparkline UND Verlaufs-Sheet. Gewaehlt wird im Sheet, gespeichert in
+// den Geraete-Einstellungen (localStorage, wie die Schriftgroesse).
+const CHART_TYPEN = [["linie", "Linie"], ["punkte", "Punkte"],
+                     ["balken", "Balken"], ["flaeche", "Fläche"]];
+
+function chartTyp(schluessel) {
+  return (einst.charts || {})[schluessel] || "linie";
+}
+
 // Sparkline in der KPI-Kachel (dataviz-Skill): Monatswerte als gedaempfte
 // 2px-Linie, der gewaehlte Monat als Punkt mit 2px Flaechen-Ring.
+// Balken-Typ: der gewaehlte Monat ist der volle, die anderen gedaempft.
 function sparkline(schluessel) {
   const werte = monate().map((z) => z.gesamt[schluessel]);
   if (werte.length < 2) return null;
+  const typ = chartTyp(schluessel);
   const B = 120, H = 30, R = 4, P = R + 2;
   const max = Math.max(...werte, 1);
   const x = (i) => P + (i * (B - 2 * P)) / (werte.length - 1);
@@ -171,12 +183,30 @@ function sparkline(schluessel) {
   svg.setAttribute("viewBox", `0 0 ${B} ${H}`);
   svg.setAttribute("class", "spark");
   svg.setAttribute("aria-hidden", "true");
-  svg.innerHTML =
-    `<polyline points="${werte.map((w, i) => `${x(i)},${y(w)}`).join(" ")}"` +
-    ` fill="none" stroke="var(--blau)" stroke-width="2"` +
-    ` stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>` +
-    `<circle cx="${x(akt)}" cy="${y(werte[akt])}" r="${R}"` +
-    ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
+  let s = "";
+  if (typ === "balken") {
+    const bw = Math.min(8, ((B - 2 * P) / werte.length) * 0.6);
+    s = werte.map((w, i) =>
+      `<rect x="${x(i) - bw / 2}" y="${y(w)}" width="${bw}"` +
+      ` height="${Math.max(1, H - P - y(w))}" rx="1"` +
+      ` fill="var(--blau)" opacity="${i === akt ? "1" : ".4"}"/>`).join("");
+  } else {
+    const punkte = werte.map((w, i) => `${x(i)},${y(w)}`).join(" ");
+    if (typ === "flaeche") {
+      s += `<polygon points="${x(0)},${H - P} ${punkte}` +
+           ` ${x(werte.length - 1)},${H - P}" fill="var(--blau)" opacity=".15"/>`;
+    }
+    s += `<polyline points="${punkte}"` +
+         ` fill="none" stroke="var(--blau)" stroke-width="2"` +
+         ` stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>`;
+    if (typ === "punkte") {
+      s += werte.map((w, i) => `<circle cx="${x(i)}" cy="${y(w)}" r="2"` +
+                               ` fill="var(--blau)" opacity=".55"/>`).join("");
+    }
+    s += `<circle cx="${x(akt)}" cy="${y(werte[akt])}" r="${R}"` +
+         ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
+  }
+  svg.innerHTML = s;
   return svg;
 }
 
@@ -263,9 +293,10 @@ function sheetEntfernen() {
 
 window.addEventListener("popstate", sheetEntfernen);
 
-// Verlaufs-Diagramm (Inline-SVG, Specs aus der dataviz-Skill): 2px-Linie,
-// Flaechen-Fuellung ~10%, Hairline-Gitter in Randfarbe, saubere Y-Ticks,
-// Wert-Label nur am Endpunkt. Antippen zeigt den naechstgelegenen Monat.
+// Verlaufs-Diagramm (Inline-SVG, Specs aus der dataviz-Skill): Hairline-
+// Gitter in Randfarbe, saubere Y-Ticks, Wert-Label nur am Endpunkt.
+// Serie je nach gewaehltem Typ (Linie/Punkte/Balken/Flaeche, siehe
+// CHART_TYPEN). Antippen zeigt den naechstgelegenen Monat.
 function verlaufsDiagramm(schluessel, readout) {
   const ms = monate();
   const werte = ms.map((z) => z.gesamt[schluessel]);
@@ -293,16 +324,35 @@ function verlaufsDiagramm(schluessel, readout) {
     s += `<text x="${x(i)}" y="${H - U + 14}" text-anchor="middle"` +
          ` font-size="9" fill="var(--text-leise)">${z.label.split(" ")[0]}</text>`;
   });
-  // Flaechen-Wash + Linie + Endpunkt mit Flaechen-Ring + Endwert-Label
+  // Serie je nach gewaehltem Diagrammtyp (chartTyp), danach fuer alle:
+  // Endwert-Label + unsichtbarer Tipp-Punkt
+  const typ = chartTyp(schluessel);
   const punkte = werte.map((w, i) => `${x(i)},${y(w)}`).join(" ");
   const letzte = werte.length - 1;
-  s += `<polygon points="${L},${y(0)} ${punkte} ${x(letzte)},${y(0)}"` +
-       ` fill="var(--blau)" opacity=".1"/>` +
-       `<polyline points="${punkte}" fill="none" stroke="var(--blau)"` +
-       ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>` +
-       `<circle cx="${x(letzte)}" cy="${y(werte[letzte])}" r="4"` +
-       ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>` +
-       `<text x="${x(letzte)}" y="${y(werte[letzte]) - 9}" text-anchor="end"` +
+  if (typ === "balken") {
+    const bw = Math.min(28, ((B - L - R) / werte.length) * 0.6);
+    werte.forEach((w, i) => {
+      s += `<rect x="${x(i) - bw / 2}" y="${y(w)}" width="${bw}"` +
+           ` height="${Math.max(1, y(0) - y(w))}" rx="2"` +
+           ` fill="var(--blau)" opacity=".85"/>`;
+    });
+  } else {
+    if (typ === "flaeche") {
+      s += `<polygon points="${L},${y(0)} ${punkte} ${x(letzte)},${y(0)}"` +
+           ` fill="var(--blau)" opacity=".1"/>`;
+    }
+    s += `<polyline points="${punkte}" fill="none" stroke="var(--blau)"` +
+         ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+    if (typ === "punkte") {
+      werte.forEach((w, i) => {
+        s += `<circle cx="${x(i)}" cy="${y(w)}" r="3" fill="var(--blau)"` +
+             ` stroke="var(--panel)" stroke-width="1.5"/>`;
+      });
+    }
+    s += `<circle cx="${x(letzte)}" cy="${y(werte[letzte])}" r="4"` +
+         ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
+  }
+  s += `<text x="${x(letzte)}" y="${y(werte[letzte]) - 9}" text-anchor="end"` +
        ` font-size="10" font-weight="600" fill="var(--text)">${werte[letzte]}</text>` +
        `<circle id="tipp-punkt" r="4" fill="var(--blau)"` +
        ` stroke="var(--panel)" stroke-width="2" visibility="hidden"/>`;
@@ -330,7 +380,27 @@ function verlaufsDiagramm(schluessel, readout) {
 function sheetVerlauf(schluessel) {
   const wrap = el("div");
   const readout = el("div", "readout", "Diagramm antippen für Monatswerte");
-  wrap.append(readout, verlaufsDiagramm(schluessel, readout));
+  let svg = verlaufsDiagramm(schluessel, readout);
+  // Diagrammtyp-Chips: Wahl gilt sofort hier UND fuer die Sparkline der
+  // Kachel dahinter (render() zeichnet das Dashboard neu, das Sheet lebt
+  // auf document.body und bleibt dabei offen).
+  const typZeile = el("div", "chips");
+  CHART_TYPEN.forEach(([wert, label]) => {
+    const chip = el("button",
+      "chip" + (chartTyp(schluessel) === wert ? " aktiv" : ""), label);
+    chip.onclick = () => {
+      einst.charts = Object.assign(einst.charts || {}, { [schluessel]: wert });
+      localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+      [...typZeile.children].forEach(
+        (c, i) => c.classList.toggle("aktiv", CHART_TYPEN[i][0] === wert));
+      const neu = verlaufsDiagramm(schluessel, readout);
+      svg.replaceWith(neu);
+      svg = neu;
+      render();
+    };
+    typZeile.append(chip);
+  });
+  wrap.append(readout, svg, typZeile);
   // Monatswerte zusaetzlich als Tabelle (dataviz-Skill: Tabellen-Ansicht
   // als verlaesslicher Kanal neben dem Diagramm)
   const tab = el("div", "tabelle");
