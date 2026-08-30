@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v24"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v25"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -83,6 +83,10 @@ function sheetEinstellungen() {
   const wrap = el("div");
   wrap.append(
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
+    el("div", "stand", datenstand
+      ? `Datenstand: ${datenstand.marken.length} Marken · Stand ` +
+        `${String(datenstand.geaendert).replace("T", " ")} · Quelle: ${datenstandQuelle}`
+      : "Datenstand: noch nicht geladen"),
     el("div", "stand", "Gilt nur für dieses Gerät · App-Version " + APP_VERSION));
   sheetOeffnen("Einstellungen", wrap);
 }
@@ -961,12 +965,77 @@ function render() {
   }
 }
 
+// ------------------------------------------------- Datenstand (Phase 4)
+// Rohdaten-Master (datenstand.py): Marken, Events, Pitchliste, Kerninfos.
+// Die Anzeige laeuft weiterhin ueber den Snapshot - hier wird der Stand
+// nur bezogen und aufs Geraet gesichert (IndexedDB). Das ist das
+// Fundament fuer Phase 4/5: App haelt die Daten selbst, auch offline.
+
+let datenstand = null;
+let datenstandQuelle = "";
+
+// IndexedDB-Minimum: eine DB "cockpit", ein Key-Value-Store "kv".
+// ponytail: kein Schema je Marke - der ganze Datenstand ist ein Eintrag
+// (~100 KB). Aufteilen erst, wenn Einzel-Updates in Phase 5 wehtun.
+function idb() {
+  return new Promise((ok, nein) => {
+    const req = indexedDB.open("cockpit", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("kv");
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => nein(req.error);
+  });
+}
+function idbLies(schluessel) {
+  return idb().then((db) => new Promise((ok, nein) => {
+    const req = db.transaction("kv").objectStore("kv").get(schluessel);
+    req.onsuccess = () => ok(req.result);
+    req.onerror = () => nein(req.error);
+  }));
+}
+function idbSchreib(schluessel, wert) {
+  return idb().then((db) => new Promise((ok, nein) => {
+    const tx = db.transaction("kv", "readwrite");
+    tx.objectStore("kv").put(wert, schluessel);
+    tx.oncomplete = () => ok();
+    tx.onerror = () => nein(tx.error);
+  }));
+}
+
+// Drei Quellen, die neueste gewinnt (Feld "geaendert"):
+// Heimnetz (daten/datenstand.json), OneDrive (Graph), Geraet (IndexedDB).
+// Frisches von aussen wird aufs Geraet gesichert - so uebersteht der
+// Stand Funkloecher und (mit persistentem Speicher) auch Neustarts.
+async function datenstandLaden() {
+  let lokal = null;
+  try {
+    const a = await fetch("daten/datenstand.json", { cache: "no-store" });
+    if (a.ok) lokal = await a.json();
+  } catch (_) {}
+  const cloud = typeof OD !== "undefined"
+    ? await OD.graphLeise("/me/drive/root:/Apps/Cockpit/datenstand.json:/content")
+    : null;
+  let geraet = null;
+  try { geraet = await idbLies("datenstand"); } catch (_) {}
+  const kandidaten = [[lokal, "Heimnetz"], [cloud, "OneDrive"],
+                      [geraet, "Gerät"]].filter(([d]) => d);
+  if (!kandidaten.length) return;
+  kandidaten.sort((a, b) =>
+    String(b[0].geaendert || "").localeCompare(String(a[0].geaendert || "")));
+  [datenstand, datenstandQuelle] = kandidaten[0];
+  if (datenstandQuelle !== "Gerät") {
+    try { await idbSchreib("datenstand", datenstand); } catch (_) {}
+  }
+}
+
 // Snapshot aus zwei Quellen, die neuere gewinnt (Feld "erzeugt"):
 // 1) lokaler Server (frisch im Heimnetz, sonst Service-Worker-Cache),
 // 2) OneDrive-Kopie per Graph (frisch ueberall, sobald angemeldet -
 //    export_snapshot.py legt sie in OneDrive/Apps/Cockpit ab).
 // Damit ist der Heimserver unterwegs nicht mehr noetig (Phase 3).
 async function laden() {
+  // Datenstand parallel mitziehen (Phase 4) - still, die Anzeige haengt
+  // nicht daran. Laeuft bei Start, od-ready und Update-Knopf mit.
+  datenstandLaden().catch(() => {});
   let lokal = null, lokalFehler = "nicht erreichbar";
   try {
     const antwort = await fetch("daten/snapshot.json", { cache: "no-store" });
@@ -1033,6 +1102,12 @@ window.addEventListener("od-ready", async () => {
   try { await laden(); } catch (_) { /* Fehlerbild steht schon */ }
   render();
 });
+
+// Persistenter Speicher (Phase 4): sonst darf der Browser IndexedDB bei
+// Platzmangel still wegraeumen. Bei installierter PWA meist auto-genehmigt.
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().catch(() => {});
+}
 
 if ("serviceWorker" in navigator) {
   // Soll/Ist-Abgleich (Tobias 30.08.): reg.update() vergleicht den
