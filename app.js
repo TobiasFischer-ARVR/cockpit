@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v30"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v31"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -814,35 +814,42 @@ function renderPitchliste() {
     return;
   }
 
-  // Neue Brand anlegen (Phase 5) - Ablauf 1-3 + 6 in einem Formular
-  const neuZeile = el("div", "chips");
-  const neu = el("button", "chip", "＋ Neue Brand");
-  neu.onclick = () => datenstand ? sheetNeueBrand()
-    : banner("Braucht den Datenstand — App einmal mit Internet öffnen.");
-  neuZeile.append(neu);
-  c.append(neuZeile);
-
-  // Suchfeld + Filter-Chips (Faellig / Rating / Kategorie), UND-verknuepft.
-  // Rating- und Kategorie-Werte kommen aus den Daten, nie hart verdrahtet.
+  // Suchfeld bleibt direkt erreichbar; die Filter-Chips (Faellig / Rating /
+  // Kategorie) wohnen wie im Dashboard in einem Sheet hinter einem Knopf
+  // (Tobias 30.08.: "sonst wird alles zu unuebersichtlich").
   const suche = el("input", "suche");
   suche.type = "search";
   suche.placeholder = "Suchen (Name, Status, Kooperation …)";
   suche.value = pf.suche;
   suche.oninput = () => { pf.suche = suche.value; zeichnen(); };
   c.append(suche);
-  c.append(chipFilter([["", "Alle"], [7, "Fällig ≤ 7 Tage"], [14, "≤ 14 Tage"]],
-    pf.faellig, (w) => { pf.faellig = w; }, zeichnen));
-  const ratings = [...new Set(alle.map((p) => p.rating).filter(Boolean))].sort();
-  if (ratings.length > 1) {
-    c.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
-      pf.rating, (w) => { pf.rating = w; }, zeichnen));
-  }
-  const kategorien =
-    [...new Set(alle.map((p) => p.kategorie).filter(Boolean))].sort();
-  if (kategorien.length > 1) {
-    c.append(chipFilter(kategorien.map((k) => [k, k]),
-      pf.kategorie, (w) => { pf.kategorie = w; }, zeichnen));
-  }
+
+  const knopfZeile = el("div", "chips");
+  const neu = el("button", "chip", "＋ Neue Brand");
+  neu.onclick = () => datenstand ? sheetNeueBrand()
+    : banner("Braucht den Datenstand — App einmal mit Internet öffnen.");
+  const filterBtn = el("button", "chip");
+  filterBtn.onclick = () => {
+    const wrap = el("div");
+    wrap.append(chipFilter(
+      [["", "Alle"], [7, "Fällig ≤ 7 Tage"], [14, "≤ 14 Tage"]],
+      pf.faellig, (w) => { pf.faellig = w; }, zeichnen));
+    const ratings =
+      [...new Set(alle.map((p) => p.rating).filter(Boolean))].sort();
+    if (ratings.length > 1) {
+      wrap.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
+        pf.rating, (w) => { pf.rating = w; }, zeichnen));
+    }
+    const kategorien =
+      [...new Set(alle.map((p) => p.kategorie).filter(Boolean))].sort();
+    if (kategorien.length > 1) {
+      wrap.append(chipFilter(kategorien.map((k) => [k, k]),
+        pf.kategorie, (w) => { pf.kategorie = w; }, zeichnen));
+    }
+    sheetOeffnen("Filter", wrap);
+  };
+  knopfZeile.append(neu, filterBtn);
+  c.append(knopfZeile);
 
   // Zaehler + Karten werden beim Tippen im Suchfeld neu gezeichnet, ohne
   // die ganze Ansicht zu rendern (sonst verliert das Suchfeld den Fokus)
@@ -851,6 +858,10 @@ function renderPitchliste() {
   zeichnen();
 
   function zeichnen() {
+    const n = (pf.faellig === "" ? 0 : 1) +
+      (pf.rating ? 1 : 0) + (pf.kategorie ? 1 : 0);
+    filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
+    filterBtn.classList.toggle("aktiv", n > 0);
     const s = pf.suche.trim().toLowerCase();
     const liste = alle.filter((p) =>
       (pf.faellig === "" || (p.tage !== null && p.tage <= pf.faellig)) &&
