@@ -259,6 +259,20 @@ main {
 }
 .suche::placeholder { color: var(--text-leise); }
 
+/* Tage-Abstand im Erledigt-Bereich (Phase 5) */
+.tage {
+  width: 60px;
+  min-height: 36px;
+  margin: 0 4px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--rand);
+  background: var(--panel);
+  color: var(--text);
+  text-align: center;
+  font: inherit;
+}
+
 /* Sparkline in der KPI-Kachel */
 .spark { display: block; width: 100%; height: 30px; margin-top: 6px; }
 .kachel.tippbar { cursor: pointer; }

@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v28"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v29"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -351,7 +351,13 @@ function sheetEntfernen() {
   if (s) s.remove();
 }
 
-window.addEventListener("popstate", sheetEntfernen);
+// Sheet zu + falls der Erledigt-Knopf etwas geändert hat, die Liste
+// dahinter frisch zeichnen (sonst zeigt sie noch den alten Status)
+let listeVeraltet = false;
+window.addEventListener("popstate", () => {
+  sheetEntfernen();
+  if (listeVeraltet) { listeVeraltet = false; render(); }
+});
 
 // Verlaufs-Diagramm (Inline-SVG, Specs aus der dataviz-Skill): Hairline-
 // Gitter in Randfarbe, saubere Y-Ticks, Wert-Label nur am Endpunkt.
@@ -560,39 +566,98 @@ function quelleZuName(name) {
 
 // Detail-Sheet einer Wiedervorlage: alle Excel-Felder, plus Kontakt &
 // Historie aus dem Brand-Book, wenn eines im Datenordner liegt.
+// Phase 5: Erledigt-Knopf (Ablauf 6+8) — trägt die fällige Aktion als
+// Event + fortgeschriebene Pitchlisten-Felder in den Datenstand ein;
+// Rückgängig stellt exakt den Stand davor wieder her.
 function sheetPitch(p) {
   const wrap = el("div");
-  wrap.append(el("div", "kontext", p.text));
-
-  wrap.append(el("div", "abschnitt", "Wiedervorlage"));
-  const felder = [
-    ["Status", p.status],
-    ["Rating", p.rating],
-    ["Kategorie", p.kategorie],
-    ["Letzter Kontakt", p.letzter_kontakt],
-    ["Nächster Schritt", p.naechste_aktion],
-    ["Termin", p.datum_naechste_aktion
-      ? p.datum_naechste_aktion.split("-").reverse().join(".") : ""],
-    ["Follow-ups", p.zaehler],
-    ["Kooperation", p.kooperation],
-  ].filter(([, wert]) => wert);
-  const tab = el("div", "tabelle");
-  for (const [label, wert] of felder) {
-    const zeile = el("div", "zeile");
-    zeile.append(el("span", "leise", label), el("span", null, wert));
-    tab.append(zeile);
-  }
-  wrap.append(tab);
-
-  const quelle = quelleZuName(p.name);
-  if (quelle) {
-    wrap.append(markenDetails(quelle));
-  } else {
-    wrap.append(el("div", "abschnitt", "Brand-Book"));
-    wrap.append(el("div", "leerzustand kompakt",
-      "Kein Brand-Book im aktuellen Datenordner — liegt im echten Verzeichnis (kommt mit Phase 3 / OneDrive)."));
-  }
+  bau();
   sheetOeffnen(p.name, wrap);
+
+  function bau() {
+    wrap.innerHTML = "";
+    const q = pitchMitDatenstand(p);
+    wrap.append(el("div", "kontext",
+      ampel(q.datum_naechste_aktion, heuteNull()).text));
+
+    wrap.append(el("div", "abschnitt", "Wiedervorlage"));
+    const felder = [
+      ["Status", q.status],
+      ["Rating", q.rating],
+      ["Kategorie", q.kategorie],
+      ["Letzter Kontakt", q.letzter_kontakt],
+      ["Nächster Schritt", q.naechste_aktion],
+      ["Termin", q.datum_naechste_aktion ? deDatum(q.datum_naechste_aktion) : ""],
+      ["Follow-ups", q.zaehler],
+      ["Kooperation", q.kooperation],
+    ].filter(([, wert]) => wert);
+    const tab = el("div", "tabelle");
+    for (const [label, wert] of felder) {
+      const zeile = el("div", "zeile");
+      zeile.append(el("span", "leise", label), el("span", null, wert));
+      tab.append(zeile);
+    }
+    wrap.append(tab, bereichErledigen(q));
+
+    const quelle = quelleZuName(p.name);
+    if (quelle) {
+      wrap.append(markenDetails(quelle));
+    } else {
+      wrap.append(el("div", "abschnitt", "Brand-Book"));
+      wrap.append(el("div", "leerzustand kompakt",
+        "Kein Brand-Book im aktuellen Datenordner — liegt im echten Verzeichnis (kommt mit Phase 3 / OneDrive)."));
+    }
+  }
+
+  function bereichErledigen(q) {
+    const frag = document.createDocumentFragment();
+    frag.append(el("div", "abschnitt", "Nächster Schritt"));
+    const m = datenstand ? markeZuName(p.name) : null;
+    if (!m || !m.pitchliste) {
+      frag.append(el("div", "leerzustand kompakt", datenstand
+        ? "Marke nicht im Datenstand — am PC datenstand.py laufen lassen."
+        : "Erledigt-Funktion braucht den Datenstand — App einmal mit Internet öffnen."));
+      return frag;
+    }
+    const s = naechsterSchritt(q.naechste_aktion, fuSeitPitch(m));
+    const standard = (m.intervalle || {})[s.key] || KADENZ_STD[s.key];
+    const tage = el("input", "tage");
+    tage.type = "number";
+    tage.min = "1";
+    tage.inputMode = "numeric";
+    tage.value = String(standard);
+    const dTage = () => parseInt(tage.value, 10) || standard;
+    const danach = el("div", "stand");
+    const dText = () => { danach.textContent =
+      `Danach: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`; };
+    tage.oninput = dText;
+    dText();
+    const abstand = el("div", "stand");
+    abstand.append("Abstand: ", tage, " Tage — änderbar, gilt dann künftig für diese Marke");
+    const zeile = el("div", "chips");
+    const ok = el("button", "chip aktiv", `✓ ${s.aktion} erledigt`);
+    ok.onclick = () => {
+      if (!confirm(`${s.aktion} als erledigt eintragen?\n` +
+          `Nächster Schritt: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`)) return;
+      erledigen(m, s, dTage(), standard);
+      bau();
+    };
+    zeile.append(ok);
+    frag.append(zeile, abstand, danach);
+    // Rückgängig nur für die letzte Aktion (Regel: keine Erstellen-
+    // Funktion ohne Löschen-Funktion) — genau diese eine, sonst nichts
+    const la = datenstand.letzteAktion;
+    if (la && schluessel(la.name) === schluessel(m.name)) {
+      frag.append(el("div", "stand",
+        `Zuletzt eingetragen: ${la.aktion} (${la.zeit.replace("T", " ").slice(0, 16)})`));
+      const rz = el("div", "chips");
+      const rk = el("button", "chip", "↶ Rückgängig");
+      rk.onclick = () => { rueckgaengig(m, la); bau(); };
+      rz.append(rk);
+      frag.append(rz);
+    }
+    return frag;
+  }
 }
 
 // -------------------------------------------------------------- Pitchliste
@@ -601,6 +666,48 @@ function heuteNull() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+// Zeitstempel in LOKALER Zeit (wie datenstand.py am PC) — toISOString()
+// wäre UTC und läge 1-2 h daneben, der "neueste gewinnt"-Vergleich kippt.
+function lokalIso() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 19);
+}
+
+// ISO-Datum (YYYY-MM-DD) heute + t Tage, in Lokalzeit gerechnet
+function isoInTagen(t) {
+  const d = new Date();
+  d.setDate(d.getDate() + t);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 10);
+}
+
+function deDatum(iso) { return String(iso).split("-").reverse().join("."); }
+
+// Namens-Schlüssel wie _schluessel in Python: nur Buchstaben/Ziffern
+function schluessel(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9äöüß]/g, "");
+}
+
+function markeZuName(name) {
+  const s = schluessel(name);
+  return (datenstand.marken || []).find((m) => schluessel(m.name) === s) || null;
+}
+
+// Wo die App selbst etwas geändert hat (Erledigt-Knopf), gewinnt der
+// Datenstand über die Snapshot-Zeile — bis der nächste PC-Export die
+// Änderung regulär enthält (dann ist snap.erzeugt neuer).
+function pitchMitDatenstand(p) {
+  const m = datenstand && markeZuName(p.name);
+  const pl = m && m.pitchliste;
+  return pl && pl.geaendert && pl.geaendert > String(snap.erzeugt || "")
+    ? { ...p, ...pl } : p;
+}
+
+function pitchlisteAktuell() {
+  return (snap.pitchliste || []).map(pitchMitDatenstand);
 }
 
 // Ampel der Excel-Pitchliste, live gerechnet (Regeln siehe Projektnotiz):
@@ -628,7 +735,7 @@ function pitchKarte(p) {
   kopf.append(el("span", "pill", p.kategorie || "—"),
               el("span", null, p.rating ? "Rating " + p.rating : ""));
   const datum = p.datum_naechste_aktion
-    ? p.datum_naechste_aktion.split("-").reverse().join(".") : null;
+    ? deDatum(p.datum_naechste_aktion) : null;
   karte.append(kopf, el("div", "titel", p.name),
     el("div", "kontext",
       `${p.status || "—"} · Follow-ups: ${p.zaehler || "0"}` +
@@ -668,7 +775,7 @@ function renderPitchliste() {
   const c = document.getElementById("inhalt");
   c.innerHTML = "";
   const heute = heuteNull();
-  const alle = (snap.pitchliste || [])
+  const alle = pitchlisteAktuell()
     .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute) }))
     .sort((a, b) => (a.tage === null ? 1e9 : a.tage) -
                     (b.tage === null ? 1e9 : b.tage));
@@ -875,7 +982,7 @@ function renderUgc() {
   // wie die Listen-Ansicht (Briefing 4.9: ein Zaehler, eine Bedingung)
   if (snap.pitchliste && snap.pitchliste.length) {
     const heute = heuteNull();
-    const faellig = snap.pitchliste.filter(
+    const faellig = pitchlisteAktuell().filter(
       (p) => ampel(p.datum_naechste_aktion, heute).klasse === "rot").length;
     const zugang = el("div", "karte block zugang");
     const kopf = el("div", "kopf");
@@ -1028,6 +1135,92 @@ function render() {
 
 let datenstand = null;
 let datenstandQuelle = "";
+const OD_DATENSTAND = "/me/drive/root:/Apps/Cockpit/datenstand.json:/content";
+
+// ------------------------------------------- Erledigt-Knopf (Phase 5)
+
+// Kadenz (Andrea, 29.08.): Pitch→FU1 +5, FU1→FU2 +5, FU2→FU3 +10 Tage,
+// nach FU3 +90 Tage Pause bis "Neuer Pitch". Standardwerte — pro Marke
+// überschreibbar (m.intervalle, gesetzt beim Ändern des Abstands).
+const KADENZ_STD = { fu1: 5, fu2: 5, fu3: 10, pause: 90 };
+
+// Was wird erledigt und was folgt darauf? aktion = fällige naechste_aktion
+// aus der Pitchliste, pos = Follow-ups seit dem letzten Pitch.
+function naechsterSchritt(aktion, pos) {
+  if (String(aktion || "").toLowerCase().includes("follow")) {
+    const nr = Math.min(pos + 1, 3);
+    return {
+      typ: "FollowUp", aktion: "Follow up " + nr, status: "Follow up",
+      zaehlt: true,
+      naechste: nr < 3 ? "Follow up" : "Neuer Pitch",
+      key: nr === 1 ? "fu2" : nr === 2 ? "fu3" : "pause",
+    };
+  }
+  return { typ: "Pitch",
+    aktion: aktion === "Neuer Pitch" ? "Neuer Pitch" : "Pitch",
+    status: "Pitch", zaehlt: false, naechste: "Follow up", key: "fu1" };
+}
+
+// Position im aktuellen Zyklus: FollowUp-Events zählen, Pitch setzt zurück.
+// Ohne Events (Marke nur in der Pitchliste): Zähler-Spalte als Näherung.
+function fuSeitPitch(m) {
+  const ev = m.events || [];
+  if (!ev.length) return parseInt((m.pitchliste || {}).zaehler, 10) || 0;
+  let pos = 0;
+  for (const e of ev) {
+    if (e.typ === "Pitch") pos = 0;
+    else if (e.typ === "FollowUp") pos++;
+  }
+  return pos;
+}
+
+// Erledigt eintragen: Event anhängen + Pitchlisten-Felder fortschreiben,
+// exakt wie Andrea es von Hand macht (Ablauf 8). Der Stand davor wandert
+// nach letzteAktion, damit Rückgängig ihn 1:1 wiederherstellen kann.
+function erledigen(m, s, tage, standard) {
+  const jetzt = lokalIso();
+  const heute = deDatum(isoInTagen(0));
+  datenstand.letzteAktion =
+    { name: m.name, aktion: s.aktion, zeit: jetzt, vorher: { ...m.pitchliste } };
+  (m.events = m.events || []).push(
+    { typ: s.typ, datum: heute, aktion: s.aktion, positiv: "" });
+  Object.assign(m.pitchliste, {
+    status: s.status,
+    letzter_kontakt: heute,
+    naechste_aktion: s.naechste,
+    datum_naechste_aktion: isoInTagen(tage),
+    geaendert: jetzt,
+  });
+  if (s.zaehlt) {
+    m.pitchliste.zaehler = String(
+      (parseInt(datenstand.letzteAktion.vorher.zaehler, 10) || 0) + 1);
+  }
+  if (tage !== standard) (m.intervalle = m.intervalle || {})[s.key] = tage;
+  listeVeraltet = true;
+  datenstandPersistieren();
+}
+
+function rueckgaengig(m, la) {
+  const ev = m.events || [];
+  if (ev.length && ev[ev.length - 1].aktion === la.aktion) ev.pop();
+  m.pitchliste = la.vorher;
+  delete datenstand.letzteAktion;
+  listeVeraltet = true;
+  datenstandPersistieren();
+}
+
+// Nach jeder App-Änderung: aufs Gerät (IndexedDB) + still nach OneDrive.
+// Schlägt OneDrive fehl (offline), gleicht datenstandLaden() beim nächsten
+// Laden mit Netz automatisch ab (Gerät neuer als Cloud → Rücksicherung).
+async function datenstandPersistieren() {
+  datenstand.geaendert = lokalIso();
+  datenstand.geaendert_von = "Cockpit-App";
+  try { await idbSchreib("datenstand", datenstand); } catch (_) {}
+  const ok = typeof OD !== "undefined" &&
+    await OD.graphPutLeise(OD_DATENSTAND, datenstand);
+  banner(ok ? "Eingetragen — gesichert auf Gerät + OneDrive."
+            : "Eingetragen — auf dem Gerät gespeichert, OneDrive folgt beim nächsten Abgleich.");
+}
 
 // IndexedDB-Minimum: eine DB "cockpit", ein Key-Value-Store "kv".
 // ponytail: kein Schema je Marke - der ganze Datenstand ist ein Eintrag
@@ -1067,7 +1260,7 @@ async function datenstandLaden() {
     if (a.ok) lokal = await a.json();
   } catch (_) {}
   const cloud = typeof OD !== "undefined"
-    ? await OD.graphLeise("/me/drive/root:/Apps/Cockpit/datenstand.json:/content")
+    ? await OD.graphLeise(OD_DATENSTAND)
     : null;
   let geraet = null;
   try { geraet = await idbLies("datenstand"); } catch (_) {}
@@ -1084,8 +1277,7 @@ async function datenstandLaden() {
     // Auto-Abgleich: Geraet ist neuer als OneDrive -> still zuruecksichern.
     // ponytail: keine WLAN-Erkennung (koennen Browser nicht zuverlaessig),
     // die Datei ist winzig - Abgleich laeuft einfach bei jedem Laden.
-    OD.graphPutLeise("/me/drive/root:/Apps/Cockpit/datenstand.json:/content",
-                     datenstand);
+    OD.graphPutLeise(OD_DATENSTAND, datenstand);
   }
 }
 
@@ -1100,8 +1292,8 @@ function sicherungsText() {
 async function datenstandSichern(statusEl) {
   if (!datenstand) { banner("Kein Datenstand geladen."); return; }
   statusEl.textContent = "Sichere …";
-  const ok = typeof OD !== "undefined" && await OD.graphPutLeise(
-    "/me/drive/root:/Apps/Cockpit/datenstand.json:/content", datenstand);
+  const ok = typeof OD !== "undefined" &&
+    await OD.graphPutLeise(OD_DATENSTAND, datenstand);
   if (ok) {
     einst.gesichert = new Date().toISOString().slice(0, 16).replace("T", " ");
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
@@ -1132,9 +1324,9 @@ function datenstandBackup() {
 //    export_snapshot.py legt sie in OneDrive/Apps/Cockpit ab).
 // Damit ist der Heimserver unterwegs nicht mehr noetig (Phase 3).
 async function laden() {
-  // Datenstand parallel mitziehen (Phase 4) - still, die Anzeige haengt
-  // nicht daran. Laeuft bei Start, od-ready und Update-Knopf mit.
-  datenstandLaden().catch(() => {});
+  // Datenstand parallel mitziehen (Phase 4). Seit Phase 5 haengt die
+  // Pitchlisten-Anzeige mit daran (Overlay) - deshalb unten mit abwarten.
+  const datenstandFertig = datenstandLaden().catch(() => {});
   let lokal = null, lokalFehler = "nicht erreichbar";
   try {
     const antwort = await fetch("daten/snapshot.json", { cache: "no-store" });
@@ -1154,6 +1346,7 @@ async function laden() {
   const beste = [lokal, cloud, geraet].filter(Boolean).sort(
     (a, b) => String(b.erzeugt || "").localeCompare(String(a.erzeugt || "")))[0];
   if (!beste) throw new Error(lokalFehler);
+  await datenstandFertig; // Overlay (Phase 5) braucht den Datenstand vor dem Rendern
   if (beste !== geraet) {
     try { await idbSchreib("snapshot", beste); } catch (_) {}
   }
