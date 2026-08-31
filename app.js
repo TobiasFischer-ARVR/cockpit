@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v33"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v34"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -537,12 +537,19 @@ function kontaktWert(label, wert) {
 
 // Kerninfos + Historie einer Marke - gemeinsamer Baustein fuer das
 // Firmen-Sheet (UGC-Gruppe) und das Wiedervorlage-Sheet (Pitchliste).
-function markenDetails(quelle) {
+// ohneRating: im Brand-Rating-Sheet stehen die 4 Bewertungsfelder schon
+// im Excel-Block darueber - das Book kopiert sie nur (Tobias 31.08.:
+// Rating entsteht im Brand Rating, nicht im Book -> nur einmal zeigen).
+const RATING_FELDER = ["rating (a-d)", "brand fit", "begeisterung",
+                       "erfolgschance"];
+
+function markenDetails(quelle, ohneRating) {
   const frag = document.createDocumentFragment();
 
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
   const infos = Object.entries((snap.kerninfos && snap.kerninfos[quelle]) || {})
-    .filter(([label]) => label.toLowerCase() !== "name");
+    .filter(([label]) => label.toLowerCase() !== "name" &&
+      !(ohneRating && RATING_FELDER.includes(label.trim().toLowerCase())));
   if (infos.length) {
     frag.append(el("div", "abschnitt", "Kontakt & Infos"));
     const infoTab = el("div", "tabelle");
@@ -961,13 +968,7 @@ function sheetBrandrating(m) {
   }
   wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
   const quelle = quelleZuName(m.name);
-  if (quelle) {
-    wrap.append(el("div", "stand",
-      "Darunter: Werte aus dem Brand-Book — Rating/Fit/Begeisterung/" +
-      "Erfolgschance stehen dort nochmal, weil Andrea beides pflegt. " +
-      "Abweichungen = Übertragungsfehler."));
-    wrap.append(markenDetails(quelle));
-  }
+  if (quelle) wrap.append(markenDetails(quelle, true));
   sheetOeffnen(m.name, wrap);
 }
 
