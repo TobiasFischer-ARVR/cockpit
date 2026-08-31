@@ -105,6 +105,26 @@ const OD = {
     }
   },
 
+  // Roh-Zugriff ohne Login-Redirect (Phase 5, Book-Dateien): liefert die
+  // fetch-Response oder null (nicht angemeldet/offline). Der Aufrufer
+  // prueft den Status selbst - 409 heisst z.B. "Datei existiert schon".
+  async graphRoh(pfad, optionen = {}) {
+    if (!odBereit || !odApp.getActiveAccount()) return null;
+    try {
+      const r = await odApp.acquireTokenSilent({
+        scopes: OD_SCOPES,
+        account: odApp.getActiveAccount(),
+      });
+      return await fetch("https://graph.microsoft.com/v1.0" + pfad, {
+        ...optionen,
+        headers: { Authorization: "Bearer " + r.accessToken,
+                   ...(optionen.headers || {}) },
+      });
+    } catch (_) {
+      return null;
+    }
+  },
+
   // Graph-API-Aufruf, z.B. OD.graph("/me/drive/root/children")
   async graph(pfad) {
     const token = await this.token();

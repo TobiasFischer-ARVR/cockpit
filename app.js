@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v37"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v38"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -676,7 +676,7 @@ function sheetPitch(p) {
       zeile.append(el("span", "leise", label), el("span", null, wert));
       tab.append(zeile);
     }
-    wrap.append(tab, bereichErledigen(q));
+    wrap.append(tab, bereichStartdatum(q), bereichErledigen(q));
 
     const quelle = quelleZuName(p.name);
     if (quelle) {
@@ -704,6 +704,36 @@ function sheetPitch(p) {
       wrap.append(lz, el("div", "stand",
         "Nur möglich, weil diese Brand in der App angelegt wurde."));
     }
+  }
+
+  // Startdatum (Andreas Workflow Schritt 7): frisch aus dem Brand Rating
+  // kommt die Brand OHNE Termin in die Pitchliste - erst das manuell
+  // gesetzte Startdatum startet die 5/5/10/90-Kadenz. Sichtbar bis zum
+  // ersten Kontakt, damit sich ein vertipptes Datum korrigieren laesst.
+  function bereichStartdatum(q) {
+    const frag = document.createDocumentFragment();
+    const m = datenstand ? markeZuName(p.name) : null;
+    if (!m || !m.pitchliste || q.letzter_kontakt) return frag;
+    frag.append(el("div", "abschnitt", "Startdatum"));
+    const d = el("input", "datum");
+    d.type = "date"; // nativer Android-Datumsdialog statt eigener Picker
+    d.value = q.datum_naechste_aktion || isoInTagen(0);
+    const z = el("div", "chips");
+    const ok = el("button", "chip aktiv",
+      q.datum_naechste_aktion ? "Startdatum ändern" : "Startdatum setzen");
+    ok.onclick = () => {
+      if (!d.value) return;
+      Object.assign(m.pitchliste,
+        { datum_naechste_aktion: d.value, geaendert: lokalIso() });
+      listeVeraltet = true;
+      datenstandPersistieren();
+      bau();
+    };
+    z.append(d, ok);
+    frag.append(z, el("div", "stand",
+      "Ab diesem Datum ist der Pitch fällig — erst damit beginnt die " +
+      "5/5/10/90-Kadenz."));
+    return frag;
   }
 
   function bereichErledigen(q) {
@@ -805,12 +835,14 @@ function pitchMitDatenstand(p) {
 
 function pitchlisteAktuell() {
   const liste = (snap.pitchliste || []).map(pitchMitDatenstand);
-  // In der App angelegte Brands ergänzen, bis der PC-Export sie kennt
+  // In der App angelegte Brands bzw. Pitchlisten-Einträge ergänzen (Neue
+  // Brand ODER "Rating abgeschlossen"), bis der PC-Export sie kennt
   // (dann greift die Dublettenprüfung über den Namens-Schlüssel)
   if (datenstand) {
     const da = new Set(liste.map((p) => schluessel(p.name)));
     for (const m of datenstand.marken || []) {
-      if (m.erstellt && m.pitchliste && !da.has(schluessel(m.name))) {
+      if (m.pitchliste && (m.erstellt || m.pitchliste.erstellt) &&
+          !da.has(schluessel(m.name))) {
         liste.push({ name: m.name, ...m.pitchliste });
       }
     }
@@ -992,29 +1024,97 @@ function brKarte(m) {
 }
 
 function sheetBrandrating(m) {
-  const br = m.brandrating;
   const wrap = el("div");
-  // Beschriftungen exakt wie in den Book-Kerninfos ("Rating (A-D)", ...) -
-  // beides zeigt dieselben Werte aus zwei handgepflegten Quellen (Tobias
-  // 31.08.: gleich benennen). Weichen sie ab, ist beim Uebertragen
-  // zwischen Excel und Book etwas schiefgegangen.
-  const felder = [
-    ["Status", br.status], ["Kategorie", br.kategorie],
-    ["Brand Fit", br.brandfit], ["Begeisterung", br.begeisterung],
-    ["Erfolgschance", br.erfolgschance], ["Rating (A-D)", br.rating],
-    ["Brand-Book", br.brandbook ? "✓ erledigt" : "offen"],
-    ["Notizen", br.notizen],
-  ].filter(([, w]) => w);
-  const tab = el("div", "tabelle");
-  for (const [label, wert] of felder) {
-    const zeile = el("div", "zeile");
-    zeile.append(el("span", "leise", label), el("span", null, wert));
-    tab.append(zeile);
-  }
-  wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
-  const quelle = quelleZuName(m.name);
-  if (quelle) wrap.append(markenDetails(quelle, true));
+  bau();
   sheetOeffnen(m.name, wrap);
+
+  function bau() {
+    wrap.innerHTML = "";
+    const br = m.brandrating;
+    // Beschriftungen exakt wie in den Book-Kerninfos ("Rating (A-D)", ...) -
+    // beides zeigt dieselben Werte aus zwei handgepflegten Quellen (Tobias
+    // 31.08.: gleich benennen). Weichen sie ab, ist beim Uebertragen
+    // zwischen Excel und Book etwas schiefgegangen.
+    const felder = [
+      ["Status", br.status], ["Kategorie", br.kategorie],
+      ["Brand Fit", br.brandfit], ["Begeisterung", br.begeisterung],
+      ["Erfolgschance", br.erfolgschance], ["Rating (A-D)", br.rating],
+      ["Brand-Book", br.brandbook ? "✓ erledigt" : "offen"],
+      ["Notizen", br.notizen],
+    ].filter(([, w]) => w);
+    const tab = el("div", "tabelle");
+    for (const [label, wert] of felder) {
+      const zeile = el("div", "zeile");
+      zeile.append(el("span", "leise", label), el("span", null, wert));
+      tab.append(zeile);
+    }
+    wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
+    wrap.append(bereichAbschluss(br));
+    const quelle = quelleZuName(m.name);
+    if (quelle) wrap.append(markenDetails(quelle, true));
+  }
+
+  // "Rating abgeschlossen" (Phase 5, Andreas Workflow Schritt 5): ein
+  // Klick -> Brand-Book aus dem Template in OneDrive + Erledigt-Haken +
+  // Pitchlisten-Eintrag OHNE Termin (das Startdatum vergibt Andrea dort
+  // manuell, Workflow Schritt 7 - erst damit startet die Kadenz).
+  function bereichAbschluss(br) {
+    const frag = document.createDocumentFragment();
+    if (!datenstand) return frag;
+    // Rückgängig für den letzten Abschluss (Regel: Erstellen nur
+    // zusammen mit Löschen) - eine Ebene, wie beim Erledigt-Knopf
+    const lb = datenstand.letztesBook;
+    if (lb && schluessel(lb.name) === schluessel(m.name)) {
+      frag.append(el("div", "stand",
+        "Rating abgeschlossen: " + lb.zeit.replace("T", " ").slice(0, 16) +
+        (lb.bookNeu ? " · Book angelegt" : "")));
+      const rz = el("div", "chips");
+      const rk = el("button", "chip", "↶ Rückgängig");
+      rk.onclick = () => { bookRueckgaengig(m, lb); bau(); };
+      rz.append(rk);
+      frag.append(rz);
+      return frag;
+    }
+    if (br.brandbook) return frag; // schon erledigt - nichts anzubieten
+    const rating = String(br.rating || "").trim();
+    if (!["A", "B", "C"].includes(rating)) {
+      frag.append(el("div", "stand", rating === "D"
+        ? "D-Brand = Archiv — kein Brand-Book-Template."
+        : "Erst Rating (A–C) vergeben — es bestimmt Template und Ordner."));
+      return frag;
+    }
+    if (typeof OD === "undefined" || !OD.konto()) {
+      frag.append(el("div", "stand",
+        "Fürs Brand-Book erst bei OneDrive anmelden (Hauptmenü)."));
+      return frag;
+    }
+    const z = el("div", "chips");
+    const b = el("button", "chip aktiv", "✓ Rating abgeschlossen");
+    b.onclick = async () => {
+      if (!confirm(`„${m.name}“ in die Pitchliste schieben?\n` +
+          `Brand-Book wird als ${rating}-Brand in OneDrive angelegt` +
+          (m.pitchliste ? "." : ",\nPitchlisten-Eintrag kommt ohne Termin " +
+                                "(Startdatum setzt du dort)."))) return;
+      b.disabled = true;
+      const erg = await bookErzeugen(m);
+      if (erg === "fehler") {
+        b.disabled = false;
+        banner("Book-Anlage fehlgeschlagen — Internet/OneDrive prüfen.");
+        return;
+      }
+      ratingAbschliessenDaten(m, erg === "neu", lokalIso());
+      datenstandPersistieren();
+      banner(erg === "existiert"
+        ? "Book gab es schon in OneDrive — nur Haken + Pitchliste gesetzt."
+        : `Brand-Book angelegt: ${rating} Brands/Brand-Book ${m.name}.docx`);
+      bau();
+    };
+    z.append(b);
+    frag.append(z, el("div", "stand",
+      "Erzeugt das Brand-Book aus dem Template, setzt den Erledigt-Haken " +
+      "und stellt die Brand in die Pitchliste (ohne Termin)."));
+    return frag;
+  }
 }
 
 function renderBrandrating() {
@@ -1570,6 +1670,73 @@ function brandLoeschen(m) {
       schluessel(datenstand.letzteAktion.name) === schluessel(m.name)) {
     delete datenstand.letzteAktion;
   }
+  if (datenstand.letztesBook &&
+      schluessel(datenstand.letztesBook.name) === schluessel(m.name)) {
+    delete datenstand.letztesBook;
+  }
+  listeVeraltet = true;
+  datenstandPersistieren();
+}
+
+// -------------------------------------- Rating abgeschlossen (Phase 5)
+
+// Book-Ablage in OneDrive (Testdaten-Kopie, Ordner je Rating: "A Brands"…).
+// ponytail: fester Pfad - Andreas echter Ordner kommt mit dem Backlog-
+// Punkt "Dokumenten-Pfad festlegen" (Phase 6).
+const BOOK_BASIS = "/me/drive/root:/Apps/Cockpit/Testdaten/Brand-Books";
+const DOCX_TYP = "application/vnd.openxmlformats-officedocument" +
+                 ".wordprocessingml.document";
+
+function bookPfad(m) {
+  return `${BOOK_BASIS}/${String(m.brandrating.rating).trim()} Brands` +
+         `/Brand-Book ${m.name}.docx`;
+}
+
+// Template nach Rating kopieren (A bzw. B-C; D = Archiv, kein Template).
+// GET + PUT statt Graph-copy: copy antwortet asynchron (202 + Monitor-URL),
+// die Templates sind winzig. conflictBehavior=fail: ein vorhandenes Book
+// (womoeglich handgeschrieben!) wird NIE ueberschrieben.
+async function bookErzeugen(m) {
+  const tplName = String(m.brandrating.rating).trim() === "A"
+    ? "Template Brand-Book A Brand.docx"
+    : "Template Brand-Book B-C Brand.docx";
+  const tpl = await OD.graphRoh(`${BOOK_BASIS}/${tplName}:/content`);
+  if (!tpl || !tpl.ok) return "fehler";
+  const neu = await OD.graphRoh(
+    bookPfad(m) + ":/content?@microsoft.graph.conflictBehavior=fail",
+    { method: "PUT", body: await tpl.arrayBuffer(),
+      headers: { "Content-Type": DOCX_TYP } });
+  return !neu ? "fehler" : neu.status === 409 ? "existiert"
+       : neu.ok ? "neu" : "fehler";
+}
+
+// Datenteil von "Rating abgeschlossen" (pur, testbar in test_kadenz.js):
+// Erledigt-Haken wie im Excel-Blatt (Haken-Symbol) + Pitchlisten-Eintrag
+// OHNE Termin (Andreas Workflow Schritt 7: Startdatum vergibt Andrea
+// manuell, erst dann laeuft die 5/5/10/90-Kadenz). Der Stand davor
+// wandert nach letztesBook, damit Rückgängig ihn wiederherstellen kann.
+function ratingAbschliessenDaten(m, bookNeu, jetzt) {
+  datenstand.letztesBook = { name: m.name, zeit: jetzt, bookNeu,
+    pitchNeu: !m.pitchliste, vorher: m.brandrating.brandbook || "" };
+  m.brandrating.brandbook = "✔️";
+  if (!m.pitchliste) {
+    m.pitchliste = { rating: m.brandrating.rating,
+      kategorie: m.brandrating.kategorie || "", status: "",
+      letzter_kontakt: "", naechste_aktion: "Pitch",
+      datum_naechste_aktion: "", zaehler: "0", kooperation: "",
+      geaendert: jetzt, erstellt: jetzt };
+  }
+  listeVeraltet = true;
+}
+
+// Rückgängig (eine Ebene): Haken zurueck, angelegten Pitchlisten-Eintrag
+// entfernen, frisch kopiertes Book loeschen. Graph-DELETE landet im
+// OneDrive-Papierkorb - Books mit Inhalt werden nie hart geloescht.
+function bookRueckgaengig(m, lb) {
+  if (lb.bookNeu) OD.graphRoh(bookPfad(m), { method: "DELETE" });
+  m.brandrating.brandbook = lb.vorher;
+  if (lb.pitchNeu) m.pitchliste = null;
+  delete datenstand.letztesBook;
   listeVeraltet = true;
   datenstandPersistieren();
 }
