@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v36"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v37"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -968,7 +968,12 @@ function renderPitchliste() {
 // Marken mit Brandrating-Zeile aus dem Datenstand, alphabetisch. Hier
 // entstehen neue Brands ("+ Neue Brand", seit v32 hierher verlegt) und
 // hier kommt in Phase 5 der "Rating abgeschlossen"-Knopf dazu.
-const bf = { rating: "", book: "", suche: "" };
+const bf = { rating: "", book: "", fit: "", geist: "", chance: "", suche: "" };
+
+// Skalenwert aus der Symbol-Kette des Brandrating-Blatts ("⭐⭐⭐" -> 3)
+function symAnzahl(s) {
+  return (String(s || "").match(/[⭐❤★]/gu) || []).length;
+}
 
 function brKarte(m) {
   const br = m.brandrating;
@@ -1046,6 +1051,12 @@ function renderBrandrating() {
     wrap.append(chipFilter(
       [["ohne", "Ohne Brand-Book"], ["mit", "Brand-Book ✓"]],
       bf.book, (w) => { bf.book = w; }, zeichnen));
+    wrap.append(chipFilter(skalenChips("Fit"), bf.fit,
+      (w) => { bf.fit = w; }, zeichnen));
+    wrap.append(chipFilter(skalenChips("Begeisterung"), bf.geist,
+      (w) => { bf.geist = w; }, zeichnen));
+    wrap.append(chipFilter(skalenChips("Erfolgschance"), bf.chance,
+      (w) => { bf.chance = w; }, zeichnen));
     sheetOeffnen("Filter", wrap);
   };
   knopfZeile.append(neu, filterBtn);
@@ -1056,7 +1067,8 @@ function renderBrandrating() {
   zeichnen();
 
   function zeichnen() {
-    const n = (bf.rating ? 1 : 0) + (bf.book ? 1 : 0);
+    const n = [bf.rating, bf.book, bf.fit, bf.geist, bf.chance]
+      .filter(Boolean).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
     const s = bf.suche.trim().toLowerCase();
@@ -1064,6 +1076,9 @@ function renderBrandrating() {
       const br = m.brandrating;
       return (!bf.rating || br.rating === bf.rating) &&
         (!bf.book || (bf.book === "mit") === Boolean(br.brandbook)) &&
+        (!bf.fit || symAnzahl(br.brandfit) >= bf.fit) &&
+        (!bf.geist || symAnzahl(br.begeisterung) >= bf.geist) &&
+        (!bf.chance || symAnzahl(br.erfolgschance) >= bf.chance) &&
         (!s || [m.name, br.status, br.kategorie, br.notizen]
           .join(" ").toLowerCase().includes(s));
     });
