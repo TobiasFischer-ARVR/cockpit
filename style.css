@@ -136,6 +136,11 @@ main {
   border-left-color: var(--grau);
   opacity: .58;
 }
+/* Neu-Sektion der Pitchliste (v40): frisch uebertragen, Startdatum fehlt */
+.karte.neu {
+  border: 1px dashed var(--blau);
+  border-left-width: 4px;
+}
 .karte .kopf {
   display: flex;
   justify-content: space-between;

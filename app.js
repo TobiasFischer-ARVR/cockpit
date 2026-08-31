@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v39"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v40"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -988,8 +988,24 @@ function renderPitchliste() {
       rumpf.append(el("div", "leerzustand", "Nichts passt zu den Filtern."));
       return;
     }
+    // Eigene Sektion fuer frisch uebertragene Pitches (Tobias 31.08. spät):
+    // ohne Termin UND ohne bisherigen Kontakt = wartet auf sein Startdatum.
+    // Ohne die Sektion gingen Neue in der Gesamtliste unter. Excel-Marken
+    // ohne Termin, aber MIT Kontakt-Historie bleiben in der Hauptliste.
+    const neu = liste.filter((p) => !p.datum_naechste_aktion && !p.letzter_kontakt);
+    if (neu.length) {
+      rumpf.append(el("div", "abschnitt",
+        `🆕 Neu — Startdatum setzen (${neu.length})`));
+      const nk = el("div", "karten");
+      for (const p of neu) {
+        const k = pitchKarte(p);
+        k.classList.add("neu");
+        nk.append(k);
+      }
+      rumpf.append(nk, el("div", "abschnitt", "Wiedervorlage"));
+    }
     const karten = el("div", "karten");
-    for (const p of liste) karten.append(pitchKarte(p));
+    for (const p of liste) if (!neu.includes(p)) karten.append(pitchKarte(p));
     rumpf.append(karten);
   }
 }
@@ -1639,8 +1655,9 @@ function sheetNeueBrand() {
   };
   okZ.append(ok);
   wrap.append(okZ, el("div", "stand",
-    "Landet im Brand Rating und in der Pitchliste (nächste Aktion: Pitch, " +
-    "heute). Löschen: in der Pitchlisten-Detailansicht der Brand."));
+    "Landet im Brand Rating und in der Pitchliste unter „Neu" — ohne " +
+    "Termin, das Startdatum setzt du dort. Löschen: in der " +
+    "Pitchlisten-Detailansicht der Brand."));
   sheetOeffnen("Neue Brand", wrap);
 }
 
@@ -1648,9 +1665,12 @@ function brandAnlegen(name, kategorie, f) {
   const jetzt = lokalIso();
   datenstand.marken.push({
     name, quelle: "", gruppe: "", kerninfos: {}, events: [],
+    // OHNE Termin (Tobias 31.08. spät, v40): frueher "heute faellig" -
+    // so ging der neue Pitch in der Gesamtliste unter. Jetzt landet er
+    // in der "Neu"-Sektion, bis Andrea das Startdatum setzt (Schritt 7).
     pitchliste: {
       rating: f.rating, kategorie, status: "", letzter_kontakt: "",
-      naechste_aktion: "Pitch", datum_naechste_aktion: isoInTagen(0),
+      naechste_aktion: "Pitch", datum_naechste_aktion: "",
       zaehler: "0", kooperation: "", geaendert: jetzt,
     },
     // Feldnamen + Symbol-Skalen exakt wie im Brandrating-Blatt
