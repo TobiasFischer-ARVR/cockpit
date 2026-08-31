@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v31"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v32"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -93,9 +93,41 @@ function sheetEinstellungen() {
   sichern.onclick = () => datenstandSichern(sStatus);
   const backup = el("button", "chip", "Backup herunterladen");
   backup.onclick = datenstandBackup;
-  sZeile.append(sichern, backup);
-  wrap.append(sStatus, sZeile);
+  const laden = el("button", "chip", "Backup laden");
+  laden.onclick = backupLaden;
+  sZeile.append(sichern, backup, laden);
+  wrap.append(sStatus, sZeile, el("div", "stand",
+    "Backup laden: eine cockpit-datenstand-….json auswählen " +
+    "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand."));
   sheetOeffnen("Einstellungen", wrap);
+}
+
+// Backup zurückspielen (Tobias 31.08.): Dateiauswahl statt Handarbeit am
+// PC. Der Android-Dateidialog erreicht Download-Ordner UND OneDrive-App.
+// Nach dem Laden gilt das Backup als neueste Änderung (geaendert = jetzt),
+// damit es den Stand auf Gerät + OneDrive wirklich ersetzt.
+function backupLaden() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = ".json,application/json";
+  inp.onchange = async () => {
+    const datei = inp.files[0];
+    if (!datei) return;
+    let d = null;
+    try { d = JSON.parse(await datei.text()); } catch (_) {}
+    if (!d || !Array.isArray(d.marken)) {
+      banner("Das ist kein Datenstand-Backup (marken fehlt)."); return;
+    }
+    if (!confirm(`Backup „${datei.name}“ laden?\n` +
+        `Stand: ${String(d.geaendert || "?").replace("T", " ")} · ` +
+        `${d.marken.length} Marken.\n` +
+        "Ersetzt den aktuellen Datenstand auf Gerät + OneDrive.")) return;
+    datenstand = d;
+    await datenstandPersistieren();
+    listeVeraltet = true;
+    history.back(); // Sheet zu, popstate zeichnet die Ansicht frisch
+  };
+  inp.click();
 }
 
 // Info-Button (Tobias 30.08.): kontextabhaengig - im Hauptmenue Infos zur
@@ -824,10 +856,9 @@ function renderPitchliste() {
   suche.oninput = () => { pf.suche = suche.value; zeichnen(); };
   c.append(suche);
 
+  // "Neue Brand" wohnt seit v32 im Brand Rating (Andreas Workflow:
+  // Brands entstehen dort, nicht in der Pitchliste)
   const knopfZeile = el("div", "chips");
-  const neu = el("button", "chip", "＋ Neue Brand");
-  neu.onclick = () => datenstand ? sheetNeueBrand()
-    : banner("Braucht den Datenstand — App einmal mit Internet öffnen.");
   const filterBtn = el("button", "chip");
   filterBtn.onclick = () => {
     const wrap = el("div");
@@ -848,7 +879,7 @@ function renderPitchliste() {
     }
     sheetOeffnen("Filter", wrap);
   };
-  knopfZeile.append(neu, filterBtn);
+  knopfZeile.append(filterBtn);
   c.append(knopfZeile);
 
   // Zaehler + Karten werden beim Tippen im Suchfeld neu gezeichnet, ohne
@@ -880,6 +911,121 @@ function renderPitchliste() {
     }
     const karten = el("div", "karten");
     for (const p of liste) karten.append(pitchKarte(p));
+    rumpf.append(karten);
+  }
+}
+
+// ------------------------------------------------------------ Brand Rating
+
+// Brand-Rating-Ansicht (Tobias 31.08., Andreas Workflow Phase A): alle
+// Marken mit Brandrating-Zeile aus dem Datenstand, alphabetisch. Hier
+// entstehen neue Brands ("+ Neue Brand", seit v32 hierher verlegt) und
+// hier kommt in Phase 5 der "Rating abgeschlossen"-Knopf dazu.
+const bf = { rating: "", book: "", suche: "" };
+
+function brKarte(m) {
+  const br = m.brandrating;
+  const karte = el("div", "karte" + (br.brandbook ? "" : " leer"));
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", br.kategorie || "—"),
+              el("span", null, br.rating ? "Rating " + br.rating : ""));
+  const skalen = [br.brandfit, br.begeisterung, br.erfolgschance]
+    .filter(Boolean).join(" · ");
+  karte.append(kopf, el("div", "titel", m.name),
+    el("div", "kontext", (br.status || "—") + (skalen ? " · " + skalen : "")),
+    el("div", "fuss", br.brandbook ? "Brand-Book ✓" : "noch kein Brand-Book"));
+  karte.classList.add("tippbar");
+  karte.onclick = () => sheetBrandrating(m);
+  return karte;
+}
+
+function sheetBrandrating(m) {
+  const br = m.brandrating;
+  const wrap = el("div");
+  const felder = [
+    ["Status", br.status], ["Kategorie", br.kategorie],
+    ["Brand Fit", br.brandfit], ["Begeisterung", br.begeisterung],
+    ["Erfolgschance", br.erfolgschance], ["Rating", br.rating],
+    ["Brand-Book", br.brandbook ? "✓ erledigt" : "offen"],
+    ["Notizen", br.notizen],
+  ].filter(([, w]) => w);
+  const tab = el("div", "tabelle");
+  for (const [label, wert] of felder) {
+    const zeile = el("div", "zeile");
+    zeile.append(el("span", "leise", label), el("span", null, wert));
+    tab.append(zeile);
+  }
+  wrap.append(el("div", "abschnitt", "Brand Rating"), tab);
+  const quelle = quelleZuName(m.name);
+  if (quelle) wrap.append(markenDetails(quelle));
+  sheetOeffnen(m.name, wrap);
+}
+
+function renderBrandrating() {
+  kopfzeile("Brand Rating", true);
+  const c = document.getElementById("inhalt");
+  c.innerHTML = "";
+  if (!datenstand) {
+    c.append(el("div", "leerzustand",
+      "Braucht den Datenstand — App einmal mit Internet öffnen."));
+    return;
+  }
+  const alle = (datenstand.marken || []).filter((m) => m.brandrating)
+    .sort((a, b) => a.name.localeCompare(b.name, "de"));
+
+  const suche = el("input", "suche");
+  suche.type = "search";
+  suche.placeholder = "Suchen (Name, Status, Kategorie …)";
+  suche.value = bf.suche;
+  suche.oninput = () => { bf.suche = suche.value; zeichnen(); };
+  c.append(suche);
+
+  const knopfZeile = el("div", "chips");
+  const neu = el("button", "chip", "＋ Neue Brand");
+  neu.onclick = sheetNeueBrand;
+  const filterBtn = el("button", "chip");
+  filterBtn.onclick = () => {
+    const wrap = el("div");
+    const ratings = [...new Set(alle.map((m) => m.brandrating.rating)
+      .filter(Boolean))].sort();
+    if (ratings.length > 1) {
+      wrap.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
+        bf.rating, (w) => { bf.rating = w; }, zeichnen));
+    }
+    wrap.append(chipFilter(
+      [["ohne", "Ohne Brand-Book"], ["mit", "Brand-Book ✓"]],
+      bf.book, (w) => { bf.book = w; }, zeichnen));
+    sheetOeffnen("Filter", wrap);
+  };
+  knopfZeile.append(neu, filterBtn);
+  c.append(knopfZeile);
+
+  const rumpf = el("div");
+  c.append(rumpf);
+  zeichnen();
+
+  function zeichnen() {
+    const n = (bf.rating ? 1 : 0) + (bf.book ? 1 : 0);
+    filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
+    filterBtn.classList.toggle("aktiv", n > 0);
+    const s = bf.suche.trim().toLowerCase();
+    const liste = alle.filter((m) => {
+      const br = m.brandrating;
+      return (!bf.rating || br.rating === bf.rating) &&
+        (!bf.book || (bf.book === "mit") === Boolean(br.brandbook)) &&
+        (!s || [m.name, br.status, br.kategorie, br.notizen]
+          .join(" ").toLowerCase().includes(s));
+    });
+    rumpf.innerHTML = "";
+    const ohne = liste.filter((m) => !m.brandrating.brandbook).length;
+    rumpf.append(el("div", "stand",
+      `${liste.length} von ${alle.length} Marken · ${ohne} ohne Brand-Book · alphabetisch`));
+    if (!liste.length) {
+      rumpf.append(el("div", "leerzustand", "Nichts passt zu den Filtern."));
+      return;
+    }
+    const karten = el("div", "karten");
+    for (const m of liste) karten.append(brKarte(m));
     rumpf.append(karten);
   }
 }
@@ -1043,6 +1189,23 @@ function renderUgc() {
     c.append(zugang);
   }
 
+  // Zugang zum Brand Rating (v32): Andreas Vorrat an bewerteten Marken.
+  // Badge = Marken ohne Brand-Book (das ist dort die offene Arbeit).
+  const brMarken = datenstand
+    ? (datenstand.marken || []).filter((m) => m.brandrating) : [];
+  if (brMarken.length) {
+    const ohneBook = brMarken.filter((m) => !m.brandrating.brandbook).length;
+    const zugang = el("div", "karte block zugang");
+    const kopf = el("div", "kopf");
+    kopf.append(el("span", "pill", "Bewertung"),
+                el("span", "badge", String(ohneBook)));
+    zugang.append(kopf, el("div", "titel", "Brand Rating"),
+      el("div", "kontext",
+        `${brMarken.length} Marken · ${ohneBook} ohne Brand-Book`));
+    zugang.onclick = () => { location.hash = "#/brandrating"; };
+    c.append(zugang);
+  }
+
   if (!z.marken.length) {
     c.append(el("div", "leerzustand", "Keine Aktivität in diesem Zeitraum."));
     return;
@@ -1168,6 +1331,8 @@ function render() {
     renderUgc();
   } else if (h === "#/pitchliste") {
     renderPitchliste();
+  } else if (h === "#/brandrating") {
+    renderBrandrating();
   } else if (h === "#/buecher") {
     renderBuecher();
   } else {
@@ -1279,7 +1444,8 @@ function sheetNeueBrand() {
     dl.append(o);
   }
   wrap.append(name, kategorie, dl);
-  const f = { rating: "", fit: "", geist: "", chance: "" };
+  // Erfolgschance im Standard 3 (Andreas Workflow, 31.08.)
+  const f = { rating: "", fit: "", geist: "", chance: 3 };
   const skala = [1, 2, 3, 4, 5].map((n) => [n, String(n)]);
   const zeile = (titel, paare, feld) => wrap.append(
     el("div", "stand", titel),
@@ -1302,8 +1468,8 @@ function sheetNeueBrand() {
   };
   okZ.append(ok);
   wrap.append(okZ, el("div", "stand",
-    "Landet in der Pitchliste (nächste Aktion: Pitch, heute) und beim " +
-    "Excel-Export im Brandrating. Löschen: in der Detailansicht der Brand."));
+    "Landet im Brand Rating und in der Pitchliste (nächste Aktion: Pitch, " +
+    "heute). Löschen: in der Pitchlisten-Detailansicht der Brand."));
   sheetOeffnen("Neue Brand", wrap);
 }
 
@@ -1523,7 +1689,8 @@ document.getElementById("zurueck").onclick = () => {
   // Eine Ebene hoch, nicht Browser-History: vorhersagbar bei Direktaufruf
   const h = location.hash;
   location.hash =
-    h.startsWith("#/ugc/") || h === "#/pitchliste" ? "#/ugc" : "#/";
+    h.startsWith("#/ugc/") || h === "#/pitchliste" || h === "#/brandrating"
+      ? "#/ugc" : "#/";
 };
 document.getElementById("update").onclick = update;
 window.addEventListener("hashchange", render);
