@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v40"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v41"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1655,7 +1655,7 @@ function sheetNeueBrand() {
   };
   okZ.append(ok);
   wrap.append(okZ, el("div", "stand",
-    "Landet im Brand Rating und in der Pitchliste unter „Neu" — ohne " +
+    "Landet im Brand Rating und in der Pitchliste unter „Neu“ — ohne " +
     "Termin, das Startdatum setzt du dort. Löschen: in der " +
     "Pitchlisten-Detailansicht der Brand."));
   sheetOeffnen("Neue Brand", wrap);
