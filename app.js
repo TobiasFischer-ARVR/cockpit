@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v35"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v36"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -546,6 +546,18 @@ const RATING_FELDER = ["rating (a-d)", "brand fit", "begeisterung",
 function markenDetails(quelle, ohneRating) {
   const frag = document.createDocumentFragment();
 
+  // Book-Datei direkt oeffnen (Task 4, 31.08.): Graph-Suche nach dem
+  // Dateinamen - funktioniert unabhaengig davon, wo der Book-Ordner
+  // liegt (Testdaten-Kopie heute, Andreas Ordner spaeter). webUrl
+  // uebergibt auf Android an die Word/OneDrive-App.
+  if (typeof OD !== "undefined" && OD.konto()) {
+    const z = el("div", "chips");
+    const b = el("button", "chip", "📄 Brand-Book öffnen");
+    b.onclick = () => bookOeffnen(quelle, b);
+    z.append(b);
+    frag.append(z);
+  }
+
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
   const infos = Object.entries((snap.kerninfos && snap.kerninfos[quelle]) || {})
     .filter(([label]) => label.toLowerCase() !== "name" &&
@@ -583,6 +595,34 @@ function markenDetails(quelle, ohneRating) {
   }
   frag.append(tab);
   return frag;
+}
+
+// Fenster SYNCHRON oeffnen (vor dem await), sonst blockt der Popup-
+// Blocker das window.open nach der Graph-Antwort. Bei mehreren Treffern
+// gewinnt der erste - auf /me/drive gibt es den Namen normal nur einmal.
+async function bookOeffnen(quelle, btn) {
+  btn.disabled = true;
+  const fenster = window.open("", "_blank");
+  const zu = () => { if (fenster) fenster.close(); };
+  try {
+    const q = encodeURIComponent(String(quelle).replace(/'/g, "''"));
+    const d = await OD.graphLeise(
+      `/me/drive/root/search(q='${q}')?$select=name,webUrl,file`);
+    const soll = (quelle + ".docx").toLowerCase();
+    const treffer = ((d && d.value) || []).find(
+      (e) => e.file && String(e.name).toLowerCase() === soll);
+    if (treffer && treffer.webUrl) {
+      if (fenster) fenster.location = treffer.webUrl;
+      else window.open(treffer.webUrl, "_blank");
+    } else {
+      zu();
+      banner(`„${quelle}.docx“ nicht in OneDrive gefunden.`);
+    }
+  } catch (_) {
+    zu();
+    banner("OneDrive-Suche fehlgeschlagen.");
+  }
+  btn.disabled = false;
 }
 
 function sheetHistorie(m) {
