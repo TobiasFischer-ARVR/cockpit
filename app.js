@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v34"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v35"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1183,6 +1183,25 @@ function renderUgc() {
     `${z.label}: ${z.start} – ${z.ende} · ${snap.quelldateien} Dateien · Stand ${snap.erzeugt.replace("T", " ")}${hinweis}`));
   c.append(kpiKacheln(z.gesamt));
 
+  // Zugang zum Brand Rating (v32): Andreas Vorrat an bewerteten Marken.
+  // Badge = Marken ohne Brand-Book (das ist dort die offene Arbeit).
+  // Steht VOR der Pitchliste (Tobias 31.08.) - so wie im Ablauf:
+  // erst Brand Rating, dann Pitchliste.
+  const brMarken = datenstand
+    ? (datenstand.marken || []).filter((m) => m.brandrating) : [];
+  if (brMarken.length) {
+    const ohneBook = brMarken.filter((m) => !m.brandrating.brandbook).length;
+    const zugang = el("div", "karte block zugang");
+    const kopf = el("div", "kopf");
+    kopf.append(el("span", "pill", "Bewertung"),
+                el("span", "badge", String(ohneBook)));
+    zugang.append(kopf, el("div", "titel", "Brand Rating"),
+      el("div", "kontext",
+        `${brMarken.length} Marken · ${ohneBook} ohne Brand-Book`));
+    zugang.onclick = () => { location.hash = "#/brandrating"; };
+    c.append(zugang);
+  }
+
   // Zugang zur Pitchliste, Faellig-Zaehler aus derselben ampel()-Bedingung
   // wie die Listen-Ansicht (Briefing 4.9: ein Zaehler, eine Bedingung)
   if (snap.pitchliste && snap.pitchliste.length) {
@@ -1197,23 +1216,6 @@ function renderUgc() {
       el("div", "kontext",
         `${snap.pitchliste.length} Marken · ${faellig} fällig/überfällig`));
     zugang.onclick = () => { location.hash = "#/pitchliste"; };
-    c.append(zugang);
-  }
-
-  // Zugang zum Brand Rating (v32): Andreas Vorrat an bewerteten Marken.
-  // Badge = Marken ohne Brand-Book (das ist dort die offene Arbeit).
-  const brMarken = datenstand
-    ? (datenstand.marken || []).filter((m) => m.brandrating) : [];
-  if (brMarken.length) {
-    const ohneBook = brMarken.filter((m) => !m.brandrating.brandbook).length;
-    const zugang = el("div", "karte block zugang");
-    const kopf = el("div", "kopf");
-    kopf.append(el("span", "pill", "Bewertung"),
-                el("span", "badge", String(ohneBook)));
-    zugang.append(kopf, el("div", "titel", "Brand Rating"),
-      el("div", "kontext",
-        `${brMarken.length} Marken · ${ohneBook} ohne Brand-Book`));
-    zugang.onclick = () => { location.hash = "#/brandrating"; };
     c.append(zugang);
   }
 
