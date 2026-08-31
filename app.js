@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v32"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v33"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -942,10 +942,14 @@ function brKarte(m) {
 function sheetBrandrating(m) {
   const br = m.brandrating;
   const wrap = el("div");
+  // Beschriftungen exakt wie in den Book-Kerninfos ("Rating (A-D)", ...) -
+  // beides zeigt dieselben Werte aus zwei handgepflegten Quellen (Tobias
+  // 31.08.: gleich benennen). Weichen sie ab, ist beim Uebertragen
+  // zwischen Excel und Book etwas schiefgegangen.
   const felder = [
     ["Status", br.status], ["Kategorie", br.kategorie],
     ["Brand Fit", br.brandfit], ["Begeisterung", br.begeisterung],
-    ["Erfolgschance", br.erfolgschance], ["Rating", br.rating],
+    ["Erfolgschance", br.erfolgschance], ["Rating (A-D)", br.rating],
     ["Brand-Book", br.brandbook ? "✓ erledigt" : "offen"],
     ["Notizen", br.notizen],
   ].filter(([, w]) => w);
@@ -955,9 +959,15 @@ function sheetBrandrating(m) {
     zeile.append(el("span", "leise", label), el("span", null, wert));
     tab.append(zeile);
   }
-  wrap.append(el("div", "abschnitt", "Brand Rating"), tab);
+  wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
   const quelle = quelleZuName(m.name);
-  if (quelle) wrap.append(markenDetails(quelle));
+  if (quelle) {
+    wrap.append(el("div", "stand",
+      "Darunter: Werte aus dem Brand-Book — Rating/Fit/Begeisterung/" +
+      "Erfolgschance stehen dort nochmal, weil Andrea beides pflegt. " +
+      "Abweichungen = Übertragungsfehler."));
+    wrap.append(markenDetails(quelle));
+  }
   sheetOeffnen(m.name, wrap);
 }
 
