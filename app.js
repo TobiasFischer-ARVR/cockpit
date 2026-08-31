@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v38"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v39"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1174,8 +1174,11 @@ function renderBrandrating() {
     const s = bf.suche.trim().toLowerCase();
     const liste = alle.filter((m) => {
       const br = m.brandrating;
+      // Suche gewinnt ueber den Book-Filter (Tobias 31.08.): wer gezielt
+      // nach einer Marke sucht, soll sie auch finden, wenn "Ohne Brand-
+      // Book" die abgehakten gerade ausblendet (wie in der Excel).
       return (!bf.rating || br.rating === bf.rating) &&
-        (!bf.book || (bf.book === "mit") === Boolean(br.brandbook)) &&
+        (!bf.book || s || (bf.book === "mit") === Boolean(br.brandbook)) &&
         (!bf.fit || symAnzahl(br.brandfit) >= bf.fit) &&
         (!bf.geist || symAnzahl(br.begeisterung) >= bf.geist) &&
         (!bf.chance || symAnzahl(br.erfolgschance) >= bf.chance) &&
