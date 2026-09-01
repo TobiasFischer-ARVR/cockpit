@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v48"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v49"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -563,6 +563,18 @@ const KONTAKT_FELDER = ["Website", "Ansprechpartner", "E-Mail", "Social Media"];
 function kerninfosAktuell(m, quelle) {
   const aus = Object.assign({}, (snap.kerninfos && snap.kerninfos[quelle]) || {});
   for (const [k, w] of Object.entries((m && m.kerninfos) || {})) aus[k] = w;
+  // Rating-Felder aus dem Brand Rating NACHTRAGEN, wenn der Book-Stand sie
+  // nicht kennt (Tobias 01.09.): eine App-angelegte Brand hat noch kein
+  // geparstes Book, die Werte stehen aber laengst im Datenstand - ohne das
+  // fehlten sie im Pitch-Sheet, waehrend Excel-Brands sie zeigen.
+  // Bewusst nur FUELLEN, nie ueberschreiben: weicht ein vorhandener
+  // Book-Wert vom Brand Rating ab, soll genau das sichtbar bleiben.
+  const br = (m && m.brandrating) || {};
+  const nachtrag = { "Rating (A-D)": br.rating, "Brand Fit": br.brandfit,
+    "Begeisterung": br.begeisterung, "Erfolgschance": br.erfolgschance };
+  for (const [k, w] of Object.entries(nachtrag)) {
+    if (!String(aus[k] || "").trim() && String(w || "").trim()) aus[k] = w;
+  }
   return aus;
 }
 
