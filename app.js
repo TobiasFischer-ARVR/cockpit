@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v46"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v47"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -937,7 +937,7 @@ function pitchKarte(p) {
 
 // Filterzustand der Pitchliste - bleibt beim Navigieren erhalten (wie zi).
 // faellig: "" = alle, sonst max. Rest-Tage (ueberfaellig zaehlt immer mit).
-const pf = { faellig: "", rating: "", kategorie: "", suche: "" };
+const pf = { faellig: "", rating: "", kategorie: "", suche: "", sortierung: "" };
 
 // Eine Chip-Reihe fuer einen Filter: aktiven Chip nochmal antippen = aus.
 // Zeichnet nur die Ergebnisliste neu (neuzeichnen), nie die ganze Ansicht -
@@ -958,15 +958,83 @@ function chipFilter(paare, aktiv, setzen, neuzeichnen) {
   return zeile;
 }
 
+// ---------------------------------------------------------- Sortierung
+// Sortierbar nach denselben Kriterien, nach denen auch gefiltert wird
+// (Tobias 01.09.). "" ist immer die Standard-Sortierung der Liste -
+// der erste Chip ist damit gleichzeitig der Zuruecksetzen-Knopf.
+const SORT_PITCH = [["", "Dringlichkeit"], ["name", "Name A–Z"],
+                    ["rating", "Rating"], ["kategorie", "Kategorie"]];
+const SORT_BRAND = [["", "Name A–Z"], ["rating", "Rating"],
+                    ["book", "Brand-Book"], ["fit", "Brand Fit"],
+                    ["geist", "Begeisterung"], ["chance", "Erfolgschance"]];
+
+const nameVgl = (a, b) => String(a).localeCompare(String(b), "de");
+
+// Vergleich nach einem Schluessel. Leere Werte landen IMMER am Ende (auch
+// beim Absteigend-Sortieren) - eine Marke ohne Rating soll die Liste nicht
+// anfuehren. Gleichstand wird alphabetisch aufgeloest, damit die Reihenfolge
+// stabil und nachvollziehbar bleibt.
+function nachSchluessel(schl, absteigend) {
+  return (a, b) => {
+    const x = schl(a), y = schl(b);
+    const xLeer = x === "" || x === null || x === undefined;
+    const yLeer = y === "" || y === null || y === undefined;
+    if (xLeer && yLeer) return nameVgl(a.name, b.name);
+    if (xLeer) return 1;
+    if (yLeer) return -1;
+    let d = (typeof x === "number" && typeof y === "number")
+      ? x - y : nameVgl(x, y);
+    if (absteigend) d = -d;
+    return d || nameVgl(a.name, b.name);
+  };
+}
+
+function sortierePitch(liste, art) {
+  const k = [...liste];
+  if (art === "name") return k.sort((a, b) => nameVgl(a.name, b.name));
+  if (art === "rating") return k.sort(nachSchluessel((p) => p.rating));
+  if (art === "kategorie") return k.sort(nachSchluessel((p) => p.kategorie));
+  // Standard: Dringlichkeit, ohne Termin ans Ende
+  return k.sort((a, b) => (a.tage === null ? 1e9 : a.tage) -
+                          (b.tage === null ? 1e9 : b.tage));
+}
+
+function sortiereBrand(liste, art) {
+  const k = [...liste];
+  const skala = (feld) => (m) => symAnzahl(m.brandrating[feld]);
+  if (art === "rating") return k.sort(nachSchluessel((m) => m.brandrating.rating));
+  if (art === "book")   // ohne Book zuerst - das ist die Arbeitsliste
+    return k.sort(nachSchluessel((m) => (m.brandrating.brandbook ? 1 : 0)));
+  if (art === "fit") return k.sort(nachSchluessel(skala("brandfit"), true));
+  if (art === "geist") return k.sort(nachSchluessel(skala("begeisterung"), true));
+  if (art === "chance") return k.sort(nachSchluessel(skala("erfolgschance"), true));
+  return k.sort((a, b) => nameVgl(a.name, b.name));
+}
+
+// Knopf + Sheet, gleiche Mechanik wie der Filter-Knopf daneben.
+function sortierKnopf(optionen, holen, setzen, zeichnen) {
+  const btn = el("button", "chip");
+  btn.onclick = () => {
+    const wrap = el("div");
+    wrap.append(chipFilter(optionen, holen(), setzen, zeichnen));
+    sheetOeffnen("Sortierung", wrap);
+  };
+  return btn;
+}
+
+// Beschriftung des Sortier-Knopfs + Text fuer die Zaehlerzeile
+function sortLabel(optionen, art) {
+  const treffer = optionen.find(([w]) => w === art);
+  return (treffer || optionen[0])[1];
+}
+
 function renderPitchliste() {
   kopfzeile("Pitchliste", true);
   const c = document.getElementById("inhalt");
   c.innerHTML = "";
   const heute = heuteNull();
   const alle = pitchlisteAktuell()
-    .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute) }))
-    .sort((a, b) => (a.tage === null ? 1e9 : a.tage) -
-                    (b.tage === null ? 1e9 : b.tage));
+    .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute) }));
   if (!alle.length) {
     c.append(el("div", "leerzustand",
       "Keine Pitchliste im Snapshot — einmal Update (↻) drücken."));
@@ -1006,7 +1074,9 @@ function renderPitchliste() {
     }
     sheetOeffnen("Filter", wrap);
   };
-  knopfZeile.append(filterBtn);
+  const sortBtn = sortierKnopf(SORT_PITCH, () => pf.sortierung,
+    (w) => { pf.sortierung = w; }, () => zeichnen());
+  knopfZeile.append(filterBtn, sortBtn);
   c.append(knopfZeile);
 
   // Zaehler + Karten werden beim Tippen im Suchfeld neu gezeichnet, ohne
@@ -1020,18 +1090,22 @@ function renderPitchliste() {
       (pf.rating ? 1 : 0) + (pf.kategorie ? 1 : 0);
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
+    sortBtn.textContent = "⇅ " + sortLabel(SORT_PITCH, pf.sortierung);
+    sortBtn.classList.toggle("aktiv", Boolean(pf.sortierung));
     const s = pf.suche.trim().toLowerCase();
-    const liste = alle.filter((p) =>
+    const gefiltert = alle.filter((p) =>
       (pf.faellig === "" || (p.tage !== null && p.tage <= pf.faellig)) &&
       (!pf.rating || p.rating === pf.rating) &&
       (!pf.kategorie || p.kategorie === pf.kategorie) &&
       (!s || [p.name, p.status, p.naechste_aktion, p.kooperation, p.kategorie]
         .join(" ").toLowerCase().includes(s)));
+    const liste = sortierePitch(gefiltert, pf.sortierung);
     rumpf.innerHTML = "";
     // Zaehler und Liste aus derselben Bedingung (Briefing Abschnitt 4.9)
     const rot = liste.filter((p) => p.klasse === "rot").length;
     rumpf.append(el("div", "stand",
-      `${liste.length} von ${alle.length} Marken · ${rot} fällig/überfällig · sortiert nach Dringlichkeit`));
+      `${liste.length} von ${alle.length} Marken · ${rot} fällig/überfällig · ` +
+      `sortiert nach ${sortLabel(SORT_PITCH, pf.sortierung)}`));
     if (!liste.length) {
       rumpf.append(el("div", "leerzustand", "Nichts passt zu den Filtern."));
       return;
@@ -1064,7 +1138,8 @@ function renderPitchliste() {
 // Marken mit Brandrating-Zeile aus dem Datenstand, alphabetisch. Hier
 // entstehen neue Brands ("+ Neue Brand", seit v32 hierher verlegt) und
 // hier kommt in Phase 5 der "Rating abgeschlossen"-Knopf dazu.
-const bf = { rating: "", book: "", fit: "", geist: "", chance: "", suche: "" };
+const bf = { rating: "", book: "", fit: "", geist: "", chance: "", suche: "",
+             sortierung: "" };
 
 // Skalenwert aus der Symbol-Kette des Brandrating-Blatts ("⭐⭐⭐" -> 3)
 function symAnzahl(s) {
@@ -1269,20 +1344,29 @@ function sheetBrandrating(m) {
       // kein return: nach Stufe 1 muss der Stufe-2-Knopf direkt sichtbar sein
     }
     const rating = String(br.rating || "").trim();
+    const abc = ["A", "B", "C"].includes(rating);
+    const online = typeof OD !== "undefined" && OD.konto();
+    // EINE Knopfreihe (Tobias 01.09.): "✎ Bearbeiten" steht neben den
+    // Book-Knoepfen statt nur als Stift oben in der Kopfzeile. Gleiche
+    // Funktion, gleicher History-Sprung - ratingStift() wird nur zweimal
+    // gebaut. Sichtbar auch ohne Rating/OneDrive: genau dann will man ja
+    // bearbeiten.
+    const reihe = el("div", "chips");
+    reihe.append(ratingStift(z, bau));
+
     if (!br.brandbook) {
       // ------------------------------------------ Stufe 1: Book erstellen
-      if (!["A", "B", "C"].includes(rating)) {
-        frag.append(el("div", "stand", rating === "D"
+      if (!abc) {
+        frag.append(reihe, el("div", "stand", rating === "D"
           ? "D-Brand = inaktiv/Archiv — kein Brand-Book, keine Pitchliste."
           : "Erst Rating (A–C) vergeben — es bestimmt Template und Ordner."));
         return frag;
       }
-      if (typeof OD === "undefined" || !OD.konto()) {
-        frag.append(el("div", "stand",
+      if (!online) {
+        frag.append(reihe, el("div", "stand",
           "Fürs Brand-Book erst bei OneDrive anmelden (Hauptmenü)."));
         return frag;
       }
-      const z = el("div", "chips");
       const b = el("button", "chip aktiv", "📄 Brand-Book erstellen");
       b.onclick = async () => {
         if (!confirm(`Brand-Book für „${m.name}“ anlegen?\n` +
@@ -1309,17 +1393,45 @@ function sheetBrandrating(m) {
               + `Brands/Brand-Book ${m.name}.docx`);
         bau();
       };
-      z.append(b);
-      frag.append(z, el("div", "stand",
+      reihe.append(b);
+      frag.append(reihe, el("div", "stand",
         "Stufe 1: erzeugt das Brand-Book aus dem Template, trägt die " +
         "Kerninfos ein und setzt den Haken. In die Pitchliste kommt die " +
         "Brand erst mit „Brand-Book befüllt“."));
       return frag;
     }
     // ------------------------------ Stufe 2: Book befüllt -> Pitchliste
-    if (!["A", "B", "C"].includes(rating)) return frag; // D-Archiv-Books
-    if (inPitchliste(m)) return frag; // schon drin - nichts anzubieten
-    const z = el("div", "chips");
+    if (!abc || inPitchliste(m)) {          // D-Archiv-Book oder schon drin
+      frag.append(reihe);                   // Bearbeiten bleibt trotzdem da
+      return frag;
+    }
+
+    // "↻ Book aktualisieren" (Tobias 01.09.): erzeugt das Book neu aus dem
+    // Template, mit dem AKTUELLEN App-Stand. Loest das Reihenfolge-Problem
+    // (Kontaktdaten erst nach dem Erstellen eingetragen -> standen nie im
+    // Word). Bewusst NUR zwischen Stufe 1 und 2 angeboten: bis "befüllt"
+    // gedrueckt ist, hat Andrea per Definition noch nichts hineingeschrieben,
+    // also kann das Ueberschreiben auch nichts kaputt machen. Danach waere
+    // es Chirurgie am fertigen Dokument - dafuer gibt es hier keinen Anlass.
+    if (online) {
+      const ak = el("button", "chip", "↻ Book aktualisieren");
+      ak.onclick = async () => {
+        if (!confirm(`Brand-Book für „${m.name}“ neu erzeugen?\n` +
+            "Die Kerninfos kommen frisch aus der App. Falls du im Word " +
+            "schon etwas geschrieben hast, geht das verloren — deshalb " +
+            "geht es nur, solange „Brand-Book befüllt“ nicht gedrückt ist.")) return;
+        ak.disabled = true;
+        const erg = await bookErzeugen(m, true);
+        ak.disabled = false;
+        banner(erg === "fehler"
+          ? "Aktualisieren fehlgeschlagen — Internet/OneDrive prüfen."
+          : erg === "neu-leer"
+            ? "Book neu erzeugt, aber die Werte konnten nicht eingetragen werden."
+            : "Brand-Book aktualisiert — Kerninfos sind auf dem aktuellen Stand.");
+      };
+      reihe.append(ak);
+    }
+
     const b = el("button", "chip aktiv", "✓ Brand-Book befüllt");
     b.onclick = () => {
       if (!confirm(`„${m.name}“ in die Pitchliste schieben?\n` +
@@ -1328,10 +1440,11 @@ function sheetBrandrating(m) {
       datenstandPersistieren();
       bau();
     };
-    z.append(b);
-    frag.append(z, el("div", "stand",
+    reihe.append(b);
+    frag.append(reihe, el("div", "stand",
       "Stufe 2: Book in Word fertig befüllt? Damit geht die Brand in " +
-      "die Pitchliste (ohne Termin)."));
+      "die Pitchliste (ohne Termin). „↻ Book aktualisieren“ schreibt " +
+      "vorher noch geänderte Kerninfos ins Word nach."));
     return frag;
   }
 }
@@ -1345,8 +1458,7 @@ function renderBrandrating() {
       "Braucht den Datenstand — App einmal mit Internet öffnen."));
     return;
   }
-  const alle = (datenstand.marken || []).filter((m) => m.brandrating)
-    .sort((a, b) => a.name.localeCompare(b.name, "de"));
+  const alle = (datenstand.marken || []).filter((m) => m.brandrating);
 
   const suche = el("input", "suche");
   suche.type = "search";
@@ -1378,7 +1490,9 @@ function renderBrandrating() {
       (w) => { bf.chance = w; }, zeichnen));
     sheetOeffnen("Filter", wrap);
   };
-  knopfZeile.append(neu, filterBtn);
+  const sortBtn = sortierKnopf(SORT_BRAND, () => bf.sortierung,
+    (w) => { bf.sortierung = w; }, () => zeichnen());
+  knopfZeile.append(neu, filterBtn, sortBtn);
   c.append(knopfZeile);
 
   const rumpf = el("div");
@@ -1390,8 +1504,10 @@ function renderBrandrating() {
       .filter(Boolean).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
+    sortBtn.textContent = "⇅ " + sortLabel(SORT_BRAND, bf.sortierung);
+    sortBtn.classList.toggle("aktiv", Boolean(bf.sortierung));
     const s = bf.suche.trim().toLowerCase();
-    const liste = alle.filter((m) => {
+    const gefiltert = alle.filter((m) => {
       const br = m.brandrating;
       // Suche gewinnt ueber den Book-Filter (Tobias 31.08.): wer gezielt
       // nach einer Marke sucht, soll sie auch finden, wenn "Ohne Brand-
@@ -1404,10 +1520,12 @@ function renderBrandrating() {
         (!s || [m.name, br.status, br.kategorie, br.notizen]
           .join(" ").toLowerCase().includes(s));
     });
+    const liste = sortiereBrand(gefiltert, bf.sortierung);
     rumpf.innerHTML = "";
     const ohne = liste.filter((m) => !m.brandrating.brandbook).length;
     rumpf.append(el("div", "stand",
-      `${liste.length} von ${alle.length} Marken · ${ohne} ohne Brand-Book · alphabetisch`));
+      `${liste.length} von ${alle.length} Marken · ${ohne} ohne Brand-Book · ` +
+      `sortiert nach ${sortLabel(SORT_BRAND, bf.sortierung)}`));
     if (!liste.length) {
       rumpf.append(el("div", "leerzustand", "Nichts passt zu den Filtern."));
       return;
@@ -1971,7 +2089,10 @@ async function docxBefuellen(puffer, werte) {
 // (womoeglich handgeschrieben!) wird NIE ueberschrieben.
 // Rueckgabe "neu-leer": Book liegt in OneDrive, aber das Befuellen ging
 // schief - lieber ein leeres Book + ehrliche Meldung als gar keins.
-async function bookErzeugen(m) {
+// ersetzen=true ("Book aktualisieren"): conflictBehavior=replace statt fail,
+// also bewusstes Ueberschreiben. Der Aufrufer stellt sicher, dass das nur
+// vor Stufe 2 passiert, wo im Book noch nichts von Hand drinsteht.
+async function bookErzeugen(m, ersetzen) {
   const tplName = String(m.brandrating.rating).trim() === "A"
     ? "Template Brand-Book A Brand.docx"
     : "Template Brand-Book B-C Brand.docx";
@@ -1985,7 +2106,8 @@ async function bookErzeugen(m) {
     gefuellt = false; // Original-Template hochladen, Platzhalter bleiben drin
   }
   const neu = await OD.graphRoh(
-    bookPfad(m) + ":/content?@microsoft.graph.conflictBehavior=fail",
+    bookPfad(m) + ":/content?@microsoft.graph.conflictBehavior=" +
+      (ersetzen ? "replace" : "fail"),
     { method: "PUT", body: inhalt,
       headers: { "Content-Type": DOCX_TYP } });
   return !neu ? "fehler" : neu.status === 409 ? "existiert"
