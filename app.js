@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v44"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v45"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -550,7 +550,44 @@ function kontaktWert(label, wert) {
 const RATING_FELDER = ["rating (a-d)", "brand fit", "begeisterung",
                        "erfolgschance"];
 
-function markenDetails(quelle, ohneRating) {
+// Kontaktfelder der Book-Kerninfos, die in der App pflegbar sind (Phase 6).
+// Labels EXAKT wie im Book-Template - dann deckt sich der App-Wert mit dem
+// geparsten Book-Wert, und ein spaeterer Word-Export mappt 1:1.
+const KONTAKT_FELDER = ["Website", "Ansprechpartner", "E-Mail", "Social Media"];
+
+// Kerninfos = geparster Book-Stand aus dem Snapshot, ueberschrieben von in
+// der App gepflegten Werten (m.kerninfos). Gleiches Overlay-Prinzip wie bei
+// der Pitchliste: die App gewinnt, bis der naechste PC-Export beide angleicht.
+// Ueberschrieben wird bei VORHANDENEM Schluessel (nicht nur bei Inhalt) -
+// sonst kaeme ein in der App geleertes Feld aus dem Snapshot zurueck.
+function kerninfosAktuell(m, quelle) {
+  const aus = Object.assign({}, (snap.kerninfos && snap.kerninfos[quelle]) || {});
+  for (const [k, w] of Object.entries((m && m.kerninfos) || {})) aus[k] = w;
+  return aus;
+}
+
+// "Kontakt & Infos"-Tabelle - eigener Baustein, weil sie auch OHNE Book
+// gebraucht wird (App-angelegte Brand: Kontaktdaten stehen dann nur im
+// Datenstand, das Book kennt sie erst nach dem naechsten PC-Export).
+function bereichKontakt(m, quelle, ohneRating) {
+  const frag = document.createDocumentFragment();
+  const infos = Object.entries(kerninfosAktuell(m, quelle))
+    .filter(([label, wert]) => String(wert).trim() &&
+      label.toLowerCase() !== "name" &&
+      !(ohneRating && RATING_FELDER.includes(label.trim().toLowerCase())));
+  if (!infos.length) return frag;
+  frag.append(el("div", "abschnitt", "Kontakt & Infos"));
+  const tab = el("div", "tabelle");
+  for (const [label, wert] of infos) {
+    const zeile = el("div", "zeile");
+    zeile.append(el("span", "leise", label), kontaktWert(label, wert));
+    tab.append(zeile);
+  }
+  frag.append(tab);
+  return frag;
+}
+
+function markenDetails(quelle, ohneRating, m) {
   const frag = document.createDocumentFragment();
 
   // Book-Datei direkt oeffnen (Task 4, 31.08.): Graph-Suche nach dem
@@ -566,19 +603,7 @@ function markenDetails(quelle, ohneRating) {
   }
 
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
-  const infos = Object.entries((snap.kerninfos && snap.kerninfos[quelle]) || {})
-    .filter(([label]) => label.toLowerCase() !== "name" &&
-      !(ohneRating && RATING_FELDER.includes(label.trim().toLowerCase())));
-  if (infos.length) {
-    frag.append(el("div", "abschnitt", "Kontakt & Infos"));
-    const infoTab = el("div", "tabelle");
-    for (const [label, wert] of infos) {
-      const zeile = el("div", "zeile");
-      zeile.append(el("span", "leise", label), kontaktWert(label, wert));
-      infoTab.append(zeile);
-    }
-    frag.append(infoTab);
-  }
+  frag.append(bereichKontakt(m, quelle, ohneRating));
 
   frag.append(el("div", "abschnitt", "Historie"));
   const eintraege = (snap.historie && snap.historie[quelle]) || [];
@@ -636,7 +661,7 @@ function sheetHistorie(m) {
   const wrap = el("div");
   wrap.append(el("div", "kontext",
     `${m.gruppe || "Sonstige"} · Quelle: ${m.quelle}.docx`));
-  wrap.append(markenDetails(m.quelle));
+  wrap.append(markenDetails(m.quelle, false, m));
   sheetOeffnen(m.name, wrap);
 }
 
@@ -666,7 +691,7 @@ function sheetPitch(p) {
   function bau() {
     wrap.innerHTML = "";
     if (z.bearbeiten) {
-      wrap.append(el("div", "abschnitt", "Rating bearbeiten"),
+      wrap.append(el("div", "abschnitt", "Brand bearbeiten"),
         ratingFormular(mv, () => history.back()));
       return;
     }
@@ -695,8 +720,9 @@ function sheetPitch(p) {
 
     const quelle = quelleZuName(p.name);
     if (quelle) {
-      wrap.append(markenDetails(quelle));
+      wrap.append(markenDetails(quelle, false, mv));
     } else {
+      wrap.append(bereichKontakt(mv, null));
       wrap.append(el("div", "abschnitt", "Brand-Book"));
       // App-erzeugtes Book (v42): liegt schon in OneDrive - nur Kontakt &
       // Historie daraus kennt erst der naechste PC-Export. Bis dahin
@@ -1063,7 +1089,7 @@ function inPitchliste(m) {
 // Abbrechen/Speichern gehen per history.back() zur Brand-Ansicht zurueck,
 // erst das naechste Zurueck schliesst das Sheet (Tobias 01.09.).
 function ratingStift(z, bau) {
-  const b = el("button", "chip", "✎ Rating");
+  const b = el("button", "chip", "✎ Bearbeiten");
   b.onclick = () => {
     if (z.bearbeiten) { history.back(); return; } // Stift erneut = Formular zu
     z.bearbeiten = true;
@@ -1089,6 +1115,23 @@ function ratingFormular(m, fertig) {
   zeile("Brand Fit", skala, "fit");
   zeile("Begeisterung", skala, "geist");
   zeile("Erfolgschance", skala, "chance");
+
+  // Kontaktdaten (Phase 6): standen bisher NUR im Word-Book - bei einer
+  // App-angelegten Brand waren sie deshalb bis zum naechsten PC-Export
+  // unsichtbar. Vorbelegt mit dem aktuellen Stand (Book + App-Overlay).
+  const vorhanden = kerninfosAktuell(m, quelleZuName(m.name));
+  const eingaben = {};
+  wrap.append(el("div", "abschnitt", "Kontakt & Infos"));
+  for (const label of KONTAKT_FELDER) {
+    wrap.append(el("div", "stand", label));
+    const i = el("input", "feld");
+    i.type = label === "E-Mail" ? "email" : "text";
+    if (label === "Website") i.inputMode = "url";
+    i.value = vorhanden[label] || "";
+    eingaben[label] = i;
+    wrap.append(i);
+  }
+
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
   ok.onclick = () => {
@@ -1101,6 +1144,9 @@ function ratingFormular(m, fertig) {
       brandfit: "⭐".repeat(f.fit || 0),
       begeisterung: "❤️".repeat(f.geist || 0),
       erfolgschance: "⭐".repeat(f.chance || 0) });
+    m.kerninfos = m.kerninfos || {};
+    for (const [label, i] of Object.entries(eingaben))
+      m.kerninfos[label] = i.value.trim();
     if (m.pitchliste)
       Object.assign(m.pitchliste, { rating: f.rating, geaendert: lokalIso() });
     listeVeraltet = true;
@@ -1164,7 +1210,7 @@ function sheetBrandrating(m) {
     wrap.innerHTML = "";
     const br = m.brandrating;
     if (z.bearbeiten) {
-      wrap.append(el("div", "abschnitt", "Rating bearbeiten"),
+      wrap.append(el("div", "abschnitt", "Brand bearbeiten"),
         ratingFormular(m, () => history.back()));
       return;
     }
@@ -1190,7 +1236,8 @@ function sheetBrandrating(m) {
     wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
     wrap.append(bereichAbschluss(br));
     const quelle = quelleZuName(m.name);
-    if (quelle) wrap.append(markenDetails(quelle, true));
+    if (quelle) wrap.append(markenDetails(quelle, true, m));
+    else wrap.append(bereichKontakt(m, null, true));
     if (m.erstellt) wrap.append(bereichLoeschen(m));
   }
 
