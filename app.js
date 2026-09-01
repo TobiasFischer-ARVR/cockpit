@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v47"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v48"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -569,25 +569,38 @@ function kerninfosAktuell(m, quelle) {
 // "Kontakt & Infos"-Tabelle - eigener Baustein, weil sie auch OHNE Book
 // gebraucht wird (App-angelegte Brand: Kontaktdaten stehen dann nur im
 // Datenstand, das Book kennt sie erst nach dem naechsten PC-Export).
-function bereichKontakt(m, quelle, ohneRating) {
+// knopf (optional): "✎ Kontaktdaten" fuer das Pitch-Sheet. Ist er dabei,
+// wird der Abschnitt AUCH ohne Daten gezeichnet - sonst gaebe es bei einer
+// frisch angelegten Brand keinen Weg, die ersten Kontaktdaten einzutragen.
+function bereichKontakt(m, quelle, ohneRating, knopf) {
   const frag = document.createDocumentFragment();
   const infos = Object.entries(kerninfosAktuell(m, quelle))
     .filter(([label, wert]) => String(wert).trim() &&
       label.toLowerCase() !== "name" &&
       !(ohneRating && RATING_FELDER.includes(label.trim().toLowerCase())));
-  if (!infos.length) return frag;
+  if (!infos.length && !knopf) return frag;
   frag.append(el("div", "abschnitt", "Kontakt & Infos"));
-  const tab = el("div", "tabelle");
-  for (const [label, wert] of infos) {
-    const zeile = el("div", "zeile");
-    zeile.append(el("span", "leise", label), kontaktWert(label, wert));
-    tab.append(zeile);
+  if (infos.length) {
+    const tab = el("div", "tabelle");
+    for (const [label, wert] of infos) {
+      const zeile = el("div", "zeile");
+      zeile.append(el("span", "leise", label), kontaktWert(label, wert));
+      tab.append(zeile);
+    }
+    frag.append(tab);
+  } else {
+    frag.append(el("div", "leerzustand kompakt",
+      "Noch keine Kontaktdaten eingetragen."));
   }
-  frag.append(tab);
+  if (knopf) {
+    const z = el("div", "chips");
+    z.append(knopf);
+    frag.append(z);
+  }
   return frag;
 }
 
-function markenDetails(quelle, ohneRating, m) {
+function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
   const frag = document.createDocumentFragment();
 
   // Book-Datei direkt oeffnen (Task 4, 31.08.): Graph-Suche nach dem
@@ -603,7 +616,7 @@ function markenDetails(quelle, ohneRating, m) {
   }
 
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
-  frag.append(bereichKontakt(m, quelle, ohneRating));
+  frag.append(bereichKontakt(m, quelle, ohneRating, kontaktKnopf));
 
   frag.append(el("div", "abschnitt", "Historie"));
   const eintraege = (snap.historie && snap.historie[quelle]) || [];
@@ -683,18 +696,20 @@ function quelleZuName(name) {
 function sheetPitch(p) {
   const wrap = el("div");
   const mv = datenstand ? markeZuName(p.name) : null;
-  const z = { bearbeiten: false };
-  const stift = mv && mv.brandrating ? ratingStift(z, bau) : null;
+  const z = { modus: null };
+  const stift = mv && mv.brandrating
+    ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
+  // Kontaktdaten auch hier bearbeitbar (Tobias 01.09.): faellt im Pitch-
+  // Alltag eine falsche E-Mail auf, korrigiert man sie dort, wo man ist.
+  const kontaktKnopf = mv
+    ? formularKnopf(z, bau, "kontakt", "✎ Kontaktdaten") : null;
   bau();
   sheetOeffnen(p.name, wrap, stift);
 
   function bau() {
     wrap.innerHTML = "";
-    if (z.bearbeiten) {
-      wrap.append(el("div", "abschnitt", "Brand bearbeiten"),
-        ratingFormular(mv, () => history.back()));
-      return;
-    }
+    const formular = formularAnsicht(z, mv);
+    if (formular) { wrap.append(formular); return; }
     const q = pitchMitDatenstand(p);
     wrap.append(el("div", "kontext",
       ampel(q.datum_naechste_aktion, heuteNull()).text));
@@ -720,9 +735,9 @@ function sheetPitch(p) {
 
     const quelle = quelleZuName(p.name);
     if (quelle) {
-      wrap.append(markenDetails(quelle, false, mv));
+      wrap.append(markenDetails(quelle, false, mv, kontaktKnopf));
     } else {
-      wrap.append(bereichKontakt(mv, null));
+      wrap.append(bereichKontakt(mv, null, false, kontaktKnopf));
       wrap.append(el("div", "abschnitt", "Brand-Book"));
       // App-erzeugtes Book (v42): liegt schon in OneDrive - nur Kontakt &
       // Historie daraus kennt erst der naechste PC-Export. Bis dahin
@@ -1158,21 +1173,46 @@ function inPitchliste(m) {
 // aenderbar, wo die Brand auftaucht (Brand-Rating-Sheet + Pitchlisten-
 // Sheet). Rating D = inaktiv/Archiv: damit fliegt die Brand aus der
 // Pitchliste (Filter in pitchlisteAktuell), bleibt aber im Brand Rating.
-// Zugang: Stift-Knopf in der Sheet-KOPFZEILE (Tobias 01.09., v43) -
-// ratingStift() baut den Knopf, ratingFormular() das Formular im Inhalt.
-// Das Formular ist eine eigene History-Ebene (v44): Zurueck/Schliessen/
+// ZWEI getrennte Formulare (Tobias 01.09., v48) - getrennt nach Herkunft
+// der Daten, nicht nach Bildschirmplatz:
+//   "✎ Rating"        (Sheet-Kopfzeile) - Rating/Fit/Begeisterung/Erfolgs-
+//                     chance, also die Felder aus dem Excel-Blatt.
+//   "✎ Kontaktdaten"  (Knopfreihe)      - Website/Ansprechpartner/E-Mail/
+//                     Social Media, die gibt es NUR im Brand-Book.
+// Achtung beim Lesen: im Word stehen beide Gruppen in derselben Kerninfos-
+// Tabelle. "Kontaktdaten" heisst also "nur im Book zu Hause", nicht
+// "das einzige, was ins Book wandert".
+// Jedes Formular ist eine eigene History-Ebene (v44): Zurueck/Schliessen/
 // Abbrechen/Speichern gehen per history.back() zur Brand-Ansicht zurueck,
-// erst das naechste Zurueck schliesst das Sheet (Tobias 01.09.).
-function ratingStift(z, bau) {
-  const b = el("button", "chip", "✎ Bearbeiten");
+// erst das naechste Zurueck schliesst das Sheet.
+function formularKnopf(z, bau, modus, label) {
+  const b = el("button", "chip", label);
   b.onclick = () => {
-    if (z.bearbeiten) { history.back(); return; } // Stift erneut = Formular zu
-    z.bearbeiten = true;
-    sheetEbene = () => { z.bearbeiten = false; bau(); };
+    if (z.modus === modus) { history.back(); return; } // erneut = Formular zu
+    z.modus = modus;
+    sheetEbene = () => { z.modus = null; bau(); };
     history.pushState({ sheet: true }, "");
     bau();
   };
   return b;
+}
+
+// Baut den Formular-Teil eines Sheets. Gibt null zurueck, wenn gerade kein
+// Formular offen ist - dann zeichnet der Aufrufer seine normale Ansicht.
+function formularAnsicht(z, m) {
+  if (z.modus === "rating") {
+    const f = document.createDocumentFragment();
+    f.append(el("div", "abschnitt", "Rating bearbeiten"),
+      ratingFormular(m, () => history.back()));
+    return f;
+  }
+  if (z.modus === "kontakt") {
+    const f = document.createDocumentFragment();
+    f.append(el("div", "abschnitt", "Kontaktdaten bearbeiten"),
+      kontaktFormular(m, () => history.back()));
+    return f;
+  }
+  return null;
 }
 
 function ratingFormular(m, fertig) {
@@ -1190,23 +1230,6 @@ function ratingFormular(m, fertig) {
   zeile("Brand Fit", skala, "fit");
   zeile("Begeisterung", skala, "geist");
   zeile("Erfolgschance", skala, "chance");
-
-  // Kontaktdaten (Phase 6): standen bisher NUR im Word-Book - bei einer
-  // App-angelegten Brand waren sie deshalb bis zum naechsten PC-Export
-  // unsichtbar. Vorbelegt mit dem aktuellen Stand (Book + App-Overlay).
-  const vorhanden = kerninfosAktuell(m, quelleZuName(m.name));
-  const eingaben = {};
-  wrap.append(el("div", "abschnitt", "Kontakt & Infos"));
-  for (const label of KONTAKT_FELDER) {
-    wrap.append(el("div", "stand", label));
-    const i = el("input", "feld");
-    i.type = label === "E-Mail" ? "email" : "text";
-    if (label === "Website") i.inputMode = "url";
-    i.value = vorhanden[label] || "";
-    eingaben[label] = i;
-    wrap.append(i);
-  }
-
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
   ok.onclick = () => {
@@ -1219,9 +1242,6 @@ function ratingFormular(m, fertig) {
       brandfit: "⭐".repeat(f.fit || 0),
       begeisterung: "❤️".repeat(f.geist || 0),
       erfolgschance: "⭐".repeat(f.chance || 0) });
-    m.kerninfos = m.kerninfos || {};
-    for (const [label, i] of Object.entries(eingaben))
-      m.kerninfos[label] = i.value.trim();
     if (m.pitchliste)
       Object.assign(m.pitchliste, { rating: f.rating, geaendert: lokalIso() });
     listeVeraltet = true;
@@ -1232,6 +1252,43 @@ function ratingFormular(m, fertig) {
   ab.onclick = fertig;
   okZ.append(ok, ab);
   wrap.append(okZ);
+  return wrap;
+}
+
+// Kontaktdaten (Phase 6): standen bisher NUR im Word-Book - bei einer
+// App-angelegten Brand waren sie deshalb bis zum naechsten PC-Export
+// unsichtbar. Vorbelegt mit dem aktuellen Stand (Book + App-Overlay).
+// Kein Pflichtfeld: eine Brand ohne bekannte E-Mail ist ein normaler
+// Zwischenstand, kein Fehler.
+function kontaktFormular(m, fertig) {
+  const wrap = el("div");
+  const vorhanden = kerninfosAktuell(m, quelleZuName(m.name));
+  const eingaben = {};
+  for (const label of KONTAKT_FELDER) {
+    wrap.append(el("div", "stand", label));
+    const i = el("input", "feld");
+    i.type = label === "E-Mail" ? "email" : "text";
+    if (label === "Website") i.inputMode = "url";
+    i.value = vorhanden[label] || "";
+    eingaben[label] = i;
+    wrap.append(i);
+  }
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip aktiv", "✓ Speichern");
+  ok.onclick = () => {
+    m.kerninfos = m.kerninfos || {};
+    for (const [label, i] of Object.entries(eingaben))
+      m.kerninfos[label] = i.value.trim();
+    listeVeraltet = true;
+    datenstandPersistieren();
+    fertig();
+  };
+  const ab = el("button", "chip", "Abbrechen");
+  ab.onclick = fertig;
+  okZ.append(ok, ab);
+  wrap.append(okZ, el("div", "stand",
+    "Landet beim „Brand-Book erstellen“ im Word. Steht das Book schon, " +
+    "trägt „↻ Book aktualisieren“ die Änderung nach."));
   return wrap;
 }
 
@@ -1276,19 +1333,17 @@ function brKarte(m) {
 
 function sheetBrandrating(m) {
   const wrap = el("div");
-  const z = { bearbeiten: false };
-  const stift = datenstand ? ratingStift(z, bau) : null;
+  const z = { modus: null };
+  const stift = datenstand
+    ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
   bau();
   sheetOeffnen(m.name, wrap, stift);
 
   function bau() {
     wrap.innerHTML = "";
     const br = m.brandrating;
-    if (z.bearbeiten) {
-      wrap.append(el("div", "abschnitt", "Brand bearbeiten"),
-        ratingFormular(m, () => history.back()));
-      return;
-    }
+    const formular = formularAnsicht(z, m);
+    if (formular) { wrap.append(formular); return; }
     // Beschriftungen exakt wie in den Book-Kerninfos ("Rating (A-D)", ...) -
     // beides zeigt dieselben Werte aus zwei handgepflegten Quellen (Tobias
     // 31.08.: gleich benennen). Weichen sie ab, ist beim Uebertragen
@@ -1346,13 +1401,13 @@ function sheetBrandrating(m) {
     const rating = String(br.rating || "").trim();
     const abc = ["A", "B", "C"].includes(rating);
     const online = typeof OD !== "undefined" && OD.konto();
-    // EINE Knopfreihe (Tobias 01.09.): "✎ Bearbeiten" steht neben den
-    // Book-Knoepfen statt nur als Stift oben in der Kopfzeile. Gleiche
-    // Funktion, gleicher History-Sprung - ratingStift() wird nur zweimal
-    // gebaut. Sichtbar auch ohne Rating/OneDrive: genau dann will man ja
-    // bearbeiten.
+    // EINE Knopfreihe (Tobias 01.09.): "✎ Kontaktdaten" steht neben den
+    // Book-Knoepfen - die Book-Felder bearbeitet man dort, wo man das Book
+    // erzeugt. Das Rating hat seinen eigenen Stift oben in der Kopfzeile.
+    // Sichtbar auch ohne Rating/OneDrive: die Kontaktdaten kann man immer
+    // pflegen, auch bevor ein Book existiert.
     const reihe = el("div", "chips");
-    reihe.append(ratingStift(z, bau));
+    reihe.append(formularKnopf(z, bau, "kontakt", "✎ Kontaktdaten"));
 
     if (!br.brandbook) {
       // ------------------------------------------ Stufe 1: Book erstellen
