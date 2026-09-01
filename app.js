@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v45"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v46"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1286,7 +1286,8 @@ function sheetBrandrating(m) {
       const b = el("button", "chip aktiv", "📄 Brand-Book erstellen");
       b.onclick = async () => {
         if (!confirm(`Brand-Book für „${m.name}“ anlegen?\n` +
-            `Kommt als ${rating}-Brand nach OneDrive — danach in Word ` +
+            `Kommt als ${rating}-Brand nach OneDrive — Kerninfos (Name, ` +
+            "Kontakt, Rating) trägt die App schon ein. Den Rest in Word " +
             "befüllen und hier „Brand-Book befüllt“ drücken.")) return;
         b.disabled = true;
         const erg = await bookErzeugen(m);
@@ -1295,17 +1296,24 @@ function sheetBrandrating(m) {
           banner("Book-Anlage fehlgeschlagen — Internet/OneDrive prüfen.");
           return;
         }
-        bookErstelltDaten(m, erg === "neu", lokalIso());
+        // "neu-leer" zaehlt wie "neu": die Datei LIEGT in OneDrive und muss
+        // beim Rückgängig wieder verschwinden.
+        bookErstelltDaten(m, erg !== "existiert", lokalIso());
         datenstandPersistieren();
         banner(erg === "existiert"
           ? "Book gab es schon in OneDrive — nur der Haken wurde gesetzt."
-          : `Brand-Book angelegt: ${rating} Brands/Brand-Book ${m.name}.docx`);
+          : erg === "neu-leer"
+            ? "Brand-Book angelegt, aber die Werte konnten nicht eingetragen "
+              + "werden — im Word stehen noch Platzhalter."
+            : `Brand-Book angelegt, Kerninfos schon eingetragen: ${rating} `
+              + `Brands/Brand-Book ${m.name}.docx`);
         bau();
       };
       z.append(b);
       frag.append(z, el("div", "stand",
-        "Stufe 1: erzeugt das Brand-Book aus dem Template und setzt den " +
-        "Haken. In die Pitchliste kommt die Brand erst mit „Brand-Book befüllt“."));
+        "Stufe 1: erzeugt das Brand-Book aus dem Template, trägt die " +
+        "Kerninfos ein und setzt den Haken. In die Pitchliste kommt die " +
+        "Brand erst mit „Brand-Book befüllt“."));
       return frag;
     }
     // ------------------------------ Stufe 2: Book befüllt -> Pitchliste
@@ -1913,22 +1921,75 @@ function bookPfad(m) {
          `/Brand-Book ${m.name}.docx`;
 }
 
+// Werte fuer die Template-Platzhalter (pur, testbar): Name + Kontaktfelder
+// aus den Kerninfos + die vier Rating-Werte aus dem Brand Rating. Die
+// Schluessel sind die Labels aus der Kerninfos-Tabelle, weil der Platzhalter
+// im Template {{Label}} heisst (siehe template_platzhalter.py).
+function bookWerte(m) {
+  const br = m.brandrating || {};
+  const k = kerninfosAktuell(m, quelleZuName(m.name));
+  const werte = { "Name": m.name,
+    "Rating (A-D)": br.rating || "",
+    "Brand Fit": br.brandfit || "",
+    "Begeisterung": br.begeisterung || "",
+    "Erfolgschance": br.erfolgschance || "" };
+  for (const label of KONTAKT_FELDER) werte[label] = k[label] || "";
+  return werte;
+}
+
+// Werte landen als Text in der document.xml - kaufmaennisches Und & Co.
+// muessen escaped werden, sonst ist das Word-Dokument kaputt (es gibt
+// wirklich eine Marke "Juno &me").
+function xmlText(s) {
+  return String(s).replace(/&/g, "&amp;")
+                  .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// .docx ist ein ZIP: word/document.xml raus, Platzhalter ersetzen, rein.
+// Ersetzt wird per split/join (literal) statt per RegExp - Labels wie
+// "Rating (A-D)" enthalten Sonderzeichen, die als Muster explodieren wuerden.
+// Die Platzhalter stehen dank template_platzhalter.py garantiert als EIN
+// Word-Run in der Datei und sind deshalb am Stueck auffindbar.
+async function docxBefuellen(puffer, werte) {
+  const zip = await JSZip.loadAsync(puffer);
+  const datei = zip.file("word/document.xml");
+  if (!datei) return puffer; // kein Word-Dokument - unveraendert lassen
+  let xml = await datei.async("string");
+  for (const [label, wert] of Object.entries(werte)) {
+    xml = xml.split("{{" + label + "}}").join(xmlText(wert));
+  }
+  // Rest-Platzhalter entfernen: haette Andreas Template eine Zeile, die
+  // die App (noch) nicht kennt, stuende sonst "{{...}}" im fertigen Book.
+  xml = xml.replace(/\{\{[^{}]{1,40}\}\}/g, "");
+  zip.file("word/document.xml", xml);
+  return zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+}
+
 // Template nach Rating kopieren (A bzw. B-C; D = Archiv, kein Template).
 // GET + PUT statt Graph-copy: copy antwortet asynchron (202 + Monitor-URL),
 // die Templates sind winzig. conflictBehavior=fail: ein vorhandenes Book
 // (womoeglich handgeschrieben!) wird NIE ueberschrieben.
+// Rueckgabe "neu-leer": Book liegt in OneDrive, aber das Befuellen ging
+// schief - lieber ein leeres Book + ehrliche Meldung als gar keins.
 async function bookErzeugen(m) {
   const tplName = String(m.brandrating.rating).trim() === "A"
     ? "Template Brand-Book A Brand.docx"
     : "Template Brand-Book B-C Brand.docx";
   const tpl = await OD.graphRoh(`${BOOK_BASIS}/${tplName}:/content`);
   if (!tpl || !tpl.ok) return "fehler";
+  let inhalt = await tpl.arrayBuffer(), gefuellt = true;
+  try {
+    if (typeof JSZip === "undefined") throw new Error("jszip.min.js fehlt");
+    inhalt = await docxBefuellen(inhalt, bookWerte(m));
+  } catch (_) {
+    gefuellt = false; // Original-Template hochladen, Platzhalter bleiben drin
+  }
   const neu = await OD.graphRoh(
     bookPfad(m) + ":/content?@microsoft.graph.conflictBehavior=fail",
-    { method: "PUT", body: await tpl.arrayBuffer(),
+    { method: "PUT", body: inhalt,
       headers: { "Content-Type": DOCX_TYP } });
   return !neu ? "fehler" : neu.status === 409 ? "existiert"
-       : neu.ok ? "neu" : "fehler";
+       : neu.ok ? (gefuellt ? "neu" : "neu-leer") : "fehler";
 }
 
 // Datenteil Stufe 1 (pur, testbar in test_kadenz.js): NUR der Erledigt-
