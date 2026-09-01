@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v49"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v50"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1367,6 +1367,12 @@ function sheetBrandrating(m) {
       // Beide Stufen einzeln sichtbar (Tobias 01.09., v43)
       ["Brand-Book erstellen", br.brandbook ? "✓ erstellt" : "offen"],
       ["Brand-Book befüllt", inPitchliste(m) ? "✓ befüllt" : "offen"],
+      // Rating nach dem Erstellen geaendert? Dann liegt die Datei weiter im
+      // alten Ordner. Sichtbar machen, statt Ordner und Rating still
+      // auseinanderlaufen zu lassen.
+      ["Book liegt in",
+        m.bookordner && m.bookordner !== String(br.rating).trim()
+          ? `${m.bookordner} Brands (Rating ist inzwischen ${br.rating})` : ""],
       ["Notizen", br.notizen],
     ].filter(([, w]) => w);
     const tab = el("div", "tabelle");
@@ -2101,9 +2107,16 @@ const BOOK_BASIS = "/me/drive/root:/Apps/Cockpit/Testdaten/Brand-Books";
 const DOCX_TYP = "application/vnd.openxmlformats-officedocument" +
                  ".wordprocessingml.document";
 
+// Wo das Book WIRKLICH liegt. Der Ordner kommt vom Rating - aendert sich
+// das Rating spaeter (seit v42 jederzeit moeglich), zeigt ein frisch
+// berechneter Pfad in den falschen Ordner: Loeschen, Rueckgaengig und
+// Aktualisieren griffen dann ins Leere und liessen eine verwaiste Datei
+// zurueck (Tobias 01.09., "Brand-Book Tobiiiiii.docx"). Deshalb merkt sich
+// die Brand beim Erstellen ihren Ordner; nur wenn der fehlt (Andreas
+// gewachsene Books, die die App nie angelegt hat) wird gerechnet.
 function bookPfad(m) {
-  return `${BOOK_BASIS}/${String(m.brandrating.rating).trim()} Brands` +
-         `/Brand-Book ${m.name}.docx`;
+  const ordner = m.bookordner || String(m.brandrating.rating).trim();
+  return `${BOOK_BASIS}/${ordner} Brands/Brand-Book ${m.name}.docx`;
 }
 
 // Werte fuer die Template-Platzhalter (pur, testbar): Name + Kontaktfelder
@@ -2189,6 +2202,9 @@ function bookErstelltDaten(m, bookNeu, jetzt) {
   datenstand.letztesBook = { name: m.name, zeit: jetzt, stufe: 1, bookNeu,
     vorher: m.brandrating.brandbook || "" };
   m.brandrating.brandbook = "✔️";
+  // Ordner festhalten, in dem die Datei jetzt liegt - ein spaeteres
+  // Rating-Update darf den Zugriff darauf nicht verlieren (siehe bookPfad)
+  m.bookordner = String(m.brandrating.rating).trim();
   listeVeraltet = true;
 }
 
@@ -2215,7 +2231,10 @@ function bookRueckgaengig(m, lb) {
   if (lb.stufe === 2) {
     if (lb.pitchNeu) m.pitchliste = null;
   } else {
-    if (lb.bookNeu) OD.graphRoh(bookPfad(m), { method: "DELETE" });
+    if (lb.bookNeu) {
+      OD.graphRoh(bookPfad(m), { method: "DELETE" }); // erst loeschen ...
+      delete m.bookordner;                            // ... dann den Merker
+    }
     m.brandrating.brandbook = lb.vorher;
     if (lb.pitchNeu) m.pitchliste = null; // Altformat vor v42 (eine Stufe)
   }
