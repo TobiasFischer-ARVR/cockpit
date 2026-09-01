@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v42"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v43"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -358,13 +358,14 @@ function gruppenBlock(name, marken) {
 // Deshalb: beim Oeffnen ein History-Eintrag (pushState, URL unveraendert);
 // Zurueck-Geste, Schliessen-Knopf und Schleier-Tipp nehmen ihn per
 // history.back() zurueck, und der popstate-Handler raeumt das Sheet weg.
-function sheetOeffnen(titel, inhalt) {
+function sheetOeffnen(titel, inhalt, aktion) {
   sheetEntfernen();
   const schleier = el("div", "schleier");
   schleier.id = "schleier";
   const sheet = el("div", "sheet");
   const kopf = el("div", "sheet-kopf");
   kopf.append(el("div", "titel", titel));
+  if (aktion) kopf.append(aktion); // Knopf rechts neben dem Titel (v43)
   const koerper = el("div", "sheet-inhalt");
   koerper.append(inhalt);
   const fuss = el("div", "sheet-fuss");
@@ -650,11 +651,20 @@ function quelleZuName(name) {
 // Rückgängig stellt exakt den Stand davor wieder her.
 function sheetPitch(p) {
   const wrap = el("div");
+  const mv = datenstand ? markeZuName(p.name) : null;
+  let bearbeiten = false;
+  const stift = mv && mv.brandrating
+    ? ratingStift(() => { bearbeiten = !bearbeiten; bau(); }) : null;
   bau();
-  sheetOeffnen(p.name, wrap);
+  sheetOeffnen(p.name, wrap, stift);
 
   function bau() {
     wrap.innerHTML = "";
+    if (bearbeiten) {
+      wrap.append(el("div", "abschnitt", "Rating bearbeiten"),
+        ratingFormular(mv, () => { bearbeiten = false; bau(); }));
+      return;
+    }
     const q = pitchMitDatenstand(p);
     wrap.append(el("div", "kontext",
       ampel(q.datum_naechste_aktion, heuteNull()).text));
@@ -676,10 +686,7 @@ function sheetPitch(p) {
       zeile.append(el("span", "leise", label), el("span", null, wert));
       tab.append(zeile);
     }
-    const mv = datenstand ? markeZuName(p.name) : null;
-    wrap.append(tab);
-    if (mv) wrap.append(bereichRatingEdit(mv, bau));
-    wrap.append(bereichStartdatum(q), bereichErledigen(q));
+    wrap.append(tab, bereichStartdatum(q), bereichErledigen(q));
 
     const quelle = quelleZuName(p.name);
     if (quelle) {
@@ -1033,60 +1040,64 @@ function symAnzahl(s) {
   return (String(s || "").match(/[⭐❤★]/gu) || []).length;
 }
 
+// Stufe 2 erledigt = Brand steht in der Pitchliste (App-Eintrag oder
+// schon im Excel-Snapshot) - eine Bedingung fuer Statuszeile und Knopf.
+function inPitchliste(m) {
+  return Boolean(m.pitchliste || (snap && (snap.pitchliste || []).some(
+    (p) => schluessel(p.name) === schluessel(m.name))));
+}
+
 // Ratings bearbeiten (Tobias 01.09.): Fit/Begeisterung/Erfolgschance und
 // das A-D-Rating koennen im Projektverlauf auch SINKEN - deshalb ueberall
 // aenderbar, wo die Brand auftaucht (Brand-Rating-Sheet + Pitchlisten-
 // Sheet). Rating D = inaktiv/Archiv: damit fliegt die Brand aus der
 // Pitchliste (Filter in pitchlisteAktuell), bleibt aber im Brand Rating.
-function bereichRatingEdit(m, neuBauen) {
-  const frag = document.createDocumentFragment();
-  if (!datenstand || !m.brandrating) return frag;
-  const z = el("div", "chips");
-  const b = el("button", "chip", "✎ Rating bearbeiten");
-  b.onclick = () => z.replaceWith(formular());
-  z.append(b);
-  frag.append(z);
-  return frag;
+// Zugang: Stift-Knopf in der Sheet-KOPFZEILE (Tobias 01.09., v43) -
+// ratingStift() baut den Knopf, ratingFormular() das Formular im Inhalt.
+function ratingStift(umschalten) {
+  const b = el("button", "chip", "✎ Rating");
+  b.onclick = umschalten;
+  return b;
+}
 
-  function formular() {
-    const br = m.brandrating;
-    const wrap = el("div");
-    const f = { rating: String(br.rating || "").trim(),
-      fit: symAnzahl(br.brandfit), geist: symAnzahl(br.begeisterung),
-      chance: symAnzahl(br.erfolgschance) };
-    const skala = [1, 2, 3, 4, 5].map((n) => [n, String(n)]);
-    const zeile = (titel, paare, feld) => wrap.append(
-      el("div", "stand", titel),
-      chipFilter(paare, f[feld], (w) => { f[feld] = w; }, () => {}));
-    zeile("Rating (A–D)",
-      [["A", "A"], ["B", "B"], ["C", "C"], ["D", "D — inaktiv"]], "rating");
-    zeile("Brand Fit", skala, "fit");
-    zeile("Begeisterung", skala, "geist");
-    zeile("Erfolgschance", skala, "chance");
-    const okZ = el("div", "chips");
-    const ok = el("button", "chip aktiv", "✓ Speichern");
-    ok.onclick = () => {
-      if (!f.rating) { banner("Rating (A–D) fehlt."); return; }
-      if (f.rating === "D" && String(br.rating || "").trim() !== "D" &&
-          !confirm(`„${m.name}“ auf D setzen?\n` +
-            "D = inaktiv/Archiv — die Brand verschwindet aus der " +
-            "Pitchliste, bleibt aber im Brand Rating.")) return;
-      Object.assign(br, { rating: f.rating,
-        brandfit: "⭐".repeat(f.fit || 0),
-        begeisterung: "❤️".repeat(f.geist || 0),
-        erfolgschance: "⭐".repeat(f.chance || 0) });
-      if (m.pitchliste)
-        Object.assign(m.pitchliste, { rating: f.rating, geaendert: lokalIso() });
-      listeVeraltet = true;
-      datenstandPersistieren();
-      neuBauen();
-    };
-    const ab = el("button", "chip", "Abbrechen");
-    ab.onclick = neuBauen;
-    okZ.append(ok, ab);
-    wrap.append(okZ);
-    return wrap;
-  }
+function ratingFormular(m, fertig) {
+  const br = m.brandrating;
+  const wrap = el("div");
+  const f = { rating: String(br.rating || "").trim(),
+    fit: symAnzahl(br.brandfit), geist: symAnzahl(br.begeisterung),
+    chance: symAnzahl(br.erfolgschance) };
+  const skala = [1, 2, 3, 4, 5].map((n) => [n, String(n)]);
+  const zeile = (titel, paare, feld) => wrap.append(
+    el("div", "stand", titel),
+    chipFilter(paare, f[feld], (w) => { f[feld] = w; }, () => {}));
+  zeile("Rating (A–D)",
+    [["A", "A"], ["B", "B"], ["C", "C"], ["D", "D — inaktiv"]], "rating");
+  zeile("Brand Fit", skala, "fit");
+  zeile("Begeisterung", skala, "geist");
+  zeile("Erfolgschance", skala, "chance");
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip aktiv", "✓ Speichern");
+  ok.onclick = () => {
+    if (!f.rating) { banner("Rating (A–D) fehlt."); return; }
+    if (f.rating === "D" && String(br.rating || "").trim() !== "D" &&
+        !confirm(`„${m.name}“ auf D setzen?\n` +
+          "D = inaktiv/Archiv — die Brand verschwindet aus der " +
+          "Pitchliste, bleibt aber im Brand Rating.")) return;
+    Object.assign(br, { rating: f.rating,
+      brandfit: "⭐".repeat(f.fit || 0),
+      begeisterung: "❤️".repeat(f.geist || 0),
+      erfolgschance: "⭐".repeat(f.chance || 0) });
+    if (m.pitchliste)
+      Object.assign(m.pitchliste, { rating: f.rating, geaendert: lokalIso() });
+    listeVeraltet = true;
+    datenstandPersistieren();
+    fertig();
+  };
+  const ab = el("button", "chip", "Abbrechen");
+  ab.onclick = fertig;
+  okZ.append(ok, ab);
+  wrap.append(okZ);
+  return wrap;
 }
 
 // Löschen nur für App-angelegte Brands (erstellt-Marker) - Andreas
@@ -1130,12 +1141,20 @@ function brKarte(m) {
 
 function sheetBrandrating(m) {
   const wrap = el("div");
+  let bearbeiten = false;
+  const stift = datenstand
+    ? ratingStift(() => { bearbeiten = !bearbeiten; bau(); }) : null;
   bau();
-  sheetOeffnen(m.name, wrap);
+  sheetOeffnen(m.name, wrap, stift);
 
   function bau() {
     wrap.innerHTML = "";
     const br = m.brandrating;
+    if (bearbeiten) {
+      wrap.append(el("div", "abschnitt", "Rating bearbeiten"),
+        ratingFormular(m, () => { bearbeiten = false; bau(); }));
+      return;
+    }
     // Beschriftungen exakt wie in den Book-Kerninfos ("Rating (A-D)", ...) -
     // beides zeigt dieselben Werte aus zwei handgepflegten Quellen (Tobias
     // 31.08.: gleich benennen). Weichen sie ab, ist beim Uebertragen
@@ -1144,7 +1163,9 @@ function sheetBrandrating(m) {
       ["Status", br.status], ["Kategorie", br.kategorie],
       ["Brand Fit", br.brandfit], ["Begeisterung", br.begeisterung],
       ["Erfolgschance", br.erfolgschance], ["Rating (A-D)", br.rating],
-      ["Brand-Book", br.brandbook ? "✓ erledigt" : "offen"],
+      // Beide Stufen einzeln sichtbar (Tobias 01.09., v43)
+      ["Brand-Book erstellen", br.brandbook ? "✓ erstellt" : "offen"],
+      ["Brand-Book befüllt", inPitchliste(m) ? "✓ befüllt" : "offen"],
       ["Notizen", br.notizen],
     ].filter(([, w]) => w);
     const tab = el("div", "tabelle");
@@ -1154,7 +1175,6 @@ function sheetBrandrating(m) {
       tab.append(zeile);
     }
     wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
-    wrap.append(bereichRatingEdit(m, bau));
     wrap.append(bereichAbschluss(br));
     const quelle = quelleZuName(m.name);
     if (quelle) wrap.append(markenDetails(quelle, true));
@@ -1174,9 +1194,13 @@ function sheetBrandrating(m) {
     // mit Löschen) - eine Ebene, wie beim Erledigt-Knopf
     const lb = datenstand.letztesBook;
     if (lb && schluessel(lb.name) === schluessel(m.name)) {
+      // Bestaetigung auch IM Sheet (Tobias 01.09.) - das Banner allein
+      // reichte nicht als Rueckmeldung
       frag.append(el("div", "stand",
-        (lb.stufe === 2 ? "Brand-Book befüllt: " : "Brand-Book erstellt: ") +
-        lb.zeit.replace("T", " ").slice(0, 16)));
+        lb.stufe === 2
+          ? "✓ Brand-Book befüllt: " + lb.zeit.replace("T", " ").slice(0, 16) +
+            " — die Brand steht jetzt in der Pitchliste (ohne Termin)."
+          : "✓ Brand-Book erstellt: " + lb.zeit.replace("T", " ").slice(0, 16)));
       const rz = el("div", "chips");
       const rk = el("button", "chip", "↶ Rückgängig");
       rk.onclick = () => { bookRueckgaengig(m, lb); bau(); };
@@ -1226,9 +1250,7 @@ function sheetBrandrating(m) {
     }
     // ------------------------------ Stufe 2: Book befüllt -> Pitchliste
     if (!["A", "B", "C"].includes(rating)) return frag; // D-Archiv-Books
-    const inListe = m.pitchliste || (snap && (snap.pitchliste || []).some(
-      (p) => schluessel(p.name) === schluessel(m.name)));
-    if (inListe) return frag; // schon in der Pitchliste - nichts anzubieten
+    if (inPitchliste(m)) return frag; // schon drin - nichts anzubieten
     const z = el("div", "chips");
     const b = el("button", "chip aktiv", "✓ Brand-Book befüllt");
     b.onclick = () => {

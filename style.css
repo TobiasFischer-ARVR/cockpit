@@ -316,8 +316,12 @@ main {
 .sheet-kopf {
   padding: 16px 18px 10px;
   border-bottom: 1px solid var(--rand);
+  /* Platz fuer einen Aktions-Knopf rechts neben dem Titel (v43: ✎ Rating) */
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.sheet-kopf .titel { font-size: 17px; font-weight: 600; line-height: 1.35; }
+.sheet-kopf .titel { font-size: 17px; font-weight: 600; line-height: 1.35; flex: 1; }
 .sheet-inhalt { padding: 14px 18px; overflow-y: auto; flex: 1; }
 .sheet-inhalt .kontext {
   font-size: 11.5px;
@@ -402,5 +406,7 @@ main {
   padding: 10px 14px;
   font-size: 12.5px;
   box-shadow: 0 24px 70px rgba(0,0,0,.6);
-  z-index: 10;
+  /* UEBER dem Sheet-Schleier (20) - sonst verdeckt ein offenes Sheet
+     jede Meldung (Tobias 01.09., Book-befuellt-Banner unsichtbar) */
+  z-index: 30;
 }
