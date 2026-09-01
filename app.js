@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v50"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v51"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -99,6 +99,29 @@ function sheetEinstellungen() {
   wrap.append(sStatus, sZeile, el("div", "stand",
     "Backup laden: eine cockpit-datenstand-….json auswählen " +
     "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand."));
+
+  // Automatisches Backup (Tobias 01.09.): datierte Kopie nach OneDrive
+  wrap.append(el("div", "abschnitt", "Automatisches Backup"));
+  const aStand = el("div", "stand", autoBackupText());
+  const aFeld = el("input", "tage");
+  aFeld.type = "number";
+  aFeld.min = "0";
+  aFeld.inputMode = "numeric";
+  aFeld.value = einst.autoTage || "";
+  aFeld.onchange = () => {
+    const n = Math.max(0, Math.floor(Number(aFeld.value) || 0));
+    einst.autoTage = n || "";
+    aFeld.value = einst.autoTage;
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    aStand.textContent = autoBackupText();
+    autoBackupPruefen().then(() => { aStand.textContent = autoBackupText(); });
+  };
+  wrap.append(el("div", "stand", "Alle wie viel Tage sichern? (0 = aus)"),
+    aFeld, aStand, el("div", "stand",
+      "Legt beim Öffnen der App eine datierte Kopie in OneDrive an " +
+      "(cockpit-datenstand-JJJJ-MM-TT.json), die du oben mit „Backup " +
+      "laden“ zurückholst. Anders als „Jetzt sichern“, das immer " +
+      "dieselbe Datei überschreibt. Gilt nur für dieses Gerät."));
   sheetOeffnen("Einstellungen", wrap);
 }
 
@@ -2313,6 +2336,53 @@ async function datenstandLaden() {
     // die Datei ist winzig - Abgleich laeuft einfach bei jedem Laden.
     OD.graphPutLeise(OD_DATENSTAND, datenstand);
   }
+  // Datiertes Backup, falls faellig. Bewusst OHNE await: der Start soll
+  // nicht auf einen Upload warten.
+  autoBackupPruefen();
+}
+
+// ------------------------------------------- Automatisches Backup (v51)
+// Abgrenzung, sonst verwechselt man das mit "Jetzt sichern": Sichern
+// ueberschreibt die EINE datenstand.json (passiert ohnehin bei jeder
+// Aenderung) - das rettet nichts, wenn vorgestern etwas Falsches passiert
+// ist. Hier entsteht stattdessen eine KOPIE PRO DATUM, die genau das
+// ueberlebt. Ziel ist OneDrive und nicht der Download-Ordner, weil ein
+// Browser ohne Nutzergeste nichts herunterladen darf.
+// ponytail: liegt neben datenstand.json statt in einem Backups/-Unterordner
+// - spart das Anlegen des Ordners per Graph. Unterordner, wenn es dort
+// unuebersichtlich wird.
+const OD_BACKUP = (datum) =>
+  `/me/drive/root:/Apps/Cockpit/cockpit-datenstand-${datum}.json:/content`;
+
+// Pur gehalten (Datum wird hereingereicht), damit test_kadenz.js das
+// Faelligkeits-Rechnen ohne Uhr und ohne OneDrive pruefen kann.
+function backupFaellig(e, heute) {
+  const tage = Number(e.autoTage);
+  if (!tage || tage < 1) return false;      // 0, leer oder Unsinn = aus
+  if (!e.autoStand) return true;            // noch nie gesichert -> sofort
+  const alt = Date.parse(e.autoStand + "T00:00:00");
+  const neu = Date.parse(heute + "T00:00:00");
+  if (isNaN(alt) || isNaN(neu)) return true; // kaputter Merker -> lieber sichern
+  return (neu - alt) / 86400000 >= tage;
+}
+
+function autoBackupText() {
+  if (!Number(einst.autoTage)) return "Automatisches Backup: aus";
+  return `Alle ${einst.autoTage} Tage · ` +
+    (einst.autoStand ? "zuletzt " + einst.autoStand : "noch keins angelegt");
+}
+
+// Laeuft beim Laden mit, ohne den Start aufzuhalten (kein await beim
+// Aufrufer). Schlaegt der PUT fehl (offline), bleibt der Merker stehen -
+// beim naechsten Start wird es erneut versucht.
+async function autoBackupPruefen() {
+  if (!datenstand || typeof OD === "undefined" || !OD.konto()) return;
+  const heute = lokalIso().slice(0, 10);
+  if (!backupFaellig(einst, heute)) return;
+  if (!await OD.graphPutLeise(OD_BACKUP(heute), datenstand)) return;
+  einst.autoStand = heute;
+  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  banner("Automatisches Backup in OneDrive angelegt.");
 }
 
 // "Jetzt sichern" (Phase 4): Datenstand aktiv nach OneDrive schreiben,
