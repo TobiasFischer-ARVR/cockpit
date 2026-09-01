@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v41"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v42"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -676,34 +676,35 @@ function sheetPitch(p) {
       zeile.append(el("span", "leise", label), el("span", null, wert));
       tab.append(zeile);
     }
-    wrap.append(tab, bereichStartdatum(q), bereichErledigen(q));
+    const mv = datenstand ? markeZuName(p.name) : null;
+    wrap.append(tab);
+    if (mv) wrap.append(bereichRatingEdit(mv, bau));
+    wrap.append(bereichStartdatum(q), bereichErledigen(q));
 
     const quelle = quelleZuName(p.name);
     if (quelle) {
       wrap.append(markenDetails(quelle));
     } else {
       wrap.append(el("div", "abschnitt", "Brand-Book"));
-      wrap.append(el("div", "leerzustand kompakt",
-        "Kein Brand-Book im aktuellen Datenordner — liegt im echten Verzeichnis (kommt mit Phase 3 / OneDrive)."));
+      // App-erzeugtes Book (v42): liegt schon in OneDrive - nur Kontakt &
+      // Historie daraus kennt erst der naechste PC-Export. Bis dahin
+      // wenigstens den Oeffnen-Knopf anbieten statt "kommt mit Phase 3".
+      if (mv && mv.brandrating && mv.brandrating.brandbook &&
+          typeof OD !== "undefined" && OD.konto()) {
+        const z = el("div", "chips");
+        const b = el("button", "chip", "📄 Brand-Book öffnen");
+        b.onclick = () => bookOeffnen("Brand-Book " + mv.name, b);
+        z.append(b);
+        wrap.append(z, el("div", "stand",
+          "Kontakt & Historie aus dem Book erscheinen nach dem " +
+          "nächsten Einlesen am PC."));
+      } else {
+        wrap.append(el("div", "leerzustand kompakt",
+          "Noch kein Brand-Book eingelesen — kommt mit dem nächsten PC-Export."));
+      }
     }
 
-    // Löschen nur für App-angelegte Brands (erstellt-Marker) - Andreas
-    // gewachsene Excel-/Book-Daten fasst die App nicht an
-    const mv = datenstand ? markeZuName(p.name) : null;
-    if (mv && mv.erstellt) {
-      wrap.append(el("div", "abschnitt", "Verwaltung"));
-      const lz = el("div", "chips");
-      const lk = el("button", "chip", "🗑 Brand löschen");
-      lk.onclick = () => {
-        if (!confirm(`„${mv.name}“ komplett löschen?\n` +
-            "Verschwindet aus Pitchliste und Brandrating-Export.")) return;
-        brandLoeschen(mv);
-        history.back(); // Sheet zu, popstate zeichnet die Liste frisch
-      };
-      lz.append(lk);
-      wrap.append(lz, el("div", "stand",
-        "Nur möglich, weil diese Brand in der App angelegt wurde."));
-    }
+    if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
   }
 
   // Startdatum (Andreas Workflow Schritt 7): frisch aus dem Brand Rating
@@ -847,7 +848,16 @@ function pitchlisteAktuell() {
       }
     }
   }
-  return liste;
+  // D-Brands = inaktiv/Archiv bei Andrea (Tobias 01.09.): erscheinen nie
+  // in der Pitchliste - egal ob das D aus der Excel-Pitchliste kommt oder
+  // per Rating-Edit in der App gesetzt wurde.
+  const istD = (p) => {
+    if (String(p.rating || "").trim().toUpperCase() === "D") return true;
+    const m = datenstand && markeZuName(p.name);
+    return Boolean(m && m.brandrating &&
+      String(m.brandrating.rating || "").trim().toUpperCase() === "D");
+  };
+  return liste.filter((p) => !istD(p));
 }
 
 // Ampel der Excel-Pitchliste, live gerechnet (Regeln siehe Projektnotiz):
@@ -1023,6 +1033,85 @@ function symAnzahl(s) {
   return (String(s || "").match(/[⭐❤★]/gu) || []).length;
 }
 
+// Ratings bearbeiten (Tobias 01.09.): Fit/Begeisterung/Erfolgschance und
+// das A-D-Rating koennen im Projektverlauf auch SINKEN - deshalb ueberall
+// aenderbar, wo die Brand auftaucht (Brand-Rating-Sheet + Pitchlisten-
+// Sheet). Rating D = inaktiv/Archiv: damit fliegt die Brand aus der
+// Pitchliste (Filter in pitchlisteAktuell), bleibt aber im Brand Rating.
+function bereichRatingEdit(m, neuBauen) {
+  const frag = document.createDocumentFragment();
+  if (!datenstand || !m.brandrating) return frag;
+  const z = el("div", "chips");
+  const b = el("button", "chip", "✎ Rating bearbeiten");
+  b.onclick = () => z.replaceWith(formular());
+  z.append(b);
+  frag.append(z);
+  return frag;
+
+  function formular() {
+    const br = m.brandrating;
+    const wrap = el("div");
+    const f = { rating: String(br.rating || "").trim(),
+      fit: symAnzahl(br.brandfit), geist: symAnzahl(br.begeisterung),
+      chance: symAnzahl(br.erfolgschance) };
+    const skala = [1, 2, 3, 4, 5].map((n) => [n, String(n)]);
+    const zeile = (titel, paare, feld) => wrap.append(
+      el("div", "stand", titel),
+      chipFilter(paare, f[feld], (w) => { f[feld] = w; }, () => {}));
+    zeile("Rating (A–D)",
+      [["A", "A"], ["B", "B"], ["C", "C"], ["D", "D — inaktiv"]], "rating");
+    zeile("Brand Fit", skala, "fit");
+    zeile("Begeisterung", skala, "geist");
+    zeile("Erfolgschance", skala, "chance");
+    const okZ = el("div", "chips");
+    const ok = el("button", "chip aktiv", "✓ Speichern");
+    ok.onclick = () => {
+      if (!f.rating) { banner("Rating (A–D) fehlt."); return; }
+      if (f.rating === "D" && String(br.rating || "").trim() !== "D" &&
+          !confirm(`„${m.name}“ auf D setzen?\n` +
+            "D = inaktiv/Archiv — die Brand verschwindet aus der " +
+            "Pitchliste, bleibt aber im Brand Rating.")) return;
+      Object.assign(br, { rating: f.rating,
+        brandfit: "⭐".repeat(f.fit || 0),
+        begeisterung: "❤️".repeat(f.geist || 0),
+        erfolgschance: "⭐".repeat(f.chance || 0) });
+      if (m.pitchliste)
+        Object.assign(m.pitchliste, { rating: f.rating, geaendert: lokalIso() });
+      listeVeraltet = true;
+      datenstandPersistieren();
+      neuBauen();
+    };
+    const ab = el("button", "chip", "Abbrechen");
+    ab.onclick = neuBauen;
+    okZ.append(ok, ab);
+    wrap.append(okZ);
+    return wrap;
+  }
+}
+
+// Löschen nur für App-angelegte Brands (erstellt-Marker) - Andreas
+// gewachsene Excel-/Book-Daten fasst die App nicht an. Gemeinsam fuer
+// Pitchlisten- und Brand-Rating-Sheet (seit v42 landen neue Brands erst
+// nach "Brand-Book befüllt" in der Pitchliste - loeschen muss vorher
+// schon gehen).
+function bereichLoeschen(m) {
+  const frag = document.createDocumentFragment();
+  frag.append(el("div", "abschnitt", "Verwaltung"));
+  const lz = el("div", "chips");
+  const lk = el("button", "chip", "🗑 Brand löschen");
+  lk.onclick = () => {
+    if (!confirm(`„${m.name}“ komplett löschen?\n` +
+        "Verschwindet aus allen Listen; ein per App angelegtes " +
+        "Brand-Book wandert in den OneDrive-Papierkorb.")) return;
+    brandLoeschen(m);
+    history.back(); // Sheet zu, popstate zeichnet die Liste frisch
+  };
+  lz.append(lk);
+  frag.append(lz, el("div", "stand",
+    "Nur möglich, weil diese Brand in der App angelegt wurde."));
+  return frag;
+}
+
 function brKarte(m) {
   const br = m.brandrating;
   const karte = el("div", "karte" + (br.brandbook ? "" : " leer"));
@@ -1065,70 +1154,94 @@ function sheetBrandrating(m) {
       tab.append(zeile);
     }
     wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
+    wrap.append(bereichRatingEdit(m, bau));
     wrap.append(bereichAbschluss(br));
     const quelle = quelleZuName(m.name);
     if (quelle) wrap.append(markenDetails(quelle, true));
+    if (m.erstellt) wrap.append(bereichLoeschen(m));
   }
 
-  // "Rating abgeschlossen" (Phase 5, Andreas Workflow Schritt 5): ein
-  // Klick -> Brand-Book aus dem Template in OneDrive + Erledigt-Haken +
-  // Pitchlisten-Eintrag OHNE Termin (das Startdatum vergibt Andrea dort
-  // manuell, Workflow Schritt 7 - erst damit startet die Kadenz).
+  // Book-Workflow in ZWEI Stufen (Tobias 01.09., vorher ein Knopf
+  // "Rating abgeschlossen"):
+  //   Stufe 1 "Brand-Book erstellen" - Template nach OneDrive + Haken.
+  //   Stufe 2 "Brand-Book befüllt"  - erst DANACH geht die Brand in die
+  //     Pitchliste (ohne Termin, Startdatum setzt Andrea dort, Schritt 7).
+  //   Dazwischen befuellt Andrea das Book in Word.
   function bereichAbschluss(br) {
     const frag = document.createDocumentFragment();
     if (!datenstand) return frag;
-    // Rückgängig für den letzten Abschluss (Regel: Erstellen nur
-    // zusammen mit Löschen) - eine Ebene, wie beim Erledigt-Knopf
+    // Rückgängig für die letzte Stufe (Regel: Erstellen nur zusammen
+    // mit Löschen) - eine Ebene, wie beim Erledigt-Knopf
     const lb = datenstand.letztesBook;
     if (lb && schluessel(lb.name) === schluessel(m.name)) {
       frag.append(el("div", "stand",
-        "Rating abgeschlossen: " + lb.zeit.replace("T", " ").slice(0, 16) +
-        (lb.bookNeu ? " · Book angelegt" : "")));
+        (lb.stufe === 2 ? "Brand-Book befüllt: " : "Brand-Book erstellt: ") +
+        lb.zeit.replace("T", " ").slice(0, 16)));
       const rz = el("div", "chips");
       const rk = el("button", "chip", "↶ Rückgängig");
       rk.onclick = () => { bookRueckgaengig(m, lb); bau(); };
       rz.append(rk);
       frag.append(rz);
-      return frag;
+      // kein return: nach Stufe 1 muss der Stufe-2-Knopf direkt sichtbar sein
     }
-    if (br.brandbook) return frag; // schon erledigt - nichts anzubieten
     const rating = String(br.rating || "").trim();
-    if (!["A", "B", "C"].includes(rating)) {
-      frag.append(el("div", "stand", rating === "D"
-        ? "D-Brand = Archiv — kein Brand-Book-Template."
-        : "Erst Rating (A–C) vergeben — es bestimmt Template und Ordner."));
-      return frag;
-    }
-    if (typeof OD === "undefined" || !OD.konto()) {
-      frag.append(el("div", "stand",
-        "Fürs Brand-Book erst bei OneDrive anmelden (Hauptmenü)."));
-      return frag;
-    }
-    const z = el("div", "chips");
-    const b = el("button", "chip aktiv", "✓ Rating abgeschlossen");
-    b.onclick = async () => {
-      if (!confirm(`„${m.name}“ in die Pitchliste schieben?\n` +
-          `Brand-Book wird als ${rating}-Brand in OneDrive angelegt` +
-          (m.pitchliste ? "." : ",\nPitchlisten-Eintrag kommt ohne Termin " +
-                                "(Startdatum setzt du dort)."))) return;
-      b.disabled = true;
-      const erg = await bookErzeugen(m);
-      if (erg === "fehler") {
-        b.disabled = false;
-        banner("Book-Anlage fehlgeschlagen — Internet/OneDrive prüfen.");
-        return;
+    if (!br.brandbook) {
+      // ------------------------------------------ Stufe 1: Book erstellen
+      if (!["A", "B", "C"].includes(rating)) {
+        frag.append(el("div", "stand", rating === "D"
+          ? "D-Brand = inaktiv/Archiv — kein Brand-Book, keine Pitchliste."
+          : "Erst Rating (A–C) vergeben — es bestimmt Template und Ordner."));
+        return frag;
       }
-      ratingAbschliessenDaten(m, erg === "neu", lokalIso());
+      if (typeof OD === "undefined" || !OD.konto()) {
+        frag.append(el("div", "stand",
+          "Fürs Brand-Book erst bei OneDrive anmelden (Hauptmenü)."));
+        return frag;
+      }
+      const z = el("div", "chips");
+      const b = el("button", "chip aktiv", "📄 Brand-Book erstellen");
+      b.onclick = async () => {
+        if (!confirm(`Brand-Book für „${m.name}“ anlegen?\n` +
+            `Kommt als ${rating}-Brand nach OneDrive — danach in Word ` +
+            "befüllen und hier „Brand-Book befüllt“ drücken.")) return;
+        b.disabled = true;
+        const erg = await bookErzeugen(m);
+        if (erg === "fehler") {
+          b.disabled = false;
+          banner("Book-Anlage fehlgeschlagen — Internet/OneDrive prüfen.");
+          return;
+        }
+        bookErstelltDaten(m, erg === "neu", lokalIso());
+        datenstandPersistieren();
+        banner(erg === "existiert"
+          ? "Book gab es schon in OneDrive — nur der Haken wurde gesetzt."
+          : `Brand-Book angelegt: ${rating} Brands/Brand-Book ${m.name}.docx`);
+        bau();
+      };
+      z.append(b);
+      frag.append(z, el("div", "stand",
+        "Stufe 1: erzeugt das Brand-Book aus dem Template und setzt den " +
+        "Haken. In die Pitchliste kommt die Brand erst mit „Brand-Book befüllt“."));
+      return frag;
+    }
+    // ------------------------------ Stufe 2: Book befüllt -> Pitchliste
+    if (!["A", "B", "C"].includes(rating)) return frag; // D-Archiv-Books
+    const inListe = m.pitchliste || (snap && (snap.pitchliste || []).some(
+      (p) => schluessel(p.name) === schluessel(m.name)));
+    if (inListe) return frag; // schon in der Pitchliste - nichts anzubieten
+    const z = el("div", "chips");
+    const b = el("button", "chip aktiv", "✓ Brand-Book befüllt");
+    b.onclick = () => {
+      if (!confirm(`„${m.name}“ in die Pitchliste schieben?\n` +
+          "Eintrag kommt ohne Termin — das Startdatum setzt du dort.")) return;
+      bookBefuelltDaten(m, lokalIso());
       datenstandPersistieren();
-      banner(erg === "existiert"
-        ? "Book gab es schon in OneDrive — nur Haken + Pitchliste gesetzt."
-        : `Brand-Book angelegt: ${rating} Brands/Brand-Book ${m.name}.docx`);
       bau();
     };
     z.append(b);
     frag.append(z, el("div", "stand",
-      "Erzeugt das Brand-Book aus dem Template, setzt den Erledigt-Haken " +
-      "und stellt die Brand in die Pitchliste (ohne Termin)."));
+      "Stufe 2: Book in Word fertig befüllt? Damit geht die Brand in " +
+      "die Pitchliste (ohne Termin)."));
     return frag;
   }
 }
@@ -1380,7 +1493,8 @@ function renderUgc() {
   // wie die Listen-Ansicht (Briefing 4.9: ein Zaehler, eine Bedingung)
   if (snap.pitchliste && snap.pitchliste.length) {
     const heute = heuteNull();
-    const faellig = pitchlisteAktuell().filter(
+    const aktuell = pitchlisteAktuell(); // gleiche Liste wie die Ansicht (ohne D-Brands)
+    const faellig = aktuell.filter(
       (p) => ampel(p.datum_naechste_aktion, heute).klasse === "rot").length;
     const zugang = el("div", "karte block zugang");
     const kopf = el("div", "kopf");
@@ -1388,7 +1502,7 @@ function renderUgc() {
                 el("span", "badge" + (faellig ? " voll" : ""), String(faellig)));
     zugang.append(kopf, el("div", "titel", "Pitchliste — Nächste Aktionen"),
       el("div", "kontext",
-        `${snap.pitchliste.length} Marken · ${faellig} fällig/überfällig`));
+        `${aktuell.length} Marken · ${faellig} fällig/überfällig`));
     zugang.onclick = () => { location.hash = "#/pitchliste"; };
     c.append(zugang);
   }
@@ -1655,9 +1769,9 @@ function sheetNeueBrand() {
   };
   okZ.append(ok);
   wrap.append(okZ, el("div", "stand",
-    "Landet im Brand Rating und in der Pitchliste unter „Neu“ — ohne " +
-    "Termin, das Startdatum setzt du dort. Löschen: in der " +
-    "Pitchlisten-Detailansicht der Brand."));
+    "Landet im Brand Rating. In die Pitchliste kommt die Brand erst " +
+    "über „Brand-Book erstellen“ + „Brand-Book befüllt“. Löschen: in " +
+    "der Detailansicht der Brand."));
   sheetOeffnen("Neue Brand", wrap);
 }
 
@@ -1665,14 +1779,9 @@ function brandAnlegen(name, kategorie, f) {
   const jetzt = lokalIso();
   datenstand.marken.push({
     name, quelle: "", gruppe: "", kerninfos: {}, events: [],
-    // OHNE Termin (Tobias 31.08. spät, v40): frueher "heute faellig" -
-    // so ging der neue Pitch in der Gesamtliste unter. Jetzt landet er
-    // in der "Neu"-Sektion, bis Andrea das Startdatum setzt (Schritt 7).
-    pitchliste: {
-      rating: f.rating, kategorie, status: "", letzter_kontakt: "",
-      naechste_aktion: "Pitch", datum_naechste_aktion: "",
-      zaehler: "0", kooperation: "", geaendert: jetzt,
-    },
+    // KEIN Pitchlisten-Eintrag mehr (Tobias 01.09., v42): der Weg in die
+    // Pitchliste fuehrt jetzt immer ueber Brand-Book erstellen + befüllt.
+    pitchliste: null,
     // Feldnamen + Symbol-Skalen exakt wie im Brandrating-Blatt
     brandrating: {
       status: "Neu", kategorie,
@@ -1688,6 +1797,13 @@ function brandAnlegen(name, kategorie, f) {
 }
 
 function brandLoeschen(m) {
+  // App-erzeugtes Book mit in den OneDrive-Papierkorb (Tobias 01.09.:
+  // "löschen aus allen Listen + dem Brand-Book") - nur bei App-angelegten
+  // Brands, und DELETE landet im Papierkorb, nichts ist hart weg.
+  if (m.erstellt && m.brandrating && m.brandrating.brandbook &&
+      typeof OD !== "undefined" && OD.konto()) {
+    OD.graphRoh(bookPfad(m), { method: "DELETE" });
+  }
   datenstand.marken = datenstand.marken.filter((x) => x !== m);
   if (datenstand.letzteAktion &&
       schluessel(datenstand.letzteAktion.name) === schluessel(m.name)) {
@@ -1733,15 +1849,23 @@ async function bookErzeugen(m) {
        : neu.ok ? "neu" : "fehler";
 }
 
-// Datenteil von "Rating abgeschlossen" (pur, testbar in test_kadenz.js):
-// Erledigt-Haken wie im Excel-Blatt (Haken-Symbol) + Pitchlisten-Eintrag
-// OHNE Termin (Andreas Workflow Schritt 7: Startdatum vergibt Andrea
-// manuell, erst dann laeuft die 5/5/10/90-Kadenz). Der Stand davor
-// wandert nach letztesBook, damit Rückgängig ihn wiederherstellen kann.
-function ratingAbschliessenDaten(m, bookNeu, jetzt) {
-  datenstand.letztesBook = { name: m.name, zeit: jetzt, bookNeu,
-    pitchNeu: !m.pitchliste, vorher: m.brandrating.brandbook || "" };
+// Datenteil Stufe 1 (pur, testbar in test_kadenz.js): NUR der Erledigt-
+// Haken wie im Excel-Blatt - kein Pitchlisten-Eintrag mehr (seit v42,
+// der kommt mit Stufe 2). Der Stand davor wandert nach letztesBook,
+// damit Rückgängig ihn wiederherstellen kann.
+function bookErstelltDaten(m, bookNeu, jetzt) {
+  datenstand.letztesBook = { name: m.name, zeit: jetzt, stufe: 1, bookNeu,
+    vorher: m.brandrating.brandbook || "" };
   m.brandrating.brandbook = "✔️";
+  listeVeraltet = true;
+}
+
+// Datenteil Stufe 2 "Brand-Book befüllt": Pitchlisten-Eintrag OHNE
+// Termin (Andreas Workflow Schritt 7: Startdatum vergibt Andrea manuell,
+// erst dann laeuft die 5/5/10/90-Kadenz).
+function bookBefuelltDaten(m, jetzt) {
+  datenstand.letztesBook = { name: m.name, zeit: jetzt, stufe: 2,
+    pitchNeu: !m.pitchliste };
   if (!m.pitchliste) {
     m.pitchliste = { rating: m.brandrating.rating,
       kategorie: m.brandrating.kategorie || "", status: "",
@@ -1752,13 +1876,17 @@ function ratingAbschliessenDaten(m, bookNeu, jetzt) {
   listeVeraltet = true;
 }
 
-// Rückgängig (eine Ebene): Haken zurueck, angelegten Pitchlisten-Eintrag
-// entfernen, frisch kopiertes Book loeschen. Graph-DELETE landet im
+// Rückgängig (eine Ebene): Stufe 2 nimmt den Pitchlisten-Eintrag zurueck,
+// Stufe 1 den Haken + das frisch kopierte Book. Graph-DELETE landet im
 // OneDrive-Papierkorb - Books mit Inhalt werden nie hart geloescht.
 function bookRueckgaengig(m, lb) {
-  if (lb.bookNeu) OD.graphRoh(bookPfad(m), { method: "DELETE" });
-  m.brandrating.brandbook = lb.vorher;
-  if (lb.pitchNeu) m.pitchliste = null;
+  if (lb.stufe === 2) {
+    if (lb.pitchNeu) m.pitchliste = null;
+  } else {
+    if (lb.bookNeu) OD.graphRoh(bookPfad(m), { method: "DELETE" });
+    m.brandrating.brandbook = lb.vorher;
+    if (lb.pitchNeu) m.pitchliste = null; // Altformat vor v42 (eine Stufe)
+  }
   delete datenstand.letztesBook;
   listeVeraltet = true;
   datenstandPersistieren();
