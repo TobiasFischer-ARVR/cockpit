@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v43"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v44"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -380,6 +380,7 @@ function sheetOeffnen(titel, inhalt, aktion) {
 }
 
 function sheetEntfernen() {
+  sheetEbene = null;
   const s = document.getElementById("schleier");
   if (s) s.remove();
 }
@@ -387,7 +388,12 @@ function sheetEntfernen() {
 // Sheet zu + falls der Erledigt-Knopf etwas geändert hat, die Liste
 // dahinter frisch zeichnen (sonst zeigt sie noch den alten Status)
 let listeVeraltet = false;
+// Ebene IM Sheet (Rating-Formular, v44): eigener History-Eintrag, damit
+// Zurueck-Geste und Schliessen-Knopf erst das Formular verlassen und die
+// Brand-Ansicht wieder zeigen - statt das ganze Sheet zu schliessen.
+let sheetEbene = null;
 window.addEventListener("popstate", () => {
+  if (sheetEbene) { const zurueck = sheetEbene; sheetEbene = null; zurueck(); return; }
   sheetEntfernen();
   if (listeVeraltet) { listeVeraltet = false; render(); }
 });
@@ -652,17 +658,16 @@ function quelleZuName(name) {
 function sheetPitch(p) {
   const wrap = el("div");
   const mv = datenstand ? markeZuName(p.name) : null;
-  let bearbeiten = false;
-  const stift = mv && mv.brandrating
-    ? ratingStift(() => { bearbeiten = !bearbeiten; bau(); }) : null;
+  const z = { bearbeiten: false };
+  const stift = mv && mv.brandrating ? ratingStift(z, bau) : null;
   bau();
   sheetOeffnen(p.name, wrap, stift);
 
   function bau() {
     wrap.innerHTML = "";
-    if (bearbeiten) {
+    if (z.bearbeiten) {
       wrap.append(el("div", "abschnitt", "Rating bearbeiten"),
-        ratingFormular(mv, () => { bearbeiten = false; bau(); }));
+        ratingFormular(mv, () => history.back()));
       return;
     }
     const q = pitchMitDatenstand(p);
@@ -1054,9 +1059,18 @@ function inPitchliste(m) {
 // Pitchliste (Filter in pitchlisteAktuell), bleibt aber im Brand Rating.
 // Zugang: Stift-Knopf in der Sheet-KOPFZEILE (Tobias 01.09., v43) -
 // ratingStift() baut den Knopf, ratingFormular() das Formular im Inhalt.
-function ratingStift(umschalten) {
+// Das Formular ist eine eigene History-Ebene (v44): Zurueck/Schliessen/
+// Abbrechen/Speichern gehen per history.back() zur Brand-Ansicht zurueck,
+// erst das naechste Zurueck schliesst das Sheet (Tobias 01.09.).
+function ratingStift(z, bau) {
   const b = el("button", "chip", "✎ Rating");
-  b.onclick = umschalten;
+  b.onclick = () => {
+    if (z.bearbeiten) { history.back(); return; } // Stift erneut = Formular zu
+    z.bearbeiten = true;
+    sheetEbene = () => { z.bearbeiten = false; bau(); };
+    history.pushState({ sheet: true }, "");
+    bau();
+  };
   return b;
 }
 
@@ -1141,18 +1155,17 @@ function brKarte(m) {
 
 function sheetBrandrating(m) {
   const wrap = el("div");
-  let bearbeiten = false;
-  const stift = datenstand
-    ? ratingStift(() => { bearbeiten = !bearbeiten; bau(); }) : null;
+  const z = { bearbeiten: false };
+  const stift = datenstand ? ratingStift(z, bau) : null;
   bau();
   sheetOeffnen(m.name, wrap, stift);
 
   function bau() {
     wrap.innerHTML = "";
     const br = m.brandrating;
-    if (bearbeiten) {
+    if (z.bearbeiten) {
       wrap.append(el("div", "abschnitt", "Rating bearbeiten"),
-        ratingFormular(m, () => { bearbeiten = false; bau(); }));
+        ratingFormular(m, () => history.back()));
       return;
     }
     // Beschriftungen exakt wie in den Book-Kerninfos ("Rating (A-D)", ...) -
