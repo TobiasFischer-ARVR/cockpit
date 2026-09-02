@@ -426,3 +426,38 @@ main {
      jede Meldung (Tobias 01.09., Book-befuellt-Banner unsichtbar) */
   z-index: 30;
 }
+
+/* ------------------------------------------------ Intro (Tobias 02.09.)
+   Kurzes Einblenden von Andreas Logo beim App-Start. Ueber die Einstellungen
+   abschaltbar; das Entfernen macht app.js (bzw. das Inline-Script in der
+   index.html, wenn es aus ist). Antippen ueberspringt.
+   prefers-reduced-motion: keine Animation, nur ein ruhiges Standbild. */
+#intro {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  transition: opacity .45s ease;
+}
+#intro img {
+  width: min(62vw, 300px);
+  border-radius: 18px;
+  /* Logo hat einen Mint-Hintergrund - als Karte mit weichem Schein wirkt
+     das auf dem dunklen Untergrund gewollt statt wie ein Ausschnittfehler */
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .5), 0 0 0 1px var(--rand);
+  animation: intro-auf .8s cubic-bezier(.2, .7, .3, 1) both;
+}
+#intro.weg { opacity: 0; }
+
+@keyframes intro-auf {
+  from { opacity: 0; transform: scale(.88) translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #intro img { animation: none; }
+  #intro { transition: none; }
+}

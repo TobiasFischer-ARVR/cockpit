@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v51"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v52"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -57,6 +57,24 @@ function einstAnwenden() {
   // Android kann es. Upgrade auf rem-Basis nur, falls je ein Zielbrowser
   // ohne zoom dazukommt.
   document.body.style.zoom = einst.groesse || "";
+}
+
+// Intro (Tobias 02.09.): Andreas Logo kurz einblenden, dann wegblenden.
+// Das Element steht in der index.html und ist beim Laden schon sichtbar -
+// hier wird es nur wieder los. Antippen ueberspringt.
+// ponytail: feste 1,4 s statt einer Wartelogik auf geladene Daten - das
+// Intro soll den Start schmuecken, nicht ihn verlaengern.
+const INTRO_MS = 1400;
+
+function introAusblenden() {
+  const i = document.getElementById("intro");
+  if (!i) return; // aus (Inline-Script in der index.html hat es entfernt)
+  const weg = () => {
+    i.classList.add("weg");
+    setTimeout(() => i.remove(), 500);
+  };
+  i.onclick = weg;
+  setTimeout(weg, INTRO_MS);
 }
 
 function einstZeile(titel, paare, feld) {
@@ -83,7 +101,9 @@ function sheetEinstellungen() {
   const wrap = el("div");
   wrap.append(
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
-    el("div", "stand", "Gilt nur für dieses Gerät"));
+    einstZeile("Logo beim Start", [["", "An"], ["aus", "Aus"]], "intro"),
+    el("div", "stand", "Gilt nur für dieses Gerät · " +
+      "Änderung am Intro wirkt beim nächsten Start"));
   // Datenstand-Sicherung (Tobias 30.08.): hier statt im OneDrive-Sheet -
   // das Zahnrad ist auch im UGC Dashboard immer erreichbar
   wrap.append(el("div", "abschnitt", "Datenstand-Sicherung"));
@@ -635,20 +655,26 @@ function bereichKontakt(m, quelle, ohneRating, knopf) {
   return frag;
 }
 
+// Book-Datei direkt oeffnen (Task 4, 31.08.): Graph-Suche nach dem
+// Dateinamen - funktioniert unabhaengig davon, wo der Book-Ordner liegt
+// (Testdaten-Kopie heute, Andreas Ordner spaeter). webUrl uebergibt auf
+// Android an die Word/OneDrive-App. Gibt null zurueck, wenn kein Book
+// erreichbar ist (nicht angemeldet / keine Quelle) - ein Knopf, der
+// garantiert "nicht gefunden" meldet, gehoert nicht auf den Schirm.
+// Eine Stelle fuer alle drei Sheets (Firma, Pitch, Brand Rating).
+function bookOeffnenZeile(quelle) {
+  if (!quelle || typeof OD === "undefined" || !OD.konto()) return null;
+  const z = el("div", "chips");
+  const b = el("button", "chip", "📄 Brand-Book öffnen");
+  b.onclick = () => bookOeffnen(quelle, b);
+  z.append(b);
+  return z;
+}
+
 function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
   const frag = document.createDocumentFragment();
-
-  // Book-Datei direkt oeffnen (Task 4, 31.08.): Graph-Suche nach dem
-  // Dateinamen - funktioniert unabhaengig davon, wo der Book-Ordner
-  // liegt (Testdaten-Kopie heute, Andreas Ordner spaeter). webUrl
-  // uebergibt auf Android an die Word/OneDrive-App.
-  if (typeof OD !== "undefined" && OD.konto()) {
-    const z = el("div", "chips");
-    const b = el("button", "chip", "📄 Brand-Book öffnen");
-    b.onclick = () => bookOeffnen(quelle, b);
-    z.append(b);
-    frag.append(z);
-  }
+  const oeffnen = bookOeffnenZeile(quelle);
+  if (oeffnen) frag.append(oeffnen);
 
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
   frag.append(bereichKontakt(m, quelle, ohneRating, kontaktKnopf));
@@ -777,12 +803,9 @@ function sheetPitch(p) {
       // App-erzeugtes Book (v42): liegt schon in OneDrive - nur Kontakt &
       // Historie daraus kennt erst der naechste PC-Export. Bis dahin
       // wenigstens den Oeffnen-Knopf anbieten statt "kommt mit Phase 3".
-      if (mv && mv.brandrating && mv.brandrating.brandbook &&
-          typeof OD !== "undefined" && OD.konto()) {
-        const z = el("div", "chips");
-        const b = el("button", "chip", "📄 Brand-Book öffnen");
-        b.onclick = () => bookOeffnen("Brand-Book " + mv.name, b);
-        z.append(b);
+      const z = mv && mv.brandrating && mv.brandrating.brandbook
+        ? bookOeffnenZeile("Brand-Book " + mv.name) : null;
+      if (z) {
         wrap.append(z, el("div", "stand",
           "Kontakt & Historie aus dem Book erscheinen nach dem " +
           "nächsten Einlesen am PC."));
@@ -1016,7 +1039,8 @@ const SORT_PITCH = [["", "Dringlichkeit"], ["name", "Name A–Z"],
                     ["rating", "Rating"], ["kategorie", "Kategorie"]];
 const SORT_BRAND = [["", "Name A–Z"], ["rating", "Rating"],
                     ["book", "Brand-Book"], ["fit", "Brand Fit"],
-                    ["geist", "Begeisterung"], ["chance", "Erfolgschance"]];
+                    ["geist", "Begeisterung"], ["chance", "Erfolgschance"],
+                    ["erstellt", "Erstellt (neueste zuerst)"]];
 
 const nameVgl = (a, b) => String(a).localeCompare(String(b), "de");
 
@@ -1058,6 +1082,10 @@ function sortiereBrand(liste, art) {
   if (art === "fit") return k.sort(nachSchluessel(skala("brandfit"), true));
   if (art === "geist") return k.sort(nachSchluessel(skala("begeisterung"), true));
   if (art === "chance") return k.sort(nachSchluessel(skala("erfolgschance"), true));
+  // Erstell-Datum (Tobias 02.09.): nur App-angelegte Brands haben ein
+  // "erstellt" - Andreas gewachsene Excel-Brands landen deshalb am Ende
+  // (nachSchluessel sortiert Leerwerte immer nach hinten).
+  if (art === "erstellt") return k.sort(nachSchluessel((m) => m.erstellt || "", true));
   return k.sort((a, b) => nameVgl(a.name, b.name));
 }
 
@@ -1307,6 +1335,20 @@ function kontaktFormular(m, fertig) {
     i.value = vorhanden[label] || "";
     eingaben[label] = i;
     wrap.append(i);
+    // Such-Knopf statt Raten (siehe webVorschlag): oeffnet die Suche im
+    // Browser, Andrea kopiert den richtigen Link zurueck ins Feld.
+    const suche = label === "Website"
+      ? "https://duckduckgo.com/?q=" + encodeURIComponent(m.name + " offizielle Website")
+      : label === "Social Media"
+        ? "https://duckduckgo.com/?q=" + encodeURIComponent(m.name + " instagram")
+        : null;
+    if (suche) {
+      const z = el("div", "chips");
+      const b = el("button", "chip", "🔎 " + label + " suchen");
+      b.onclick = () => window.open(suche, "_blank", "noopener");
+      z.append(b);
+      wrap.append(z);
+    }
   }
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
@@ -1407,8 +1449,16 @@ function sheetBrandrating(m) {
     wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
     wrap.append(bereichAbschluss(br));
     const quelle = quelleZuName(m.name);
-    if (quelle) wrap.append(markenDetails(quelle, true, m));
-    else wrap.append(bereichKontakt(m, null, true));
+    if (quelle) {
+      wrap.append(markenDetails(quelle, true, m));
+    } else {
+      // Book-Oeffnen auch hier (Andrea/Tobias 02.09.) - aber ERST wenn es
+      // ein Book gibt, sonst zeigt der Knopf ins Leere. Gleiche Optik wie
+      // in der Pitchliste: Knopf ueber "Kontakt & Infos".
+      const z = br.brandbook ? bookOeffnenZeile("Brand-Book " + m.name) : null;
+      if (z) wrap.append(z);
+      wrap.append(bereichKontakt(m, null, true));
+    }
     if (m.erstellt) wrap.append(bereichLoeschen(m));
   }
 
@@ -2016,15 +2066,19 @@ function erledigen(m, s, tage, standard) {
   if (tage !== standard) (m.intervalle = m.intervalle || {})[s.key] = tage;
   listeVeraltet = true;
   datenstandPersistieren();
+  // Punkt 4 im Brand-Book sofort mitschreiben (Andrea 02.09.)
+  bookHistorieMelden(m, heute, s.aktion);
 }
 
 function rueckgaengig(m, la) {
   const ev = m.events || [];
-  if (ev.length && ev[ev.length - 1].aktion === la.aktion) ev.pop();
+  const weg = ev.length && ev[ev.length - 1].aktion === la.aktion
+    ? ev.pop() : null;
   m.pitchliste = la.vorher;
   delete datenstand.letzteAktion;
   listeVeraltet = true;
   datenstandPersistieren();
+  if (weg) bookHistorieMelden(m, weg.datum, weg.aktion, true);
 }
 
 // ----------------------------------------------- Neue Brand (Phase 5)
@@ -2079,6 +2133,48 @@ function sheetNeueBrand() {
   sheetOeffnen("Neue Brand", wrap);
 }
 
+// ------------------------------------ Website-Vorschlag (Andrea 02.09.)
+// Wunsch: Website + Social Media beim Anlegen automatisch finden.
+// Was im Browser OHNE Schluessel geht: pruefen, ob eine Domain ueberhaupt
+// EXISTIERT - per DNS-over-HTTPS (dns.google erlaubt CORS). Was NICHT
+// geht: eine echte Websuche (Google/Bing/DuckDuckGo blocken CORS, ihre
+// APIs kosten Schluessel) und Instagram (blockt CORS komplett).
+// Deshalb: Domain-Raten + Existenzpruefung als VORSCHLAG, den Andrea im
+// Kontaktformular sieht und korrigiert. Fuer Social Media gibt es dort
+// einen Such-Knopf statt eines geratenen Werts - ein falscher Instagram-
+// Link im Book waere schlimmer als ein leeres Feld.
+// ponytail: DNS sagt "Domain existiert", nicht "gehoert der Brand".
+// Upgrade auf echte Suche, sobald ein API-Schluessel da ist.
+function domainSlug(name) {
+  return String(name).toLowerCase()
+    .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue")
+    .replace(/ß/g, "ss").replace(/&/g, "und")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+async function domainLebt(host) {
+  try {
+    const r = await fetch(
+      "https://dns.google/resolve?type=A&name=" + encodeURIComponent(host));
+    const d = await r.json();
+    return d && d.Status === 0 && Array.isArray(d.Answer) && d.Answer.length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Erste erreichbare Kandidaten-Domain, sonst "". .de zuerst (Andreas
+// Brands sind ueberwiegend deutsch), dann .com.
+async function webVorschlag(name) {
+  const slug = domainSlug(name);
+  if (slug.length < 3) return "";
+  for (const host of [slug + ".de", "www." + slug + ".de",
+                      slug + ".com", "www." + slug + ".com"]) {
+    if (await domainLebt(host)) return "https://" + host.replace(/^www\./, "");
+  }
+  return "";
+}
+
 function brandAnlegen(name, kategorie, f) {
   const jetzt = lokalIso();
   datenstand.marken.push({
@@ -2096,8 +2192,20 @@ function brandAnlegen(name, kategorie, f) {
     },
     erstellt: jetzt, // von der App angelegt -> darf gelöscht werden
   });
+  const neu = datenstand.marken[datenstand.marken.length - 1];
   listeVeraltet = true;
   datenstandPersistieren();
+  // Website-Suche laeuft NEBENHER (Andrea 02.09.: Anlegen als Trigger) -
+  // das Formular soll nicht auf DNS-Antworten warten. Nur fuellen, nie
+  // ueberschreiben: bis die Antwort da ist, kann Andrea schon getippt haben.
+  webVorschlag(name).then((url) => {
+    if (!url) return;
+    neu.kerninfos = neu.kerninfos || {};
+    if (String(neu.kerninfos.Website || "").trim()) return;
+    neu.kerninfos.Website = url;
+    datenstandPersistieren();
+    banner(`Website-Vorschlag für „${name}“: ${url} — bitte prüfen.`);
+  });
 }
 
 function brandLoeschen(m) {
@@ -2184,6 +2292,130 @@ async function docxBefuellen(puffer, werte) {
   xml = xml.replace(/\{\{[^{}]{1,40}\}\}/g, "");
   zip.file("word/document.xml", xml);
   return zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+}
+
+// ------------------------------------- Pitch-Historie ins Book (Phase 6)
+// Punkt 4 des Brand-Books ist eine Tabelle "Datum | Aktion" mit drei
+// Leerzeilen. Jedes erledigte Ereignis (Pitch, Neuer Pitch, Follow up 1-3)
+// wandert sofort dorthin - Andrea soll das Book nicht doppelt pflegen.
+// ponytail: XML per RegExp statt DOMParser - die document.xml ist ein
+// String, den wir nur an einer Stelle anfassen. Grenze: eine TABELLE IN
+// EINER TABELLE wuerde das nicht-gierige <w:tbl>…</w:tbl> falsch schneiden.
+// Kommt das je vor, auf DOMParser umstellen.
+
+// Sichtbarer Text eines XML-Stuecks (alle <w:t>-Inhalte).
+function wordText(s) {
+  return (String(s).match(/<w:t[^>]*>[^<]*<\/w:t>/g) || [])
+    .map((t) => t.replace(/<[^>]+>/g, "")).join(" ");
+}
+
+// Zelle mit neuem Text, Formatierung der Vorlage behalten: Zellen-
+// Eigenschaften (tcPr), Absatz-Eigenschaften (pPr) und die Zeichen-
+// Formatierung (rPr) des ersten echten Runs werden uebernommen.
+function zelleSetzen(tc, text) {
+  const tcPr = (tc.match(/<w:tcPr>[\s\S]*?<\/w:tcPr>/) || [""])[0];
+  const pPr = (tc.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [""])[0];
+  // rPr erst NACH dem pPr suchen - im pPr steckt das rPr der Absatzmarke,
+  // nicht das des Textes.
+  const rest = pPr ? tc.slice(tc.indexOf(pPr) + pPr.length) : tc;
+  const rPr = (rest.match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [""])[0];
+  return "<w:tc>" + tcPr + "<w:p>" + pPr + "<w:r>" + rPr +
+    '<w:t xml:space="preserve">' + xmlText(text) + "</w:t></w:r></w:p></w:tc>";
+}
+
+// Neue Zeile aus einer Vorlagen-Zeile bauen (Spalte 1 Datum, 2 Aktion,
+// weitere Spalten unveraendert - Andreas Template hat genau zwei).
+function zeileBauen(vorlage, datum, aktion) {
+  const trPr = (vorlage.match(/<w:trPr>[\s\S]*?<\/w:trPr>/) || [""])[0];
+  const zellen = vorlage.match(/<w:tc>[\s\S]*?<\/w:tc>/g) || [];
+  if (zellen.length < 2) return null;
+  return "<w:tr>" + trPr + zelleSetzen(zellen[0], datum) +
+    zelleSetzen(zellen[1], aktion) + zellen.slice(2).join("") + "</w:tr>";
+}
+
+// Ereignis in die Historien-Tabelle eintragen (entfernen=true: wieder
+// leeren, fuer den Rueckgaengig-Knopf). Gibt die neue XML zurueck oder
+// null, wenn die Tabelle nicht gefunden wurde - dann bleibt das Book
+// unangetastet, statt es kaputtzuschreiben.
+// Freie Leerzeile zuerst fuellen; ist die Tabelle voll, wird eine Zeile
+// ANGEHAENGT (Andreas Vorgabe: Zeilen automatisch nachwachsen lassen).
+function historieXml(xml, datum, aktion, entfernen) {
+  const tabellen = xml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) || [];
+  // Die richtige Tabelle erkennt man an ihrer Kopfzeile, nicht an der
+  // Position - die Kerninfos-Tabelle beginnt mit "Name".
+  const tbl = tabellen.find((t) => {
+    const kopf = wordText((t.match(/<w:tr[\s>][\s\S]*?<\/w:tr>/) || [""])[0])
+      .toLowerCase();
+    return kopf.includes("datum") && kopf.includes("aktion");
+  });
+  if (!tbl) return null;
+  const zeilen = tbl.match(/<w:tr[\s>][\s\S]*?<\/w:tr>/g) || [];
+  if (zeilen.length < 2) return null;
+  let tblNeu;
+  if (entfernen) {
+    // Letzten passenden Eintrag leeren (die Zeile bleibt als Leerzeile
+    // stehen - harmlos, und Word muss keine Zeile verlieren).
+    const i = zeilen.map(wordText).reduce((tr, t, j) =>
+      (j > 0 && t.includes(datum) && t.includes(aktion) ? j : tr), -1);
+    if (i < 0) return null;
+    const leer = zeileBauen(zeilen[i], "", "");
+    if (!leer) return null;
+    tblNeu = tbl.replace(zeilen[i], () => leer);
+  } else {
+    const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
+    const neu = zeileBauen(zeilen[zeilen.length - 1], datum, aktion);
+    if (!neu) return null;
+    tblNeu = leer > 0
+      ? tbl.replace(zeilen[leer], () => neu)
+      : tbl.slice(0, -"</w:tbl>".length) + neu + "</w:tbl>";
+  }
+  // Funktions-Ersatz: sonst wuerde ein "$&" im Word-Text (oder in einem
+  // Aktionsnamen) als Rueckverweis-Muster interpretiert.
+  return xml.replace(tbl, () => tblNeu);
+}
+
+// Das Ganze am echten Book: laden, Zeile setzen, zurueckschreiben.
+// Rueckgabe: "ok" | "kein-book" (still - Book existiert nicht oder wir
+// sind offline, das ist ein normaler Zustand) | "fehler" (laut melden).
+async function bookHistorie(m, datum, aktion, entfernen) {
+  if (!m.brandrating || !m.brandrating.brandbook ||
+      typeof OD === "undefined" || !OD.konto() ||
+      typeof JSZip === "undefined") return "kein-book";
+  try {
+    const r = await OD.graphRoh(bookPfad(m) + ":/content");
+    if (!r || !r.ok) return "kein-book"; // z.B. Andreas handgepflegtes Book
+    const zip = await JSZip.loadAsync(await r.arrayBuffer());
+    const d = zip.file("word/document.xml");
+    if (!d) return "fehler";
+    const xml = historieXml(await d.async("string"), datum, aktion, entfernen);
+    if (!xml) return "fehler";
+    zip.file("word/document.xml", xml);
+    const put = await OD.graphRoh(
+      bookPfad(m) + ":/content?@microsoft.graph.conflictBehavior=replace",
+      { method: "PUT",
+        body: await zip.generateAsync(
+          { type: "arraybuffer", compression: "DEFLATE" }),
+        headers: { "Content-Type": DOCX_TYP } });
+    return put && put.ok ? "ok" : "fehler";
+  } catch (_) {
+    return "fehler";
+  }
+}
+
+// Ereignis nachtragen und nur dann etwas sagen, wenn es etwas zu sagen
+// gibt. Laeuft absichtlich NEBEN dem Speichern (kein await): der Erledigt-
+// Knopf soll nicht auf den Word-Upload warten.
+function bookHistorieMelden(m, datum, aktion, entfernen) {
+  bookHistorie(m, datum, aktion, entfernen).then((s) => {
+    if (s === "ok") {
+      banner(entfernen
+        ? `„${aktion}“ auch im Brand-Book wieder entfernt.`
+        : `„${aktion}“ auch in die Pitch-Historie im Brand-Book eingetragen.`);
+    } else if (s === "fehler") {
+      banner("Brand-Book konnte nicht nachgetragen werden — " +
+        "die Pitch-Historie dort bitte von Hand ergänzen.");
+    }
+  });
 }
 
 // Template nach Rating kopieren (A bzw. B-C; D = Archiv, kein Template).
@@ -2546,6 +2778,7 @@ if ("serviceWorker" in navigator) {
 }
 
 einstAnwenden(); // gespeicherten Stil sofort anwenden, vor dem ersten Rendern
+introAusblenden();
 
 (async () => {
   try {

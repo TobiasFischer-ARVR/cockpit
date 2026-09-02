@@ -11,6 +11,16 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<!-- Intro (Tobias 02.09.): Andreas Logo beim Start. Das Wegschalten muss
+     VOR dem Zeichnen passieren, sonst blitzt es kurz auf - deshalb dieses
+     eine Inline-Script statt einer Zeile in app.js (die laedt spaeter). -->
+<div id="intro" aria-hidden="true"><img src="logo.png" alt="Andrea Fischer"></div>
+<script>
+try {
+  if ((JSON.parse(localStorage.getItem("cockpit-einst") || "{}").intro) === "aus")
+    document.getElementById("intro").remove();
+} catch (e) {}
+</script>
 <header>
   <button id="zurueck" aria-label="Zurück">‹</button>
   <h1 id="titel">Cockpit</h1>
