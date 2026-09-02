@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v54"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v55"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2357,9 +2357,20 @@ async function docxBefuellen(puffer, werte) {
 // Kommt das je vor, auf DOMParser umstellen.
 
 // Sichtbarer Text eines XML-Stuecks (alle <w:t>-Inhalte).
+// Entitaeten MUESSEN zurueckuebersetzt werden: in der Datei steht
+// "Pitch &amp; Co", sichtbar ist "Pitch & Co". Ohne das fand die
+// Rueckgaengig-Suche einen Eintrag mit kaufmaennischem Und nie wieder
+// (gefunden 02.09. beim Test gegen ein echtes Brand-Book - der Selbsttest
+// mit nachgebauter XML hatte es nicht gezeigt, weil dort kein & vorkam).
+// "&amp;" zuletzt aufloesen, sonst wuerde aus "&amp;lt;" ein "<".
 function wordText(s) {
   return (String(s).match(/<w:t[^>]*>[^<]*<\/w:t>/g) || [])
-    .map((t) => t.replace(/<[^>]+>/g, "")).join(" ");
+    .map((t) => t.replace(/<[^>]+>/g, "")).join(" ")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 // Zelle mit neuem Text, Formatierung der Vorlage behalten: Zellen-
