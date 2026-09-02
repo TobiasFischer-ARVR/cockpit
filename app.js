@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v53"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v54"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -674,19 +674,55 @@ function bookOeffnenZeile(quelle) {
   return z;
 }
 
-function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
+// "02.09.2026" -> sortierbare Zahl. Unbekanntes Format ans Ende, damit
+// ein kaputtes Datum die Reihenfolge nicht durcheinanderwirft.
+function datumWert(d) {
+  const t = String(d || "").match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  return t ? Number(t[3]) * 10000 + Number(t[2]) * 100 + Number(t[1]) : 1e12;
+}
+
+// Ereignisse aus BEIDEN Quellen zusammenfuehren (Tobias 02.09.):
+//   m.events            - Datenstand, enthaelt auch was die App gerade
+//                         erst per "erledigt" eingetragen hat
+//   snap.historie[q]    - aus dem Word-Book geparst, letzter PC-Export
+// Vorher las die Historie NUR den Snapshot. Zwei Folgen, eine Ursache:
+// eine App-angelegte Brand hat keine `quelle` und bekam deshalb gar keine
+// Historie zu sehen; und ein frisch erledigter Pitch blieb selbst bei
+// Book-Marken unsichtbar, bis am PC neu exportiert wurde.
+// Nach einem Export steht dasselbe Ereignis in beiden Quellen - Doppelte
+// fallen ueber Datum+Typ+Aktion raus, Schreibweise normalisiert, weil das
+// Book "Follow-up 1" schreibt und die App "Follow up 1".
+function historieAktuell(m, quelle) {
+  const alle = [...((m && m.events) || []),
+                ...((snap && snap.historie && snap.historie[quelle]) || [])];
+  const gesehen = new Set();
+  const raus = [];
+  for (const e of alle) {
+    const id = [e.datum, e.typ, e.aktion, e.positiv]
+      .map((x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, ""))
+      .join("|");
+    if (gesehen.has(id)) continue;
+    gesehen.add(id);
+    raus.push(e);
+  }
+  return raus.sort((a, b) => datumWert(a.datum) - datumWert(b.datum));
+}
+
+// Eigener Baustein, weil die Historie an drei Stellen gebraucht wird:
+// Firmen-Sheet, Pitch-Sheet und Brand-Rating-Sheet - die letzten beiden
+// auch dann, wenn es (noch) kein Book gibt.
+function bereichHistorie(m, quelle) {
   const frag = document.createDocumentFragment();
-  const oeffnen = bookOeffnenZeile(quelle);
-  if (oeffnen) frag.append(oeffnen);
-
-  // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
-  frag.append(bereichKontakt(m, quelle, ohneRating, kontaktKnopf));
-
   frag.append(el("div", "abschnitt", "Historie"));
-  const eintraege = (snap.historie && snap.historie[quelle]) || [];
+  const eintraege = historieAktuell(m, quelle);
   if (!eintraege.length) {
-    frag.append(el("div", "leerzustand kompakt",
-      "Keine Historie im Snapshot — einmal Update (↻) drücken."));
+    // Am BOOK unterscheiden, nicht am Marken-Objekt: gibt es eine Quelle,
+    // ist das geparste Word die Herkunft und ein Update kann wirklich
+    // etwas nachliefern. Ohne Book waere derselbe Rat schlicht falsch.
+    frag.append(el("div", "leerzustand kompakt", quelle
+      ? "Keine Historie im Snapshot — einmal Update (↻) drücken."
+      : "Noch keine Ereignisse — der erste Pitch erscheint hier, sobald " +
+        "du ihn in der Pitchliste erledigst."));
   }
   const tab = el("div", "tabelle");
   for (const e of eintraege) {
@@ -703,6 +739,16 @@ function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
     tab.append(zeile);
   }
   frag.append(tab);
+  return frag;
+}
+
+function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
+  const frag = document.createDocumentFragment();
+  const oeffnen = bookOeffnenZeile(quelle);
+  if (oeffnen) frag.append(oeffnen);
+  // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
+  frag.append(bereichKontakt(m, quelle, ohneRating, kontaktKnopf),
+              bereichHistorie(m, quelle));
   return frag;
 }
 
@@ -816,6 +862,10 @@ function sheetPitch(p) {
         wrap.append(el("div", "leerzustand kompakt",
           "Noch kein Brand-Book eingelesen — kommt mit dem nächsten PC-Export."));
       }
+      // Historie auch ohne Book (Tobias 02.09.): die Ereignisse stehen im
+      // Datenstand, sobald etwas erledigt wurde - dafuer braucht es kein
+      // geparstes Word.
+      wrap.append(bereichHistorie(mv, null));
     }
 
     if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
@@ -1460,7 +1510,7 @@ function sheetBrandrating(m) {
       // in der Pitchliste: Knopf ueber "Kontakt & Infos".
       const z = br.brandbook ? bookOeffnenZeile("Brand-Book " + m.name) : null;
       if (z) wrap.append(z);
-      wrap.append(bereichKontakt(m, null, true));
+      wrap.append(bereichKontakt(m, null, true), bereichHistorie(m, null));
     }
     if (m.erstellt) wrap.append(bereichLoeschen(m));
   }
