@@ -14,7 +14,12 @@
 <!-- Intro (Tobias 02.09.): Andreas Logo beim Start. Das Wegschalten muss
      VOR dem Zeichnen passieren, sonst blitzt es kurz auf - deshalb dieses
      eine Inline-Script statt einer Zeile in app.js (die laedt spaeter). -->
-<div id="intro" aria-hidden="true"><img src="logo.png" alt="Andrea Fischer"></div>
+<div id="intro" aria-hidden="true">
+  <div class="platte">
+    <img src="logo.png" alt="Andrea Fischer">
+    <i class="strahl"></i>
+  </div>
+</div>
 <script>
 try {
   if ((JSON.parse(localStorage.getItem("cockpit-einst") || "{}").intro) === "aus")

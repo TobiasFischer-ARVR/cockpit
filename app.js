@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v52"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v53"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -62,9 +62,12 @@ function einstAnwenden() {
 // Intro (Tobias 02.09.): Andreas Logo kurz einblenden, dann wegblenden.
 // Das Element steht in der index.html und ist beim Laden schon sichtbar -
 // hier wird es nur wieder los. Antippen ueberspringt.
-// ponytail: feste 1,4 s statt einer Wartelogik auf geladene Daten - das
+// ponytail: feste Dauer statt einer Wartelogik auf geladene Daten - das
 // Intro soll den Start schmuecken, nicht ihn verlaengern.
-const INTRO_MS = 1400;
+// 1900 ms = Aufklappen (.5) + Strahl (.35 Versatz + .85) + kurz stehen
+// lassen. Wer es eilig hat, tippt drauf; wen es nervt, schaltet es in den
+// Einstellungen ab. Aendert man die Zeiten im CSS, hier mitziehen.
+const INTRO_MS = 1900;
 
 function introAusblenden() {
   const i = document.getElementById("intro");
