@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v56"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v57"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -57,8 +57,19 @@ const EINST_GROESSEN = [["0.9", "Klein"], ["", "Normal"],
 // Browser, dafuer braucht es keine Zeile Javascript und keine Bibliothek.
 // Gemerkt wird pro Geraet nur die ABWEICHUNG vom Standard - was du
 // zuklappst, bleibt zu, bis du es wieder aufmachst.
-const ZU_STD = ["Wiedervorlage", "Historie", "Brand Rating (Excel-Blatt)",
-                "Verwaltung"];
+// Zu per Standard: das Nachschlagewerk. Offen bleibt, woran gearbeitet
+// wird - Brand Rating, Wiedervorlage, Nächster Schritt, Startdatum.
+const ZU_STD = ["Kontakt & Infos", "Historie"];
+
+// Aendert sich ZU_STD, muessen die auf dem Geraet gemerkten Abweichungen
+// weg - sonst zeigt die App weiter die alte Aufteilung und die neue
+// Vorgabe kaeme nie an. Zaehler beim Aendern von ZU_STD hochsetzen.
+const ZU_STAND = 2;
+if (einst.zuStand !== ZU_STAND) {
+  delete einst.zu;
+  einst.zuStand = ZU_STAND;
+  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+}
 
 function abschnitt(titel, ...inhalt) {
   const d = el("details", "block");
@@ -637,6 +648,21 @@ function sheetVerlauf(schluessel) {
 // E-Mail-Adressen den Mail-Entwurf, Telefonnummern den Anruf (tel:).
 // Erkennung ueber Wert UND Label, damit z.B. eine spaeter ergaenzte
 // "Telefon:"-Zeile automatisch funktioniert.
+// Dieselbe Bewertung, zwei Schreibweisen (Tobias 03.09.): das Brand Rating
+// in Excel/App speichert Sterne und Herzen ("⭐⭐⭐⭐"), das Word-Book eine
+// blanke Zahl ("4"). Im Pitch-Sheet kamen die Book-Werte an und zeigten
+// Zahlen, wo im Brand Rating Symbole standen. Umgerechnet wird NUR fuer
+// die Anzeige - gespeichert und ins Word exportiert bleibt, was da war.
+const SKALA_SYM = { "brand fit": "⭐", "begeisterung": "❤️",
+                    "erfolgschance": "⭐" };
+
+function skalaWert(label, wert) {
+  const sym = SKALA_SYM[String(label).trim().toLowerCase()];
+  const n = Number(String(wert).trim());
+  return sym && Number.isInteger(n) && n >= 1 && n <= 5
+    ? sym.repeat(n) : wert;
+}
+
 function kontaktWert(label, wert) {
   const l = label.toLowerCase();
   let href = null;
@@ -708,7 +734,8 @@ function bereichKontakt(m, quelle, ohneRating, knopf) {
     inhalt = el("div", "tabelle");
     for (const [label, wert] of infos) {
       const zeile = el("div", "zeile");
-      zeile.append(el("span", "leise", label), kontaktWert(label, wert));
+      zeile.append(el("span", "leise", label),
+                   kontaktWert(label, skalaWert(label, wert)));
       inhalt.append(zeile);
     }
   } else {
@@ -1574,7 +1601,8 @@ function sheetBrandrating(m) {
     const tab = el("div", "tabelle");
     for (const [label, wert] of felder) {
       const zeile = el("div", "zeile");
-      zeile.append(el("span", "leise", label), el("span", null, wert));
+      zeile.append(el("span", "leise", label),
+                   el("span", null, skalaWert(label, wert)));
       tab.append(zeile);
     }
     wrap.append(abschnitt("Brand Rating (Excel-Blatt)", tab));
