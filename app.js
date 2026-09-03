@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v67"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v68"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1482,6 +1482,30 @@ function ratingFormular(m, fertig) {
   zeile("Brand Fit", skala, "fit");
   zeile("Begeisterung", skala, "geist");
   zeile("Erfolgschance", skala, "chance");
+  // Direktlinks auf die ueblichen Unterseiten - ein Tipp statt Umweg ueber
+  // eine Trefferliste. Immer sichtbar, auch ohne Website: sonst muesste das
+  // Formular beim Tippen neu zeichnen, und der Hinweis erklaert besser, was
+  // fehlt, als ein Knopf, der gar nicht erst da ist.
+  wrap.append(el("div", "stand", "Seiten der Marke direkt öffnen"));
+  const sz = el("div", "chips");
+  const sHinweis = el("div", "stand");
+  for (const [pfad, titel] of MARKEN_SEITEN) {
+    const b = el("button", "chip", titel);
+    b.onclick = () => {
+      const url = seitenLink(eingaben["Website"].value, pfad);
+      if (!url) {
+        sHinweis.textContent = "Dafür erst die Website eintragen.";
+        return;
+      }
+      sHinweis.textContent = "";
+      window.open(url, "_blank", "noopener");
+    };
+    sz.append(b);
+  }
+  wrap.append(sz, sHinweis, el("div", "stand",
+    "Geraten aus der Website — gibt es die Seite nicht, kommt eine " +
+    "Fehlermeldung der Marke. Prüfen können wir das vorher nicht."));
+
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
   ok.onclick = () => {
@@ -1545,6 +1569,21 @@ function suchAnfrage(label, name, website) {
 
 function suchLink(label, name, website) {
   return SUCHE + encodeURIComponent(suchAnfrage(label, name, website));
+}
+
+// Seiten, die auf Firmen-Homepages fast immer unter demselben Pfad liegen
+// (Tobias 03.09.). Das Impressum ist in Deutschland sogar Pflicht (§5 DDG)
+// und praktisch immer /impressum - dasselbe Muster wie bei den Domains,
+// deshalb funktioniert Raten hier, waehrend es bei einem Personennamen
+// scheitert. Ein Fehlversuch kostet eine Sekunde; pruefen koennen wir es
+// vorher nicht (CORS), also gar nicht erst versuchen.
+const MARKEN_SEITEN = [["impressum", "Impressum"], ["kontakt", "Kontakt"],
+                       ["kooperation", "Kooperation"], ["presse", "Presse"]];
+
+// "" wenn im Website-Feld keine brauchbare Domain steht.
+function seitenLink(website, pfad) {
+  const d = domainVon(website);
+  return d ? `https://${d}/${pfad}` : "";
 }
 
 // Kontaktdaten (Phase 6): standen bisher NUR im Word-Book - bei einer
