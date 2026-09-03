@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v57"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v58"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -51,36 +51,79 @@ try { einst = JSON.parse(localStorage.getItem(EINST_KEY) || "{}"); } catch (_) {
 const EINST_GROESSEN = [["0.9", "Klein"], ["", "Normal"],
                         ["1.1", "Groß"], ["1.2", "Sehr groß"]];
 
-// Aufklappbarer Abschnitt (Tobias 03.09.): die Detail-Sheets waren lang -
-// Wiedervorlage, Startdatum, Nächster Schritt, Kontakt, Historie alle offen
-// untereinander. Natives <details>: das Auf- und Zuklappen macht der
-// Browser, dafuer braucht es keine Zeile Javascript und keine Bibliothek.
-// Gemerkt wird pro Geraet nur die ABWEICHUNG vom Standard - was du
-// zuklappst, bleibt zu, bis du es wieder aufmachst.
-// Zu per Standard: das Nachschlagewerk. Offen bleibt, woran gearbeitet
-// wird - Brand Rating, Wiedervorlage, Nächster Schritt, Startdatum.
-const ZU_STD = ["Kontakt & Infos", "Historie"];
-
-// Aendert sich ZU_STD, muessen die auf dem Geraet gemerkten Abweichungen
-// weg - sonst zeigt die App weiter die alte Aufteilung und die neue
-// Vorgabe kaeme nie an. Zaehler beim Aendern von ZU_STD hochsetzen.
-const ZU_STAND = 2;
-if (einst.zuStand !== ZU_STAND) {
-  delete einst.zu;
-  einst.zuStand = ZU_STAND;
-  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+// Abschnitt im Detail-Sheet. Nur noch ein beschrifteter Block - das
+// Zeigen/Verstecken macht zuReitern() nach dem Bauen.
+function abschnitt(titel, ...inhalt) {
+  const d = el("div", "block");
+  d.dataset.titel = titel;
+  d.append(el("div", "abschnitt", titel), ...inhalt.filter(Boolean));
+  return d;
 }
 
-function abschnitt(titel, ...inhalt) {
-  const d = el("details", "block");
-  const zu = einst.zu || {};
-  d.open = titel in zu ? !zu[titel] : !ZU_STD.includes(titel);
-  d.ontoggle = () => {
-    einst.zu = Object.assign({}, einst.zu, { [titel]: !d.open });
+// Welcher Abschnitt in welchen Reiter gehoert (Tobias 03.09. abends,
+// nach dem Handy-Test: Aufklappen war ihm zu unruhig). Was hier fehlt,
+// bekommt einen eigenen Reiter unter seinem eigenen Namen.
+const REITER = {
+  "Wiedervorlage": "Aktion",
+  "Startdatum": "Aktion",
+  "Nächster Schritt": "Aktion",
+  "Brand Rating (Excel-Blatt)": "Rating",
+  "Verwaltung": "Rating",
+  "Kontakt & Infos": "Kontakt",
+  "Historie": "Historie",
+};
+
+// Fertig gebautes Sheet in Reiter aufteilen. Bewusst HINTERHER statt in
+// jeder der neun Bau-Funktionen: die bleiben alle unveraendert, sie
+// haengen ihre Abschnitte weiter einfach untereinander.
+//   - Alles VOR dem ersten Abschnitt (Ampel, "Brand-Book öffnen") bleibt
+//     oben stehen; das gehoert zu keinem Reiter.
+//   - Loses NACH einem Abschnitt (die Book-Knoepfe im Brand Rating)
+//     wandert in dessen Reiter mit - sonst stuende es zusammenhanglos
+//     ueber der Leiste.
+// merker: Schluessel in den Geraete-Einstellungen, damit nach einem
+// Neuzeichnen (z.B. "✓ erledigt") derselbe Reiter offen bleibt statt
+// zurueck auf den ersten zu springen.
+function zuReitern(wrap, merker) {
+  const kopf = [];
+  const gruppen = new Map();          // Reiter-Name -> Knoten
+  let aktuell = null;
+  for (const k of [...wrap.childNodes]) {
+    if (k.classList && k.classList.contains("block")) {
+      aktuell = REITER[k.dataset.titel] || k.dataset.titel;
+      if (!gruppen.has(aktuell)) gruppen.set(aktuell, []);
+    }
+    (aktuell === null ? kopf : gruppen.get(aktuell)).push(k);
+  }
+  if (gruppen.size < 2) return;       // ein Reiter ist kein Reiter
+  wrap.innerHTML = "";               // loest die Knoten nur aus dem DOM,
+  wrap.append(...kopf);              // die Referenzen oben bleiben gueltig
+  const leiste = el("div", "chips reiter");
+  const buehne = el("div");
+  const namen = [...gruppen.keys()];
+  const zeigen = (name) => {
+    einst[merker] = name;
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    buehne.innerHTML = "";
+    buehne.append(...gruppen.get(name));
+    [...leiste.children].forEach((c, i) =>
+      c.classList.toggle("aktiv", namen[i] === name));
   };
-  d.append(el("summary", "abschnitt", titel), ...inhalt.filter(Boolean));
-  return d;
+  for (const name of namen) {
+    const c = el("button", "chip", name);
+    c.onclick = () => zeigen(name);
+    leiste.append(c);
+  }
+  wrap.append(leiste, buehne);
+  zeigen(namen.includes(einst[merker]) ? einst[merker] : namen[0]);
+}
+
+// Reste der Aufklapp-Variante (v56/v57) einmal aus den Einstellungen
+// werfen - sie werden von keiner Zeile mehr gelesen.
+if (einst.zu || einst.zuStand !== undefined) {
+  delete einst.zu;
+  delete einst.zuStand;
+  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
 }
 
 function einstAnwenden() {
@@ -885,6 +928,7 @@ function sheetHistorie(m) {
   wrap.append(el("div", "kontext",
     `${m.gruppe || "Sonstige"} · Quelle: ${m.quelle}.docx`));
   wrap.append(markenDetails(m.quelle, false, m));
+  zuReitern(wrap, "reiterFirma");
   sheetOeffnen(m.name, wrap);
 }
 
@@ -950,6 +994,7 @@ function sheetPitch(p) {
     wrap.append(markenDetails(quelleZuName(p.name), false, mv, kontaktKnopf));
 
     if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
+    zuReitern(wrap, "reiterPitch");
   }
 
   // Startdatum (Andreas Workflow Schritt 7): frisch aus dem Brand Rating
@@ -1611,6 +1656,7 @@ function sheetBrandrating(m) {
     // Word-Import oder in der App angelegt.
     wrap.append(markenDetails(quelleZuName(m.name), true, m));
     if (m.erstellt) wrap.append(bereichLoeschen(m));
+    zuReitern(wrap, "reiterRating");
   }
 
   // Book-Workflow in ZWEI Stufen (Tobias 01.09., vorher ein Knopf

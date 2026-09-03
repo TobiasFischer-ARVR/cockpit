@@ -403,25 +403,26 @@ main {
 }
 .abschnitt:first-of-type { margin-top: 4px; }
 
-/* Aufklappbare Abschnitte (v56): <summary> als Ueberschrift. Eigener
-   Pfeil statt des Browser-Dreiecks, damit er rechts steht und mitdreht.
-   min-height 32px: Tippziel am Handy, nicht nur 12px Text. */
-summary.abschnitt {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 32px;
-  cursor: pointer;
-  list-style: none;          /* Firefox */
-  user-select: none;
+/* Reiter im Detail-Sheet (v58): drei gleich breite Chips statt einer
+   scrollenden Leiste - bei drei Reitern passt das auf jedes Handy, und
+   der Daumen trifft breite Ziele. Klebt oben, damit man beim Scrollen
+   in einer langen Historie nicht zum Umschalten hochwischen muss. */
+.chips.reiter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  gap: 6px;
+  padding-top: 4px;
+  margin-bottom: 12px;
+  background: var(--panel);   /* wie .sheet - der Rest scrollt darunter durch */
+  overflow-x: visible;
 }
-summary.abschnitt::-webkit-details-marker { display: none; }
-summary.abschnitt::after {
-  content: "▾";
-  font-size: 14px;
-  transition: transform .15s;
+.chips.reiter .chip {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 8px;
+  text-align: center;
 }
-details[open] > summary.abschnitt::after { transform: rotate(180deg); }
 /* Link-Farbe = blauer Hervorhebungstext aus dem Design-System */
 .link { color: #90b3f0; word-break: break-all; text-decoration: underline; }
 .tabelle .zeile a.link { text-align: right; }
