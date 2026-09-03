@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v65"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v66"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1526,10 +1526,15 @@ function kontaktFormular(m, fertig) {
     wrap.append(i);
     // Such-Knopf statt Raten (siehe webVorschlag): oeffnet die Suche im
     // Browser, Andrea kopiert den richtigen Link zurueck ins Feld.
+    // Das ist NUR ein Link auf eine Suchseite - keine API, kein Schluessel,
+    // kein Kontingent. Mit der abgeschalteten Custom Search API (siehe
+    // Chronik v56) hat das nichts zu tun. Suchmaschine seit v66 Google
+    // (Tobias 03.09.), vorher DuckDuckGo - Umstellen ist diese eine Zeile.
+    const SUCHE = "https://www.google.com/search?q=";
     const suche = label === "Website"
-      ? "https://duckduckgo.com/?q=" + encodeURIComponent(m.name + " offizielle Website")
+      ? SUCHE + encodeURIComponent(m.name + " offizielle Website")
       : label === "Social Media"
-        ? "https://duckduckgo.com/?q=" + encodeURIComponent(m.name + " instagram")
+        ? SUCHE + encodeURIComponent(m.name + " instagram")
         : null;
     if (suche) {
       const z = el("div", "chips");
