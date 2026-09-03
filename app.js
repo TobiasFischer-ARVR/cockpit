@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v58"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v59"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -101,13 +101,18 @@ function zuReitern(wrap, merker) {
   const leiste = el("div", "chips reiter");
   const buehne = el("div");
   const namen = [...gruppen.keys()];
-  const zeigen = (name) => {
-    einst[merker] = name;
-    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  let aktiv = null;
+  const einsetzen = (name) => {
+    aktiv = name;
     buehne.innerHTML = "";
     buehne.append(...gruppen.get(name));
     [...leiste.children].forEach((c, i) =>
       c.classList.toggle("aktiv", namen[i] === name));
+  };
+  const zeigen = (name) => {
+    einsetzen(name);
+    einst[merker] = name;
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
   };
   for (const name of namen) {
     const c = el("button", "chip", name);
@@ -116,6 +121,27 @@ function zuReitern(wrap, merker) {
   }
   wrap.append(leiste, buehne);
   zeigen(namen.includes(einst[merker]) ? einst[merker] : namen[0]);
+
+  // Sheet-Hoehe festnageln (Tobias 03.09.): sonst springt das Fenster bei
+  // jedem Reiterwechsel auf die Hoehe des jeweiligen Inhalts. Jeden Reiter
+  // einmal einsetzen, hoechsten Wert merken, als Mindesthoehe setzen.
+  // Messen geht erst, wenn das Sheet im DOM haengt - beim ersten Bauen
+  // kommt sheetOeffnen() erst NACH zuReitern(), deshalb ueber
+  // requestAnimationFrame und mit isConnected-Wache.
+  // ponytail: misst bei jedem Neuzeichnen neu (3 Layouts, einmal pro
+  // Sheet-Aufbau). Zwischenspeichern erst, falls das je auffaellt.
+  const messen = () => {
+    if (!wrap.isConnected) { requestAnimationFrame(messen); return; }
+    const vorher = aktiv;
+    let hoch = 0;
+    for (const name of namen) {
+      einsetzen(name);
+      hoch = Math.max(hoch, buehne.scrollHeight);
+    }
+    buehne.style.minHeight = hoch + "px";
+    einsetzen(vorher);   // einsetzen statt zeigen: kein Schreiben in die
+  };                     // Einstellungen, der Reiter hat sich nicht geaendert
+  requestAnimationFrame(messen);
 }
 
 // Reste der Aufklapp-Variante (v56/v57) einmal aus den Einstellungen
