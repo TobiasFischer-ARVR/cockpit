@@ -448,90 +448,35 @@ main {
   z-index: 30;
 }
 
-/* ------------------------------------------------ Intro (Tobias 02.09.)
-   Andreas Logo beim App-Start. Ueber die Einstellungen abschaltbar; das
-   Entfernen macht app.js (bzw. das Inline-Script in der index.html, wenn
-   es aus ist). Antippen ueberspringt.
-
-   Farben sind NICHT das App-Coral, sondern Andreas echte Markenfarben -
-   nachgemessen an ihrem Logo und an ugc-andreafischer.de, wo genau diese
-   beiden Werte die meistgenutzten sind:
-     --af-petrol #11676a  (die Schrift im Logo)
-     --af-mint   #d4f5e9  (der Logo-Hintergrund)
-
-   Ablauf (v53, "futuristischer"): dunkler Grund mit atmendem Petrol-Schein
-   -> die Platte klappt aus einer duennen Linie auf -> ein Mint-Strahl
-   faehrt von links nach rechts und "schreibt" das Logo dabei frei
-   (clip-path folgt dem Strahl) -> kurzer Glanz-Puls -> alles blendet weg.
-   Reines CSS: keine Bibliothek, kein Canvas, kein zusaetzliches Bild. */
+/* Intro = exakt das Bild, das Android als Splash schon zeigt: schlichter
+   App-Hintergrund, darauf die Logo-Platte. Schein und Raster von v53 sind
+   raus - der Splash hat sie nicht, und jeder Unterschied macht den
+   Uebergang wieder sichtbar. Deshalb auch background_color im Manifest
+   = --bg. */
 #intro {
-  --af-petrol: #11676a;
-  --af-mint: #d4f5e9;
   position: fixed;
   inset: 0;
   z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
-  background:
-    radial-gradient(60% 45% at 50% 50%, rgba(17, 103, 106, .55), transparent 70%),
-    var(--bg);
-  transition: opacity .5s ease;
+  background: var(--bg);
+  transition: opacity .4s ease;
 }
 #intro.weg { opacity: 0; }
 
-/* Schein hinter der Platte - gibt dem Standbild Tiefe. Seit v62 STATISCH:
-   das Pulsieren war Bewegung, die niemand gebraucht hat (Tobias 03.09.:
-   "etwas zu unruhig"). */
-#intro::before {
-  content: "";
-  position: absolute;
-  width: min(78vw, 420px);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(212, 245, 233, .18), transparent 65%);
-  opacity: .8;
-}
-
-/* Feines Raster - nur schwach sichtbar, macht den "Technik"-Eindruck,
-   ohne vom Logo abzulenken. */
-#intro::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(212, 245, 233, .05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(212, 245, 233, .05) 1px, transparent 1px);
-  background-size: 34px 34px;
-  mask-image: radial-gradient(circle at 50% 50%, #000 25%, transparent 72%);
-  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 25%, transparent 72%);
-}
-
-/* v62: EINE Bewegung statt vier. Vorher klappte die Platte aus einer Linie
-   auf, ein Mint-Strahl schrieb das Logo frei, ein Rahmen pulste und der
-   Schein atmete - hintereinander 1,9 s. Davor zeigt Android schon zweimal
-   das App-Icon; in Summe war das zu viel. Jetzt: sanft aufblenden, minimal
-   heranfahren, fertig. */
 .platte {
   position: relative;
   width: min(64vw, 310px);
-  border-radius: 16px;
+  border-radius: 26px;
   overflow: hidden;
   background: rgba(212, 245, 233, .07);
-  box-shadow: 0 0 0 1px rgba(212, 245, 233, .25),
-              0 10px 44px rgba(0, 0, 0, .55);
-  animation: af-auf .55s cubic-bezier(.2, .8, .25, 1) both;
 }
 
 .platte img { display: block; width: 100%; }
 
-@keyframes af-auf {
-  from { opacity: 0; transform: scale(.965); }
-  to   { opacity: 1; transform: none; }
-}
-
+/* Barrierefreiheit: seit v63 bewegt sich im Intro ohnehin nichts mehr -
+   nur das Wegblenden bleibt, und das faellt hier auch noch weg. */
 @media (prefers-reduced-motion: reduce) {
-  #intro, .platte { animation: none; }
   #intro { transition: none; }
 }

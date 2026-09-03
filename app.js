@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v62"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v63"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -173,7 +173,7 @@ function einstAnwenden() {
 // 1900 ms = Aufklappen (.5) + Strahl (.35 Versatz + .85) + kurz stehen
 // lassen. Wer es eilig hat, tippt drauf; wen es nervt, schaltet es in den
 // Einstellungen ab. Aendert man die Zeiten im CSS, hier mitziehen.
-const INTRO_MS = 900;
+const INTRO_MS = 600;
 
 function introAusblenden() {
   const i = document.getElementById("intro");
