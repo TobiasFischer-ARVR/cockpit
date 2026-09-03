@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v68"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v69"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3088,6 +3088,49 @@ if ("serviceWorker" in navigator) {
     banner("App aktualisiert auf " + APP_VERSION);
   }
 }
+
+// Rueckkehr in die App: Daten frisch holen (Tobias 03.09., v69).
+// VORHER wurde der Datenstand NUR beim Start geladen. Android weckt PWAs
+// meist nur auf, statt sie neu zu starten - ein Geraet, das stundenlang
+// im Hintergrund lag, hielt also einen alten Stand und ueberschrieb beim
+// naechsten Eintrag den neueren des anderen Geraets (datenstandPersistieren
+// schreibt die GANZE Datei, es gibt keinen Merge). Genau der Fall
+// "Andrea arbeitet mit Handy UND Tablet".
+// Gefahrlos: jede Aenderung wird sofort persistiert, es gibt keine
+// ungespeicherten Eingaben, die ein Neuladen verlieren koennte.
+// ponytail: schliesst das Fenster, nicht den Grenzfall - sind beide
+// Geraete GLEICHZEITIG offen und werden bearbeitet, gewinnt weiter der
+// letzte Schreiber. Dagegen haelt nur ein Abgleich je Marke oder ein
+// If-Match/eTag beim PUT; erst bauen, wenn das real vorkommt.
+let abgleichLaeuft = false;
+
+async function abgleichBeiRueckkehr() {
+  if (abgleichLaeuft) return;         // Doppelaufrufe beim Aufwachen
+  abgleichLaeuft = true;
+  const vorher = datenstand && datenstand.geaendert;
+  try {
+    await laden();     // zieht den Datenstand selbst mit (siehe dort)
+  } catch (_) {
+    // offline oder OneDrive nicht erreichbar: alter Stand bleibt stehen
+  } finally {
+    abgleichLaeuft = false;
+  }
+  if (datenstand && datenstand.geaendert !== vorher) {
+    listeVeraltet = true;
+    banner("Neuerer Stand von einem anderen Gerät geladen.");
+  }
+  // Nur neu zeichnen, wenn KEIN Sheet offen ist - sonst zieht man der
+  // Nutzerin die Ansicht unter einem gerade offenen Formular weg.
+  // Ist eines offen, zeichnet popstate beim Schliessen neu (listeVeraltet).
+  if (!document.getElementById("schleier")) {
+    listeVeraltet = false;
+    render();
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") abgleichBeiRueckkehr();
+});
 
 einstAnwenden(); // gespeicherten Stil sofort anwenden, vor dem ersten Rendern
 (async () => {
