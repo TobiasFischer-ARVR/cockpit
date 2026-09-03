@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v60"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v61"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -71,6 +71,11 @@ const REITER = {
   "Verwaltung": "Rating",
   "Kontakt & Infos": "Kontakt",
   "Historie": "Historie",
+  // Einstellungs-Sheet (v61)
+  "Darstellung": "Darstellung",
+  "Datenstand-Sicherung": "Sicherung",
+  "Automatisches Backup": "Sicherung",
+  "Brand-Book-Ordner": "OneDrive",
 };
 
 // Fertig gebautes Sheet in Reiter aufteilen. Bewusst HINTERHER statt in
@@ -203,14 +208,13 @@ function einstZeile(titel, paare, feld) {
 
 function sheetEinstellungen() {
   const wrap = el("div");
-  wrap.append(
+  wrap.append(abschnitt("Darstellung",
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
     einstZeile("Logo beim Start", [["", "An"], ["aus", "Aus"]], "intro"),
     el("div", "stand", "Gilt nur für dieses Gerät · " +
-      "Änderung am Intro wirkt beim nächsten Start"));
+      "Änderung am Intro wirkt beim nächsten Start")));
   // Datenstand-Sicherung (Tobias 30.08.): hier statt im OneDrive-Sheet -
   // das Zahnrad ist auch im UGC Dashboard immer erreichbar
-  wrap.append(el("div", "abschnitt", "Datenstand-Sicherung"));
   const sStatus = el("div", "stand", sicherungsText());
   const sZeile = el("div", "chips");
   const sichern = el("button", "chip", "Jetzt sichern");
@@ -220,15 +224,15 @@ function sheetEinstellungen() {
   const laden = el("button", "chip", "Backup laden");
   laden.onclick = backupLaden;
   sZeile.append(sichern, backup, laden);
-  wrap.append(sStatus, sZeile, el("div", "stand",
-    "Backup laden: eine cockpit-datenstand-….json auswählen " +
-    "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand."));
+  wrap.append(abschnitt("Datenstand-Sicherung", sStatus, sZeile,
+    el("div", "stand",
+      "Backup laden: eine cockpit-datenstand-….json auswählen " +
+      "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand.")));
 
   // Brand-Book-Ordner (Tobias 03.09.): der Pfad kann sich aendern, also
   // gehoert er in die Einstellungen und nicht in den Code. "Prüfen"
   // fragt OneDrive, ob es den Ordner wirklich gibt - ein Tippfehler soll
   // hier auffallen und nicht erst beim naechsten Brand-Book.
-  wrap.append(el("div", "abschnitt", "Brand-Book-Ordner (OneDrive)"));
   const pFeld = el("input", "feld");
   pFeld.type = "text";
   pFeld.placeholder = BOOK_BASIS_STD;
@@ -264,13 +268,13 @@ function sheetEinstellungen() {
   const pStandard = el("button", "chip", "Standard");
   pStandard.onclick = () => { pFeld.value = ""; pSpeichern.onclick(); };
   pZeile.append(pSpeichern, pPruefen, pStandard);
-  wrap.append(pFeld, pZeile, pStand, el("div", "stand",
-    "Pfad ab OneDrive-Wurzel, ohne die „A Brands“/„B Brands“-Unterordner — " +
-    "die hängt die App selbst an. In diesem Ordner müssen auch die beiden " +
-    "Template-Dateien liegen. Leer = Standard. Gilt nur für dieses Gerät."));
+  wrap.append(abschnitt("Brand-Book-Ordner", pFeld, pZeile, pStand,
+    el("div", "stand",
+      "Pfad ab OneDrive-Wurzel, ohne die „A Brands“/„B Brands“-Unterordner — " +
+      "die hängt die App selbst an. In diesem Ordner müssen auch die beiden " +
+      "Template-Dateien liegen. Leer = Standard. Gilt nur für dieses Gerät.")));
 
   // Automatisches Backup (Tobias 01.09.): datierte Kopie nach OneDrive
-  wrap.append(el("div", "abschnitt", "Automatisches Backup"));
   const aStand = el("div", "stand", autoBackupText());
   const aFeld = el("input", "tage");
   aFeld.type = "number";
@@ -285,12 +289,14 @@ function sheetEinstellungen() {
     aStand.textContent = autoBackupText();
     autoBackupPruefen().then(() => { aStand.textContent = autoBackupText(); });
   };
-  wrap.append(el("div", "stand", "Alle wie viel Tage sichern? (0 = aus)"),
+  wrap.append(abschnitt("Automatisches Backup",
+    el("div", "stand", "Alle wie viel Tage sichern? (0 = aus)"),
     aFeld, aStand, el("div", "stand",
       "Legt beim Öffnen der App eine datierte Kopie in OneDrive an " +
       "(cockpit-datenstand-JJJJ-MM-TT.json), die du oben mit „Backup " +
       "laden“ zurückholst. Anders als „Jetzt sichern“, das immer " +
-      "dieselbe Datei überschreibt. Gilt nur für dieses Gerät."));
+      "dieselbe Datei überschreibt. Gilt nur für dieses Gerät.")));
+  zuReitern(wrap, "reiterEinst");
   sheetOeffnen("Einstellungen", wrap);
 }
 
