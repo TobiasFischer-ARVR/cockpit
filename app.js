@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v66"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v67"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1507,6 +1507,46 @@ function ratingFormular(m, fertig) {
   return wrap;
 }
 
+// Domain aus einem eingetippten Website-Wert. "https://www.balolo.de/shop"
+// -> "balolo.de". Leer, wenn nichts Brauchbares drinsteht.
+function domainVon(wert) {
+  const t = String(wert || "").trim().toLowerCase()
+    .replace(/^https?:\/\//, "").replace(/^www\./, "").split(/[/?#]/)[0];
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(t) ? t : "";
+}
+
+// Suchanfrage je Kontaktfeld (pur, testbar). Kern des Ganzen (Tobias 03.09.):
+// Steht die Website schon im Formular, wird die Suche per `site:` auf GENAU
+// diese Domain eingegrenzt - dann durchsucht Google die Homepage der Marke
+// fuer uns. Das ist der Ersatz fuer das Auslesen der Seite, das aus dem
+// Browser wegen CORS nicht geht: nicht wir greifen zu, sondern Googles
+// Index, den es ohnehin schon gibt.
+// Ohne Website bleibt es bei einer Suche ueber den Markennamen in
+// Anfuehrungszeichen - sonst findet Google irgendeine aehnliche Firma.
+const SUCHE = "https://www.google.com/search?q=";
+
+function suchAnfrage(label, name, website) {
+  const d = domainVon(website);
+  const marke = `"${name}"`;
+  switch (label) {
+    case "Website":      return `${marke} offizielle Website`;
+    case "Social Media": return d ? `site:${d} instagram` : `${marke} instagram`;
+    // Genau die Woerter, unter denen Firmen ihre Creator-Kontakte fuehren.
+    // OR muss in Google GROSS geschrieben sein, sonst zaehlt es als Wort.
+    case "Ansprechpartner": return d
+      ? `site:${d} (influencer OR ugc OR kooperation OR presse OR marketing)`
+      : `${marke} (influencer OR ugc OR kooperation) ansprechpartner kontakt`;
+    case "E-Mail": return d
+      ? `site:${d} (impressum OR kontakt OR presse) email`
+      : `${marke} impressum kontakt email`;
+    default: return marke;
+  }
+}
+
+function suchLink(label, name, website) {
+  return SUCHE + encodeURIComponent(suchAnfrage(label, name, website));
+}
+
 // Kontaktdaten (Phase 6): standen bisher NUR im Word-Book - bei einer
 // App-angelegten Brand waren sie deshalb bis zum naechsten PC-Export
 // unsichtbar. Vorbelegt mit dem aktuellen Stand (Book + App-Overlay).
@@ -1524,19 +1564,14 @@ function kontaktFormular(m, fertig) {
     i.value = vorhanden[label] || "";
     eingaben[label] = i;
     wrap.append(i);
-    // Such-Knopf statt Raten (siehe webVorschlag): oeffnet die Suche im
-    // Browser, Andrea kopiert den richtigen Link zurueck ins Feld.
-    // Das ist NUR ein Link auf eine Suchseite - keine API, kein Schluessel,
-    // kein Kontingent. Mit der abgeschalteten Custom Search API (siehe
-    // Chronik v56) hat das nichts zu tun. Suchmaschine seit v66 Google
-    // (Tobias 03.09.), vorher DuckDuckGo - Umstellen ist diese eine Zeile.
-    const SUCHE = "https://www.google.com/search?q=";
-    const suche = label === "Website"
-      ? SUCHE + encodeURIComponent(m.name + " offizielle Website")
-      : label === "Social Media"
-        ? SUCHE + encodeURIComponent(m.name + " instagram")
-        : null;
-    if (suche) {
+    // Such-Knopf fuer JEDES Kontaktfeld (v67; vorher nur Website und Social
+    // Media). Das ist NUR ein Link auf eine Suchseite - keine API, kein
+    // Schluessel, kein Kontingent. Mit der abgeschalteten Custom Search API
+    // (siehe Chronik v56) hat das nichts zu tun.
+    // Die Anfrage wird beim KLICK gebaut, nicht beim Zeichnen: so nutzt sie
+    // eine Website, die gerade erst eingetragen wurde.
+    const suche = () => suchLink(label, m.name, eingaben["Website"].value);
+    {
       const z = el("div", "chips");
       const b = el("button", "chip", "🔎 " + label + " suchen");
       const hinweis = el("div", "stand");
@@ -1550,7 +1585,7 @@ function kontaktFormular(m, fertig) {
       // unbekannten Marke" damit nutzlos, Abschaltung 01.01.2027.
       b.onclick = async () => {
         if (label !== "Website") {
-          window.open(suche, "_blank", "noopener");
+          window.open(suche(), "_blank", "noopener");
           return;
         }
         b.disabled = true;
@@ -1559,7 +1594,7 @@ function kontaktFormular(m, fertig) {
         b.disabled = false;
         if (!gefunden) {
           hinweis.textContent = "Keine passende Domain geraten — Browser-Suche geöffnet.";
-          window.open(suche, "_blank", "noopener");
+          window.open(suche(), "_blank", "noopener");
           return;
         }
         i.value = gefunden;
