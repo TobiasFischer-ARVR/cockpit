@@ -481,8 +481,9 @@ main {
 }
 #intro.weg { opacity: 0; }
 
-/* Atmender Schein hinter der Platte - gibt dem Standbild Tiefe, damit es
-   nicht wie ein aufgeklebtes Bild wirkt. */
+/* Schein hinter der Platte - gibt dem Standbild Tiefe. Seit v62 STATISCH:
+   das Pulsieren war Bewegung, die niemand gebraucht hat (Tobias 03.09.:
+   "etwas zu unruhig"). */
 #intro::before {
   content: "";
   position: absolute;
@@ -490,7 +491,7 @@ main {
   aspect-ratio: 1;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(212, 245, 233, .18), transparent 65%);
-  animation: af-atem 2.6s ease-in-out infinite;
+  opacity: .8;
 }
 
 /* Feines Raster - nur schwach sichtbar, macht den "Technik"-Eindruck,
@@ -507,80 +508,30 @@ main {
   -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 25%, transparent 72%);
 }
 
+/* v62: EINE Bewegung statt vier. Vorher klappte die Platte aus einer Linie
+   auf, ein Mint-Strahl schrieb das Logo frei, ein Rahmen pulste und der
+   Schein atmete - hintereinander 1,9 s. Davor zeigt Android schon zweimal
+   das App-Icon; in Summe war das zu viel. Jetzt: sanft aufblenden, minimal
+   heranfahren, fertig. */
 .platte {
   position: relative;
   width: min(64vw, 310px);
   border-radius: 16px;
   overflow: hidden;
-  /* Eigener Hintergrund ist PFLICHT, nicht Deko: das Logo ist waehrend des
-     Aufklappens noch komplett weggeclippt: ohne Flaeche klappt hier eine
-     unsichtbare Box auf und die ersten 0,35 s waeren schwarz. So sieht man
-     eine duenne Linie zu einer leeren Platte werden, auf die der Strahl
-     dann das Logo schreibt. */
   background: rgba(212, 245, 233, .07);
-  /* Aus einer Linie aufklappen: erst die Hoehe, dann laeuft der Strahl. */
-  animation: af-aufklappen .5s cubic-bezier(.2, .8, .25, 1) both,
-             af-glanz 1.1s ease-out .95s both;
+  box-shadow: 0 0 0 1px rgba(212, 245, 233, .25),
+              0 10px 44px rgba(0, 0, 0, .55);
+  animation: af-auf .55s cubic-bezier(.2, .8, .25, 1) both;
 }
 
-.platte img {
-  display: block;
-  width: 100%;
-  /* Der Strahl legt das Logo frei - vor ihm ist noch nichts zu sehen. */
-  animation: af-schreiben .85s cubic-bezier(.45, .05, .3, 1) .35s both;
+.platte img { display: block; width: 100%; }
+
+@keyframes af-auf {
+  from { opacity: 0; transform: scale(.965); }
+  to   { opacity: 1; transform: none; }
 }
 
-/* Der Strahl selbst: schmale Mint-Kante mit Leuchtschweif. */
-.strahl {
-  position: absolute;
-  top: -8%;
-  bottom: -8%;
-  width: 3px;
-  background: var(--af-mint);
-  box-shadow: 0 0 12px 3px rgba(212, 245, 233, .9),
-              0 0 34px 10px rgba(17, 103, 106, .8);
-  animation: af-strahl .85s cubic-bezier(.45, .05, .3, 1) .35s both;
-}
-
-@keyframes af-aufklappen {
-  from { opacity: 0; transform: scaleY(.04) scaleX(.75); filter: brightness(2.4); }
-  to   { opacity: 1; transform: none; filter: none; }
-}
-
-/* Muss exakt gleich getaktet sein wie af-strahl, sonst laeuft der Strahl
-   nicht auf der Kante des freigelegten Logos. */
-@keyframes af-schreiben {
-  from { clip-path: inset(0 100% 0 0); }
-  to   { clip-path: inset(0 0 0 0); }
-}
-
-@keyframes af-strahl {
-  from { left: -3px; opacity: 1; }
-  85%  { opacity: 1; }
-  to   { left: 100%; opacity: 0; }
-}
-
-/* Kurzer Rahmen-Puls, wenn das Logo fertig "geschrieben" ist. */
-@keyframes af-glanz {
-  0%   { box-shadow: 0 0 0 0 rgba(212, 245, 233, .0); }
-  25%  { box-shadow: 0 0 0 1px rgba(212, 245, 233, .85),
-                     0 0 30px 6px rgba(17, 103, 106, .75); }
-  100% { box-shadow: 0 0 0 1px rgba(212, 245, 233, .25),
-                     0 10px 44px rgba(0, 0, 0, .55); }
-}
-
-@keyframes af-atem {
-  0%, 100% { opacity: .45; transform: scale(.92); }
-  50%      { opacity: 1;   transform: scale(1.04); }
-}
-
-/* Barrierefreiheit: Bewegung ganz raus, ruhiges Standbild bleibt.
-   Nicht wegoptimieren - Animation ohne Abschalter ist ein echter Mangel,
-   kein Feinschliff. */
 @media (prefers-reduced-motion: reduce) {
-  #intro, #intro::before, .platte, .platte img { animation: none; }
+  #intro, .platte { animation: none; }
   #intro { transition: none; }
-  .platte { box-shadow: 0 0 0 1px rgba(212, 245, 233, .25); }
-  .platte img { clip-path: none; }
-  .strahl { display: none; }
 }
