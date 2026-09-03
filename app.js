@@ -189,50 +189,6 @@ function sheetEinstellungen() {
     "die hängt die App selbst an. In diesem Ordner müssen auch die beiden " +
     "Template-Dateien liegen. Leer = Standard. Gilt nur für dieses Gerät."));
 
-  // Google-Suche (Tobias 03.09.): eigener Zugang, damit die Such-Knoepfe
-  // im Kontaktformular das Feld direkt vorbelegen statt nur den Browser zu
-  // oeffnen. Bewusst pro Geraet in localStorage und NICHT im Datenstand:
-  // der Schluessel gehoert niemandem sonst und darf nicht ueber ein
-  // Backup weiterwandern.
-  wrap.append(el("div", "abschnitt", "Google-Suche (optional)"));
-  const gFelder = {};
-  for (const [feld, label] of [["googleKey", "API-Schlüssel"],
-                               ["googleCx", "Suchmaschinen-ID (cx)"]]) {
-    wrap.append(el("div", "stand", label));
-    const i = el("input", "feld");
-    i.type = "text";
-    i.value = einst[feld] || "";
-    gFelder[feld] = i;
-    wrap.append(i);
-  }
-  const gStand = el("div", "stand", einst.googleKey && einst.googleCx
-    ? "Eingerichtet." : "Nicht eingerichtet — Such-Knöpfe öffnen den Browser.");
-  const gZeile = el("div", "chips");
-  const gSpeichern = el("button", "chip aktiv", "Speichern");
-  gSpeichern.onclick = () => {
-    for (const [feld, i] of Object.entries(gFelder))
-      einst[feld] = i.value.trim();
-    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
-    gStand.textContent = einst.googleKey && einst.googleCx
-      ? "Gespeichert." : "Unvollständig — beides ausfüllen.";
-  };
-  const gTest = el("button", "chip", "Testen");
-  gTest.onclick = async () => {
-    gSpeichern.onclick();
-    gStand.textContent = "Teste …";
-    const t = await googleSuche("Balolo offizielle Website");
-    gStand.textContent = t === null ? "Beides ausfüllen (Schlüssel + cx)."
-      : t.length ? "✓ Funktioniert — erster Treffer: " + t[0]
-                 : "✗ Keine Antwort — Schlüssel, cx oder Tageskontingent prüfen.";
-  };
-  gZeile.append(gSpeichern, gTest);
-  wrap.append(gZeile, gStand, el("div", "stand",
-    "Google Custom Search JSON API, 100 Abfragen pro Tag gratis. " +
-    "Schlüssel in der Google Cloud Console anlegen, Suchmaschinen-ID bei " +
-    "programmablesearchengine.google.com („gesamtes Web durchsuchen“ " +
-    "einschalten). Gilt nur für dieses Gerät — beschränke den Schlüssel " +
-    "in der Console auf deine App-Adresse."));
-
   // Automatisches Backup (Tobias 01.09.): datierte Kopie nach OneDrive
   wrap.append(el("div", "abschnitt", "Automatisches Backup"));
   const aStand = el("div", "stand", autoBackupText());
@@ -1497,27 +1453,30 @@ function kontaktFormular(m, fertig) {
       const z = el("div", "chips");
       const b = el("button", "chip", "🔎 " + label + " suchen");
       const hinweis = el("div", "stand");
-      // Mit Google-Zugang (Einstellungen) wird das Feld direkt vorbelegt,
-      // ohne faellt es auf die alte Browser-Suche zurueck. Vorbelegen,
-      // nicht speichern: eine falsche Adresse in 200 Brands ist teurer
-      // als der eine Blick drauf.
+      // Website: erst raten lassen (webVorschlag prueft marke.de/.com per
+      // DNS - kein Schluessel, kein Kontingent, kein CORS). Trifft es nicht,
+      // oeffnet wie bisher die Browser-Suche. Social Media laesst sich so
+      // nicht pruefen (instagram.com existiert immer), da bleibt es beim
+      // Browser. Google Custom Search war hier kurz drin und ist wieder
+      // raus: seit 01/2026 duerfen neue Suchmaschinen nur noch 50 fest
+      // eingetragene Domains durchsuchen - fuer "finde die Seite einer
+      // unbekannten Marke" damit nutzlos, Abschaltung 01.01.2027.
       b.onclick = async () => {
-        b.disabled = true;
-        const treffer = await googleSuche(label === "Website"
-          ? m.name + " offizielle Website" : m.name + " instagram");
-        b.disabled = false;
-        if (treffer === null) {          // kein Zugang hinterlegt
+        if (label !== "Website") {
           window.open(suche, "_blank", "noopener");
           return;
         }
-        const gefunden = trefferFuer(label, treffer);
+        b.disabled = true;
+        hinweis.textContent = "Suche Domain …";
+        const gefunden = await webVorschlag(m.name);
+        b.disabled = false;
         if (!gefunden) {
-          hinweis.textContent = "Nichts Passendes gefunden — Browser-Suche geöffnet.";
+          hinweis.textContent = "Keine passende Domain geraten — Browser-Suche geöffnet.";
           window.open(suche, "_blank", "noopener");
           return;
         }
         i.value = gefunden;
-        hinweis.textContent = "Vorschlag eingesetzt — prüfen, dann speichern.";
+        hinweis.textContent = "Geraten und per DNS bestätigt — bitte kurz prüfen.";
       };
       z.append(b);
       wrap.append(z, hinweis);
@@ -2329,39 +2288,6 @@ async function domainLebt(host) {
 
 // Erste erreichbare Kandidaten-Domain, sonst "". .de zuerst (Andreas
 // Brands sind ueberwiegend deutsch), dann .com.
-// Google Custom Search JSON API (Tobias 03.09., Punkt 5): 100 Abfragen am
-// Tag gratis. Schluessel + Suchmaschinen-ID stehen in den GERAETE-
-// Einstellungen, nicht im Code - app.js liegt oeffentlich auf GitHub Pages.
-// Rueckgabe: null = gar nicht eingerichtet (Aufrufer faellt auf die
-// Browser-Suche zurueck), [] = eingerichtet, aber nichts gefunden oder
-// Kontingent leer. Eine fehlgeschlagene Suche ist ein Zwischenstand,
-// kein Fehler - deshalb wirft die Funktion nie.
-async function googleSuche(frage) {
-  const k = String(einst.googleKey || "").trim();
-  const cx = String(einst.googleCx || "").trim();
-  if (!k || !cx) return null;
-  try {
-    const r = await fetch("https://www.googleapis.com/customsearch/v1" +
-      "?key=" + encodeURIComponent(k) + "&cx=" + encodeURIComponent(cx) +
-      "&num=5&q=" + encodeURIComponent(frage));
-    const d = await r.json();
-    return (d.items || []).map((x) => x.link);
-  } catch (_) {
-    return [];
-  }
-}
-
-// Was als "offizielle Website" NICHT durchgeht: Plattformen, Verzeichnisse
-// und Marktplaetze stehen bei kleinen Marken oft vor der eigenen Seite.
-const NICHT_WEBSITE = /(facebook|instagram|linkedin|tiktok|youtube|twitter|x\.com|pinterest|wikipedia|amazon|ebay|etsy|trustpilot|kununu|northdata|wlw\.de|firmenwissen|yelp|11880|gelbeseiten)/i;
-
-// Erster brauchbarer Treffer fuer ein Kontaktfeld (pur, testbar).
-function trefferFuer(label, treffer) {
-  return (treffer || []).find((u) => label === "Website"
-    ? !NICHT_WEBSITE.test(u)
-    : /instagram\.com\//i.test(u)) || "";
-}
-
 async function webVorschlag(name) {
   const slug = domainSlug(name);
   if (slug.length < 3) return "";
