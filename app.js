@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v59"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v60"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1680,7 +1680,11 @@ function sheetBrandrating(m) {
     wrap.append(bereichAbschluss(br));
     // Gleicher Bauplan wie in der Pitchliste (Tobias 03.09.) - egal ob
     // Word-Import oder in der App angelegt.
-    wrap.append(markenDetails(quelleZuName(m.name), true, m));
+    // "✎ Kontaktdaten" gehoert in den Reiter Kontakt, nicht zu den
+    // Book-Knoepfen im Reiter Rating (Tobias 03.09.) - dort steht es
+    // jetzt unter der Tabelle, die es bearbeitet.
+    wrap.append(markenDetails(quelleZuName(m.name), true, m,
+      datenstand ? formularKnopf(z, bau, "kontakt", "✎ Kontaktdaten") : null));
     if (m.erstellt) wrap.append(bereichLoeschen(m));
     zuReitern(wrap, "reiterRating");
   }
@@ -1715,24 +1719,25 @@ function sheetBrandrating(m) {
     const rating = String(br.rating || "").trim();
     const abc = ["A", "B", "C"].includes(rating);
     const online = typeof OD !== "undefined" && OD.konto();
-    // EINE Knopfreihe (Tobias 01.09.): "✎ Kontaktdaten" steht neben den
-    // Book-Knoepfen - die Book-Felder bearbeitet man dort, wo man das Book
-    // erzeugt. Das Rating hat seinen eigenen Stift oben in der Kopfzeile.
-    // Sichtbar auch ohne Rating/OneDrive: die Kontaktdaten kann man immer
-    // pflegen, auch bevor ein Book existiert.
+    // Nur noch die Book-Knoepfe (Tobias 03.09.: "✎ Kontaktdaten" ist in
+    // den Reiter Kontakt gewandert). Kann dadurch leer bleiben - dann
+    // gar nicht erst einhaengen, sonst steht da eine leere Zeile.
     const reihe = el("div", "chips");
-    reihe.append(formularKnopf(z, bau, "kontakt", "✎ Kontaktdaten"));
+    const reiheRein = (...rest) => {
+      if (reihe.children.length) frag.append(reihe);
+      frag.append(...rest.filter(Boolean));
+    };
 
     if (!br.brandbook) {
       // ------------------------------------------ Stufe 1: Book erstellen
       if (!abc) {
-        frag.append(reihe, el("div", "stand", rating === "D"
+        reiheRein(el("div", "stand", rating === "D"
           ? "D-Brand = inaktiv/Archiv — kein Brand-Book, keine Pitchliste."
           : "Erst Rating (A–C) vergeben — es bestimmt Template und Ordner."));
         return frag;
       }
       if (!online) {
-        frag.append(reihe, el("div", "stand",
+        reiheRein(el("div", "stand",
           "Fürs Brand-Book erst bei OneDrive anmelden (Hauptmenü)."));
         return frag;
       }
@@ -1763,7 +1768,7 @@ function sheetBrandrating(m) {
         bau();
       };
       reihe.append(b);
-      frag.append(reihe, el("div", "stand",
+      reiheRein(el("div", "stand",
         "Stufe 1: erzeugt das Brand-Book aus dem Template, trägt die " +
         "Kerninfos ein und setzt den Haken. In die Pitchliste kommt die " +
         "Brand erst mit „Brand-Book befüllt“."));
@@ -1771,7 +1776,7 @@ function sheetBrandrating(m) {
     }
     // ------------------------------ Stufe 2: Book befüllt -> Pitchliste
     if (!abc || inPitchliste(m)) {          // D-Archiv-Book oder schon drin
-      frag.append(reihe);                   // Bearbeiten bleibt trotzdem da
+      reiheRein();                          // ggf. gar nichts mehr zu zeigen
       return frag;
     }
 
@@ -1810,7 +1815,7 @@ function sheetBrandrating(m) {
       bau();
     };
     reihe.append(b);
-    frag.append(reihe, el("div", "stand",
+    reiheRein(el("div", "stand",
       "Stufe 2: Book in Word fertig befüllt? Damit geht die Brand in " +
       "die Pitchliste (ohne Termin). „↻ Book aktualisieren“ schreibt " +
       "vorher noch geänderte Kerninfos ins Word nach."));
