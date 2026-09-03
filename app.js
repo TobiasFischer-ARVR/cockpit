@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v63"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v64"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -151,9 +151,10 @@ function zuReitern(wrap, merker) {
 
 // Reste der Aufklapp-Variante (v56/v57) einmal aus den Einstellungen
 // werfen - sie werden von keiner Zeile mehr gelesen.
-if (einst.zu || einst.zuStand !== undefined) {
-  delete einst.zu;
+if (einst.zu || einst.zuStand !== undefined || einst.intro !== undefined) {
+  delete einst.zu;        // Aufklapp-Variante (v56/v57)
   delete einst.zuStand;
+  delete einst.intro;     // "Logo beim Start" - Intro gibt es nicht mehr (v64)
   localStorage.setItem(EINST_KEY, JSON.stringify(einst));
 }
 
@@ -163,27 +164,6 @@ function einstAnwenden() {
   // Android kann es. Upgrade auf rem-Basis nur, falls je ein Zielbrowser
   // ohne zoom dazukommt.
   document.body.style.zoom = einst.groesse || "";
-}
-
-// Intro (Tobias 02.09.): Andreas Logo kurz einblenden, dann wegblenden.
-// Das Element steht in der index.html und ist beim Laden schon sichtbar -
-// hier wird es nur wieder los. Antippen ueberspringt.
-// ponytail: feste Dauer statt einer Wartelogik auf geladene Daten - das
-// Intro soll den Start schmuecken, nicht ihn verlaengern.
-// 1900 ms = Aufklappen (.5) + Strahl (.35 Versatz + .85) + kurz stehen
-// lassen. Wer es eilig hat, tippt drauf; wen es nervt, schaltet es in den
-// Einstellungen ab. Aendert man die Zeiten im CSS, hier mitziehen.
-const INTRO_MS = 600;
-
-function introAusblenden() {
-  const i = document.getElementById("intro");
-  if (!i) return; // aus (Inline-Script in der index.html hat es entfernt)
-  const weg = () => {
-    i.classList.add("weg");
-    setTimeout(() => i.remove(), 500);
-  };
-  i.onclick = weg;
-  setTimeout(weg, INTRO_MS);
 }
 
 function einstZeile(titel, paare, feld) {
@@ -210,9 +190,7 @@ function sheetEinstellungen() {
   const wrap = el("div");
   wrap.append(abschnitt("Darstellung",
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
-    einstZeile("Logo beim Start", [["", "An"], ["aus", "Aus"]], "intro"),
-    el("div", "stand", "Gilt nur für dieses Gerät · " +
-      "Änderung am Intro wirkt beim nächsten Start")));
+    el("div", "stand", "Gilt nur für dieses Gerät.")));
   // Datenstand-Sicherung (Tobias 30.08.): hier statt im OneDrive-Sheet -
   // das Zahnrad ist auch im UGC Dashboard immer erreichbar
   const sStatus = el("div", "stand", sicherungsText());
@@ -3033,8 +3011,6 @@ if ("serviceWorker" in navigator) {
 }
 
 einstAnwenden(); // gespeicherten Stil sofort anwenden, vor dem ersten Rendern
-introAusblenden();
-
 (async () => {
   try {
     await laden();

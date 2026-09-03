@@ -1,10 +1,10 @@
 // ponytail: einfacher Cache-First fuer die App-Huelle, kein Update-Handling
 // ueber Versions-Diffing. Upgrade wenn's stoert: Cache-Namen bei jedem Release
 // hochzaehlen (cache-v2, ...) statt CACHE hart zu pflegen.
-const CACHE = "cockpit-v63"; // bei jedem Release hochzaehlen, sonst kriegt das Handy die alte Version
+const CACHE = "cockpit-v64"; // bei jedem Release hochzaehlen, sonst kriegt das Handy die alte Version
 const DATEIEN = ["index.html", "style.css", "app.js", "manifest.json",
                  "msal-browser.min.js", "jszip.min.js", "onedrive.js",
-                 "logo.png", "icons/icon-192.png", "icons/icon-512.png"];
+                 "icons/icon-192.png", "icons/icon-512.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(DATEIEN)));

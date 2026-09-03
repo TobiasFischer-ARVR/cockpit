@@ -448,35 +448,4 @@ main {
   z-index: 30;
 }
 
-/* Intro = exakt das Bild, das Android als Splash schon zeigt: schlichter
-   App-Hintergrund, darauf die Logo-Platte. Schein und Raster von v53 sind
-   raus - der Splash hat sie nicht, und jeder Unterschied macht den
-   Uebergang wieder sichtbar. Deshalb auch background_color im Manifest
-   = --bg. */
-#intro {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-  transition: opacity .4s ease;
-}
-#intro.weg { opacity: 0; }
-
-.platte {
-  position: relative;
-  width: min(64vw, 310px);
-  border-radius: 26px;
-  overflow: hidden;
-  background: rgba(212, 245, 233, .07);
-}
-
-.platte img { display: block; width: 100%; }
-
-/* Barrierefreiheit: seit v63 bewegt sich im Intro ohnehin nichts mehr -
-   nur das Wegblenden bleibt, und das faellt hier auch noch weg. */
-@media (prefers-reduced-motion: reduce) {
-  #intro { transition: none; }
 }
