@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v55"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v56"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -50,6 +50,27 @@ try { einst = JSON.parse(localStorage.getItem(EINST_KEY) || "{}"); } catch (_) {
 
 const EINST_GROESSEN = [["0.9", "Klein"], ["", "Normal"],
                         ["1.1", "Groß"], ["1.2", "Sehr groß"]];
+
+// Aufklappbarer Abschnitt (Tobias 03.09.): die Detail-Sheets waren lang -
+// Wiedervorlage, Startdatum, Nächster Schritt, Kontakt, Historie alle offen
+// untereinander. Natives <details>: das Auf- und Zuklappen macht der
+// Browser, dafuer braucht es keine Zeile Javascript und keine Bibliothek.
+// Gemerkt wird pro Geraet nur die ABWEICHUNG vom Standard - was du
+// zuklappst, bleibt zu, bis du es wieder aufmachst.
+const ZU_STD = ["Wiedervorlage", "Historie", "Brand Rating (Excel-Blatt)",
+                "Verwaltung"];
+
+function abschnitt(titel, ...inhalt) {
+  const d = el("details", "block");
+  const zu = einst.zu || {};
+  d.open = titel in zu ? !zu[titel] : !ZU_STD.includes(titel);
+  d.ontoggle = () => {
+    einst.zu = Object.assign({}, einst.zu, { [titel]: !d.open });
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  };
+  d.append(el("summary", "abschnitt", titel), ...inhalt.filter(Boolean));
+  return d;
+}
 
 function einstAnwenden() {
   // ponytail: zoom statt rem-Umbau - das ganze Layout ist in px; zoom
@@ -122,6 +143,95 @@ function sheetEinstellungen() {
   wrap.append(sStatus, sZeile, el("div", "stand",
     "Backup laden: eine cockpit-datenstand-….json auswählen " +
     "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand."));
+
+  // Brand-Book-Ordner (Tobias 03.09.): der Pfad kann sich aendern, also
+  // gehoert er in die Einstellungen und nicht in den Code. "Prüfen"
+  // fragt OneDrive, ob es den Ordner wirklich gibt - ein Tippfehler soll
+  // hier auffallen und nicht erst beim naechsten Brand-Book.
+  wrap.append(el("div", "abschnitt", "Brand-Book-Ordner (OneDrive)"));
+  const pFeld = el("input", "feld");
+  pFeld.type = "text";
+  pFeld.placeholder = BOOK_BASIS_STD;
+  pFeld.value = einst.bookPfad || "";
+  const pStand = el("div", "stand", "Aktuell: " + bookBasis().split("root:")[1]);
+  const pZeile = el("div", "chips");
+  const pSpeichern = el("button", "chip aktiv", "Speichern");
+  pSpeichern.onclick = () => {
+    einst.bookPfad = pFeld.value.trim();
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    pStand.textContent = "Aktuell: " + bookBasis().split("root:")[1];
+  };
+  const pPruefen = el("button", "chip", "Prüfen");
+  pPruefen.onclick = async () => {
+    pSpeichern.onclick();
+    if (typeof OD === "undefined" || !OD.konto()) {
+      pStand.textContent = "Zum Prüfen erst bei OneDrive anmelden."; return;
+    }
+    pStand.textContent = "Prüfe …";
+    const d = await OD.graphLeise(bookBasis() + ":/children?$select=name");
+    if (!d) { pStand.textContent = "✗ Ordner nicht gefunden — Schreibweise prüfen."; return; }
+    // Genau das pruefen, was die App dort braucht (Plan 01.09.): die drei
+    // Rating-Unterordner und die zwei Templates. Fehlt etwas, faellt es
+    // hier auf und nicht erst beim naechsten Brand-Book.
+    const da = new Set((d.value || []).map((x) => x.name));
+    const fehlt = ["A Brands", "B Brands", "C Brands",
+      "Template Brand-Book A Brand.docx", "Template Brand-Book B-C Brand.docx"]
+      .filter((n) => !da.has(n));
+    pStand.textContent = fehlt.length
+      ? "⚠ Ordner gefunden, aber es fehlt: " + fehlt.join(", ")
+      : "✓ Ordner gefunden — Unterordner und Templates sind da.";
+  };
+  const pStandard = el("button", "chip", "Standard");
+  pStandard.onclick = () => { pFeld.value = ""; pSpeichern.onclick(); };
+  pZeile.append(pSpeichern, pPruefen, pStandard);
+  wrap.append(pFeld, pZeile, pStand, el("div", "stand",
+    "Pfad ab OneDrive-Wurzel, ohne die „A Brands“/„B Brands“-Unterordner — " +
+    "die hängt die App selbst an. In diesem Ordner müssen auch die beiden " +
+    "Template-Dateien liegen. Leer = Standard. Gilt nur für dieses Gerät."));
+
+  // Google-Suche (Tobias 03.09.): eigener Zugang, damit die Such-Knoepfe
+  // im Kontaktformular das Feld direkt vorbelegen statt nur den Browser zu
+  // oeffnen. Bewusst pro Geraet in localStorage und NICHT im Datenstand:
+  // der Schluessel gehoert niemandem sonst und darf nicht ueber ein
+  // Backup weiterwandern.
+  wrap.append(el("div", "abschnitt", "Google-Suche (optional)"));
+  const gFelder = {};
+  for (const [feld, label] of [["googleKey", "API-Schlüssel"],
+                               ["googleCx", "Suchmaschinen-ID (cx)"]]) {
+    wrap.append(el("div", "stand", label));
+    const i = el("input", "feld");
+    i.type = "text";
+    i.value = einst[feld] || "";
+    gFelder[feld] = i;
+    wrap.append(i);
+  }
+  const gStand = el("div", "stand", einst.googleKey && einst.googleCx
+    ? "Eingerichtet." : "Nicht eingerichtet — Such-Knöpfe öffnen den Browser.");
+  const gZeile = el("div", "chips");
+  const gSpeichern = el("button", "chip aktiv", "Speichern");
+  gSpeichern.onclick = () => {
+    for (const [feld, i] of Object.entries(gFelder))
+      einst[feld] = i.value.trim();
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    gStand.textContent = einst.googleKey && einst.googleCx
+      ? "Gespeichert." : "Unvollständig — beides ausfüllen.";
+  };
+  const gTest = el("button", "chip", "Testen");
+  gTest.onclick = async () => {
+    gSpeichern.onclick();
+    gStand.textContent = "Teste …";
+    const t = await googleSuche("Balolo offizielle Website");
+    gStand.textContent = t === null ? "Beides ausfüllen (Schlüssel + cx)."
+      : t.length ? "✓ Funktioniert — erster Treffer: " + t[0]
+                 : "✗ Keine Antwort — Schlüssel, cx oder Tageskontingent prüfen.";
+  };
+  gZeile.append(gSpeichern, gTest);
+  wrap.append(gZeile, gStand, el("div", "stand",
+    "Google Custom Search JSON API, 100 Abfragen pro Tag gratis. " +
+    "Schlüssel in der Google Cloud Console anlegen, Suchmaschinen-ID bei " +
+    "programmablesearchengine.google.com („gesamtes Web durchsuchen“ " +
+    "einschalten). Gilt nur für dieses Gerät — beschränke den Schlüssel " +
+    "in der Console auf deine App-Adresse."));
 
   // Automatisches Backup (Tobias 01.09.): datierte Kopie nach OneDrive
   wrap.append(el("div", "abschnitt", "Automatisches Backup"));
@@ -637,24 +747,21 @@ function bereichKontakt(m, quelle, ohneRating, knopf) {
       label.toLowerCase() !== "name" &&
       !(ohneRating && RATING_FELDER.includes(label.trim().toLowerCase())));
   if (!infos.length && !knopf) return frag;
-  frag.append(el("div", "abschnitt", "Kontakt & Infos"));
+  let inhalt;
   if (infos.length) {
-    const tab = el("div", "tabelle");
+    inhalt = el("div", "tabelle");
     for (const [label, wert] of infos) {
       const zeile = el("div", "zeile");
       zeile.append(el("span", "leise", label), kontaktWert(label, wert));
-      tab.append(zeile);
+      inhalt.append(zeile);
     }
-    frag.append(tab);
   } else {
-    frag.append(el("div", "leerzustand kompakt",
-      "Noch keine Kontaktdaten eingetragen."));
+    inhalt = el("div", "leerzustand kompakt",
+      "Noch keine Kontaktdaten eingetragen.");
   }
-  if (knopf) {
-    const z = el("div", "chips");
-    z.append(knopf);
-    frag.append(z);
-  }
+  let kz = null;
+  if (knopf) { kz = el("div", "chips"); kz.append(knopf); }
+  frag.append(abschnitt("Kontakt & Infos", inhalt, kz));
   return frag;
 }
 
@@ -665,6 +772,15 @@ function bereichKontakt(m, quelle, ohneRating, knopf) {
 // erreichbar ist (nicht angemeldet / keine Quelle) - ein Knopf, der
 // garantiert "nicht gefunden" meldet, gehoert nicht auf den Schirm.
 // Eine Stelle fuer alle drei Sheets (Firma, Pitch, Brand Rating).
+// Book-Dateiname: geparste Quelle (aus Word eingelesen) oder - bei einer
+// in der App angelegten Brand - der Name des selbst erzeugten Books.
+// Damit sehen beide Herkuenfte gleich aus (Tobias 03.09.).
+function bookName(quelle, m) {
+  if (quelle) return quelle;
+  return m && m.brandrating && m.brandrating.brandbook
+    ? "Brand-Book " + m.name : null;
+}
+
 function bookOeffnenZeile(quelle) {
   if (!quelle || typeof OD === "undefined" || !OD.konto()) return null;
   const z = el("div", "chips");
@@ -713,13 +829,13 @@ function historieAktuell(m, quelle) {
 // auch dann, wenn es (noch) kein Book gibt.
 function bereichHistorie(m, quelle) {
   const frag = document.createDocumentFragment();
-  frag.append(el("div", "abschnitt", "Historie"));
   const eintraege = historieAktuell(m, quelle);
+  const leer = [];
   if (!eintraege.length) {
     // Am BOOK unterscheiden, nicht am Marken-Objekt: gibt es eine Quelle,
     // ist das geparste Word die Herkunft und ein Update kann wirklich
     // etwas nachliefern. Ohne Book waere derselbe Rat schlicht falsch.
-    frag.append(el("div", "leerzustand kompakt", quelle
+    leer.push(el("div", "leerzustand kompakt", quelle
       ? "Keine Historie im Snapshot — einmal Update (↻) drücken."
       : "Noch keine Ereignisse — der erste Pitch erscheint hier, sobald " +
         "du ihn in der Pitchliste erledigst."));
@@ -738,13 +854,14 @@ function bereichHistorie(m, quelle) {
     zeile.append(el("span", "num leise datum", e.datum), label);
     tab.append(zeile);
   }
-  frag.append(tab);
+  // Titel zeigt die Anzahl - so sieht man zugeklappt, ob es was zu sehen gibt
+  frag.append(abschnitt("Historie", ...leer, tab));
   return frag;
 }
 
 function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
   const frag = document.createDocumentFragment();
-  const oeffnen = bookOeffnenZeile(quelle);
+  const oeffnen = bookOeffnenZeile(bookName(quelle, m));
   if (oeffnen) frag.append(oeffnen);
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
   frag.append(bereichKontakt(m, quelle, ohneRating, kontaktKnopf),
@@ -824,7 +941,6 @@ function sheetPitch(p) {
     wrap.append(el("div", "kontext",
       ampel(q.datum_naechste_aktion, heuteNull()).text));
 
-    wrap.append(el("div", "abschnitt", "Wiedervorlage"));
     const felder = [
       ["Status", q.status],
       ["Rating", q.rating],
@@ -841,32 +957,14 @@ function sheetPitch(p) {
       zeile.append(el("span", "leise", label), el("span", null, wert));
       tab.append(zeile);
     }
-    wrap.append(tab, bereichStartdatum(q), bereichErledigen(q));
+    wrap.append(abschnitt("Wiedervorlage", tab),
+                bereichStartdatum(q), bereichErledigen(q));
 
-    const quelle = quelleZuName(p.name);
-    if (quelle) {
-      wrap.append(markenDetails(quelle, false, mv, kontaktKnopf));
-    } else {
-      wrap.append(bereichKontakt(mv, null, false, kontaktKnopf));
-      wrap.append(el("div", "abschnitt", "Brand-Book"));
-      // App-erzeugtes Book (v42): liegt schon in OneDrive - nur Kontakt &
-      // Historie daraus kennt erst der naechste PC-Export. Bis dahin
-      // wenigstens den Oeffnen-Knopf anbieten statt "kommt mit Phase 3".
-      const z = mv && mv.brandrating && mv.brandrating.brandbook
-        ? bookOeffnenZeile("Brand-Book " + mv.name) : null;
-      if (z) {
-        wrap.append(z, el("div", "stand",
-          "Kontakt & Historie aus dem Book erscheinen nach dem " +
-          "nächsten Einlesen am PC."));
-      } else {
-        wrap.append(el("div", "leerzustand kompakt",
-          "Noch kein Brand-Book eingelesen — kommt mit dem nächsten PC-Export."));
-      }
-      // Historie auch ohne Book (Tobias 02.09.): die Ereignisse stehen im
-      // Datenstand, sobald etwas erledigt wurde - dafuer braucht es kein
-      // geparstes Word.
-      wrap.append(bereichHistorie(mv, null));
-    }
+    // EIN Bauplan fuer beide Herkuenfte (Tobias 03.09.): ob die Brand aus
+    // Andreas Word kam oder in der App entstand, sieht man am Inhalt - das
+    // Sheet muss deshalb nicht anders aufgebaut sein. markenDetails deckt
+    // beides ab; fehlt ein Book, sagen das die Leerzustaende.
+    wrap.append(markenDetails(quelleZuName(p.name), false, mv, kontaktKnopf));
 
     if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
   }
@@ -879,7 +977,6 @@ function sheetPitch(p) {
     const frag = document.createDocumentFragment();
     const m = datenstand ? markeZuName(p.name) : null;
     if (!m || !m.pitchliste || q.letzter_kontakt) return frag;
-    frag.append(el("div", "abschnitt", "Startdatum"));
     const d = el("input", "datum");
     d.type = "date"; // nativer Android-Datumsdialog statt eigener Picker
     d.value = q.datum_naechste_aktion || isoInTagen(0);
@@ -895,21 +992,22 @@ function sheetPitch(p) {
       bau();
     };
     z.append(d, ok);
-    frag.append(z, el("div", "stand",
+    frag.append(abschnitt("Startdatum", z, el("div", "stand",
       "Ab diesem Datum ist der Pitch fällig — erst damit beginnt die " +
-      "5/5/10/90-Kadenz."));
+      "5/5/10/90-Kadenz.")));
     return frag;
   }
 
   function bereichErledigen(q) {
+    // Inhalt sammeln, am Ende in den aufklappbaren Abschnitt haengen -
+    // die Funktion hat zwei Ausgaenge, deshalb nicht direkt hineinbauen.
     const frag = document.createDocumentFragment();
-    frag.append(el("div", "abschnitt", "Nächster Schritt"));
     const m = datenstand ? markeZuName(p.name) : null;
     if (!m || !m.pitchliste) {
       frag.append(el("div", "leerzustand kompakt", datenstand
         ? "Marke nicht im Datenstand — am PC datenstand.py laufen lassen."
         : "Erledigt-Funktion braucht den Datenstand — App einmal mit Internet öffnen."));
-      return frag;
+      return abschnitt("Nächster Schritt", frag);
     }
     const s = naechsterSchritt(q.naechste_aktion, fuSeitPitch(m));
     const standard = (m.intervalle || {})[s.key] || KADENZ_STD[s.key];
@@ -948,7 +1046,7 @@ function sheetPitch(p) {
       rz.append(rk);
       frag.append(rz);
     }
-    return frag;
+    return abschnitt("Nächster Schritt", frag);
   }
 }
 
@@ -1398,9 +1496,31 @@ function kontaktFormular(m, fertig) {
     if (suche) {
       const z = el("div", "chips");
       const b = el("button", "chip", "🔎 " + label + " suchen");
-      b.onclick = () => window.open(suche, "_blank", "noopener");
+      const hinweis = el("div", "stand");
+      // Mit Google-Zugang (Einstellungen) wird das Feld direkt vorbelegt,
+      // ohne faellt es auf die alte Browser-Suche zurueck. Vorbelegen,
+      // nicht speichern: eine falsche Adresse in 200 Brands ist teurer
+      // als der eine Blick drauf.
+      b.onclick = async () => {
+        b.disabled = true;
+        const treffer = await googleSuche(label === "Website"
+          ? m.name + " offizielle Website" : m.name + " instagram");
+        b.disabled = false;
+        if (treffer === null) {          // kein Zugang hinterlegt
+          window.open(suche, "_blank", "noopener");
+          return;
+        }
+        const gefunden = trefferFuer(label, treffer);
+        if (!gefunden) {
+          hinweis.textContent = "Nichts Passendes gefunden — Browser-Suche geöffnet.";
+          window.open(suche, "_blank", "noopener");
+          return;
+        }
+        i.value = gefunden;
+        hinweis.textContent = "Vorschlag eingesetzt — prüfen, dann speichern.";
+      };
       z.append(b);
-      wrap.append(z);
+      wrap.append(z, hinweis);
     }
   }
   const okZ = el("div", "chips");
@@ -1429,7 +1549,6 @@ function kontaktFormular(m, fertig) {
 // schon gehen).
 function bereichLoeschen(m) {
   const frag = document.createDocumentFragment();
-  frag.append(el("div", "abschnitt", "Verwaltung"));
   const lz = el("div", "chips");
   const lk = el("button", "chip", "🗑 Brand löschen");
   lk.onclick = () => {
@@ -1440,8 +1559,8 @@ function bereichLoeschen(m) {
     history.back(); // Sheet zu, popstate zeichnet die Liste frisch
   };
   lz.append(lk);
-  frag.append(lz, el("div", "stand",
-    "Nur möglich, weil diese Brand in der App angelegt wurde."));
+  frag.append(abschnitt("Verwaltung", lz, el("div", "stand",
+    "Nur möglich, weil diese Brand in der App angelegt wurde.")));
   return frag;
 }
 
@@ -1499,19 +1618,11 @@ function sheetBrandrating(m) {
       zeile.append(el("span", "leise", label), el("span", null, wert));
       tab.append(zeile);
     }
-    wrap.append(el("div", "abschnitt", "Brand Rating (Excel-Blatt)"), tab);
+    wrap.append(abschnitt("Brand Rating (Excel-Blatt)", tab));
     wrap.append(bereichAbschluss(br));
-    const quelle = quelleZuName(m.name);
-    if (quelle) {
-      wrap.append(markenDetails(quelle, true, m));
-    } else {
-      // Book-Oeffnen auch hier (Andrea/Tobias 02.09.) - aber ERST wenn es
-      // ein Book gibt, sonst zeigt der Knopf ins Leere. Gleiche Optik wie
-      // in der Pitchliste: Knopf ueber "Kontakt & Infos".
-      const z = br.brandbook ? bookOeffnenZeile("Brand-Book " + m.name) : null;
-      if (z) wrap.append(z);
-      wrap.append(bereichKontakt(m, null, true), bereichHistorie(m, null));
-    }
+    // Gleicher Bauplan wie in der Pitchliste (Tobias 03.09.) - egal ob
+    // Word-Import oder in der App angelegt.
+    wrap.append(markenDetails(quelleZuName(m.name), true, m));
     if (m.erstellt) wrap.append(bereichLoeschen(m));
   }
 
@@ -2218,6 +2329,39 @@ async function domainLebt(host) {
 
 // Erste erreichbare Kandidaten-Domain, sonst "". .de zuerst (Andreas
 // Brands sind ueberwiegend deutsch), dann .com.
+// Google Custom Search JSON API (Tobias 03.09., Punkt 5): 100 Abfragen am
+// Tag gratis. Schluessel + Suchmaschinen-ID stehen in den GERAETE-
+// Einstellungen, nicht im Code - app.js liegt oeffentlich auf GitHub Pages.
+// Rueckgabe: null = gar nicht eingerichtet (Aufrufer faellt auf die
+// Browser-Suche zurueck), [] = eingerichtet, aber nichts gefunden oder
+// Kontingent leer. Eine fehlgeschlagene Suche ist ein Zwischenstand,
+// kein Fehler - deshalb wirft die Funktion nie.
+async function googleSuche(frage) {
+  const k = String(einst.googleKey || "").trim();
+  const cx = String(einst.googleCx || "").trim();
+  if (!k || !cx) return null;
+  try {
+    const r = await fetch("https://www.googleapis.com/customsearch/v1" +
+      "?key=" + encodeURIComponent(k) + "&cx=" + encodeURIComponent(cx) +
+      "&num=5&q=" + encodeURIComponent(frage));
+    const d = await r.json();
+    return (d.items || []).map((x) => x.link);
+  } catch (_) {
+    return [];
+  }
+}
+
+// Was als "offizielle Website" NICHT durchgeht: Plattformen, Verzeichnisse
+// und Marktplaetze stehen bei kleinen Marken oft vor der eigenen Seite.
+const NICHT_WEBSITE = /(facebook|instagram|linkedin|tiktok|youtube|twitter|x\.com|pinterest|wikipedia|amazon|ebay|etsy|trustpilot|kununu|northdata|wlw\.de|firmenwissen|yelp|11880|gelbeseiten)/i;
+
+// Erster brauchbarer Treffer fuer ein Kontaktfeld (pur, testbar).
+function trefferFuer(label, treffer) {
+  return (treffer || []).find((u) => label === "Website"
+    ? !NICHT_WEBSITE.test(u)
+    : /instagram\.com\//i.test(u)) || "";
+}
+
 async function webVorschlag(name) {
   const slug = domainSlug(name);
   if (slug.length < 3) return "";
@@ -2284,10 +2428,20 @@ function brandLoeschen(m) {
 
 // -------------------------------------- Rating abgeschlossen (Phase 5)
 
-// Book-Ablage in OneDrive (Testdaten-Kopie, Ordner je Rating: "A Brands"…).
-// ponytail: fester Pfad - Andreas echter Ordner kommt mit dem Backlog-
-// Punkt "Dokumenten-Pfad festlegen" (Phase 6).
-const BOOK_BASIS = "/me/drive/root:/Apps/Cockpit/Testdaten/Brand-Books";
+// Book-Ablage in OneDrive (Ordner je Rating darunter: "A Brands"…).
+// Seit v56 (Tobias 03.09.) in den Einstellungen aenderbar - Andreas Ordner
+// kann sich aendern. Pro Geraet in localStorage, wie die uebrigen
+// Einstellungen: der Pfad haengt am OneDrive-Konto, nicht an den Daten.
+const BOOK_BASIS_STD = "/Apps/Cockpit/Testdaten/Brand-Books";
+
+// Eingetippten Pfad -> Graph-Adresse. Fuehrender Slash wird ergaenzt,
+// nachlaufende entfernt, damit "Dokumente/Brand-Books/" genauso geht wie
+// "/Dokumente/Brand-Books". Leer = Standard.
+function bookBasis() {
+  const roh = String(einst.bookPfad || BOOK_BASIS_STD).trim()
+    .replace(/^\/+|\/+$/g, "");
+  return "/me/drive/root:/" + (roh || BOOK_BASIS_STD.replace(/^\//, ""));
+}
 const DOCX_TYP = "application/vnd.openxmlformats-officedocument" +
                  ".wordprocessingml.document";
 
@@ -2300,7 +2454,7 @@ const DOCX_TYP = "application/vnd.openxmlformats-officedocument" +
 // gewachsene Books, die die App nie angelegt hat) wird gerechnet.
 function bookPfad(m) {
   const ordner = m.bookordner || String(m.brandrating.rating).trim();
-  return `${BOOK_BASIS}/${ordner} Brands/Brand-Book ${m.name}.docx`;
+  return `${bookBasis()}/${ordner} Brands/Brand-Book ${m.name}.docx`;
 }
 
 // Werte fuer die Template-Platzhalter (pur, testbar): Name + Kontaktfelder
@@ -2495,7 +2649,7 @@ async function bookErzeugen(m, ersetzen) {
   const tplName = String(m.brandrating.rating).trim() === "A"
     ? "Template Brand-Book A Brand.docx"
     : "Template Brand-Book B-C Brand.docx";
-  const tpl = await OD.graphRoh(`${BOOK_BASIS}/${tplName}:/content`);
+  const tpl = await OD.graphRoh(`${bookBasis()}/${tplName}:/content`);
   if (!tpl || !tpl.ok) return "fehler";
   let inhalt = await tpl.arrayBuffer(), gefuellt = true;
   try {
