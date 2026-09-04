@@ -1,0 +1,4 @@
+# LF erzwingen: CRLF hat am 04.09. test_kadenz.js zerlegt
+* text=auto eol=lf
+*.png binary
+*.min.js -text
