@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v72"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v73"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1563,10 +1563,14 @@ function ratingFormular(m, fertig) {
   wrap.append(el("div", "stand", "Seiten der Marke direkt öffnen"));
   const sz = el("div", "chips");
   const sHinweis = el("div", "stand");
+  // Website aus dem aktuellen Stand (Book + App-Overlay) - im Rating-Formular
+  // gibt es kein Eingabefeld dafuer. Vorher stand hier eingaben["Website"],
+  // das lebt aber nur in kontaktFormular(): jeder Klick warf ReferenceError.
+  const website = kerninfosAktuell(m, quelleZuName(m.name))["Website"] || "";
   for (const [pfad, titel] of MARKEN_SEITEN) {
     const b = el("button", "chip", titel);
     b.onclick = () => {
-      const url = seitenLink(eingaben["Website"].value, pfad);
+      const url = seitenLink(website, pfad);
       if (!url) {
         sHinweis.textContent = "Dafür erst die Website eintragen.";
         return;
