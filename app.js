@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v69"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v70"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -230,8 +230,25 @@ function sheetEinstellungen() {
       pStand.textContent = "Zum Prüfen erst bei OneDrive anmelden."; return;
     }
     pStand.textContent = "Prüfe …";
-    const d = await OD.graphLeise(bookBasis() + ":/children?$select=name");
-    if (!d) { pStand.textContent = "✗ Ordner nicht gefunden — Schreibweise prüfen."; return; }
+    // Roh-Aufruf statt graphLeise (Tobias 04.09.): graphLeise schluckt jeden
+    // Fehler und lieferte immer "Ordner nicht gefunden" - auch bei 403
+    // (fehlende Zustimmung) oder Token-Problem. Bei Andreas Erst-Anmeldung
+    // hat das eine halbe Stunde Suche nach einem Tippfehler gekostet, den es
+    // nie gab. Jetzt sagt die App, was wirklich los ist.
+    const r = await OD.graphRoh(bookBasis() + ":/children?$select=name");
+    if (!r) {
+      pStand.textContent = "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
+      return;
+    }
+    if (!r.ok) {
+      pStand.textContent = r.status === 404
+        ? "✗ Ordner nicht gefunden — Schreibweise prüfen."
+        : r.status === 403
+          ? "✗ Keine Berechtigung (403) — beim Anmelden dem Datei-Zugriff zustimmen."
+          : "✗ OneDrive-Fehler " + r.status + " — Screenshot an Tobias.";
+      return;
+    }
+    const d = await r.json();
     // Genau das pruefen, was die App dort braucht (Plan 01.09.): die drei
     // Rating-Unterordner und die zwei Templates. Fehlt etwas, faellt es
     // hier auf und nicht erst beim naechsten Brand-Book.
