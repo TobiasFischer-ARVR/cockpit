@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v73"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v74"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1188,9 +1188,14 @@ function isoInTagen(t) {
 
 function deDatum(iso) { return String(iso).split("-").reverse().join("."); }
 
-// Namens-Schlüssel wie _schluessel in Python: nur Buchstaben/Ziffern
+// Namens-Schlüssel wie _schluessel in Python: nur Buchstaben/Ziffern.
+// Umlaute gefaltet - sonst ist "MyMüsli" (Book) eine andere Marke als
+// "myMuesli" (Excel). Muss mit _schluessel in datenstand.py identisch bleiben.
 function schluessel(name) {
-  return String(name).toLowerCase().replace(/[^a-z0-9äöüß]/g, "");
+  return String(name).toLowerCase()
+    .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue")
+    .replace(/ß/g, "ss")
+    .replace(/[^a-z0-9]/g, "");
 }
 
 function markeZuName(name) {
