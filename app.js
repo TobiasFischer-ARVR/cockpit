@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v70"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v71"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -76,6 +76,7 @@ const REITER = {
   "Datenstand-Sicherung": "Sicherung",
   "Automatisches Backup": "Sicherung",
   "Brand-Book-Ordner": "OneDrive",
+  "Cockpit-Ordner": "OneDrive",
 };
 
 // Fertig gebautes Sheet in Reiter aufteilen. Bewusst HINTERHER statt in
@@ -206,6 +207,59 @@ function sheetEinstellungen() {
     el("div", "stand",
       "Backup laden: eine cockpit-datenstand-….json auswählen " +
       "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand.")));
+
+  // Cockpit-Ordner (Tobias 04.09.): snapshot.json, datenstand.json und die
+  // Backups lagen fest auf "/Apps/Cockpit". Den Ordner gibt es nur in Tobias'
+  // OneDrive - bei Andrea scheiterte jeder Schreibversuch still. Gleiches
+  // Muster wie der Book-Pfad darunter: Feld, Speichern, Pruefen, Standard.
+  const dFeld = el("input", "feld");
+  dFeld.type = "text";
+  dFeld.placeholder = DATEN_BASIS_STD;
+  dFeld.value = einst.datenPfad || "";
+  const dStand = el("div", "stand", "Aktuell: " + datenBasis().split("root:")[1]);
+  const dZeile = el("div", "chips");
+  const dSpeichern = el("button", "chip aktiv", "Speichern");
+  dSpeichern.onclick = () => {
+    einst.datenPfad = dFeld.value.trim();
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    dStand.textContent = "Aktuell: " + datenBasis().split("root:")[1];
+  };
+  const dPruefen = el("button", "chip", "Prüfen");
+  dPruefen.onclick = async () => {
+    dSpeichern.onclick();
+    if (typeof OD === "undefined" || !OD.konto()) {
+      dStand.textContent = "Zum Prüfen erst bei OneDrive anmelden."; return;
+    }
+    dStand.textContent = "Prüfe …";
+    const r = await OD.graphRoh(datenBasis() + ":/children?$select=name");
+    if (!r) {
+      dStand.textContent = "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
+      return;
+    }
+    if (!r.ok) {
+      dStand.textContent = r.status === 404
+        ? "✗ Ordner nicht gefunden — hier wird NICHTS gesichert."
+        : r.status === 403
+          ? "✗ Keine Berechtigung (403) — beim Anmelden dem Datei-Zugriff zustimmen."
+          : "✗ OneDrive-Fehler " + r.status + " — Screenshot an Tobias.";
+      return;
+    }
+    // Der Ordner allein reicht nicht: ohne snapshot.json bleibt das
+    // UGC-Dashboard leer, und genau das war Andreas Symptom.
+    const da = new Set(((await r.json()).value || []).map((x) => x.name));
+    dStand.textContent = "✓ Ordner erreichbar · "
+      + (da.has("snapshot.json") ? "snapshot.json da" : "⚠ snapshot.json fehlt — Dashboard bleibt leer")
+      + (da.has("datenstand.json") ? " · Arbeitsstand gesichert" : " · noch kein Arbeitsstand");
+  };
+  const dStandard = el("button", "chip", "Standard");
+  dStandard.onclick = () => { dFeld.value = ""; dSpeichern.onclick(); };
+  dZeile.append(dSpeichern, dPruefen, dStandard);
+  wrap.append(abschnitt("Cockpit-Ordner", dFeld, dZeile, dStand,
+    el("div", "stand",
+      "Pfad ab OneDrive-Wurzel. Hier liegen die Daten fürs Dashboard " +
+      "(snapshot.json), der Arbeitsstand und die Backups. Der Ordner muss " +
+      "existieren — die App legt ihn nicht an. Leer = Standard. " +
+      "Gilt nur für dieses Gerät.")));
 
   // Brand-Book-Ordner (Tobias 03.09.): der Pfad kann sich aendern, also
   // gehoert er in die Einstellungen und nicht in den Code. "Prüfen"
@@ -2001,7 +2055,9 @@ function renderHauptmenu() {
   ugc.append(el("div", "titel", "UGC"),
     el("div", "kontext",
       snap ? `KPI-Dashboard · ${snap.zeitraeume[0].marken.length} Marken`
-           : "Keine Daten — erst bei OneDrive anmelden"));
+           : (typeof OD !== "undefined" && OD.konto())
+             ? "Angemeldet, aber keine snapshot.json im Cockpit-Ordner"
+             : "Keine Daten — erst bei OneDrive anmelden"));
   ugc.onclick = () => { location.hash = "#/ugc"; };
 
   const buecher = el("div", "karte menue-karte leer");
@@ -2311,7 +2367,20 @@ function render() {
 
 let datenstand = null;
 let datenstandQuelle = "";
-const OD_DATENSTAND = "/me/drive/root:/Apps/Cockpit/datenstand.json:/content";
+// Cockpit-Ordner in OneDrive: hier liegen snapshot.json, datenstand.json und
+// die datierten Backups. Seit v71 einstellbar (Tobias 04.09.) - bei Andrea
+// existiert "/Apps/Cockpit" nicht, ihre Schreibversuche liefen ins Leere und
+// die App meldete trotzdem Erfolg. Graph legt fehlende Ordner beim PUT NICHT
+// an, ein 404 ist endgueltig. Geraete-Einstellung wie der Book-Pfad.
+const DATEN_BASIS_STD = "/Apps/Cockpit";
+
+function datenBasis() {
+  const roh = String(einst.datenPfad || DATEN_BASIS_STD).trim()
+    .replace(/^\/+|\/+$/g, "");
+  return "/me/drive/root:/" + (roh || DATEN_BASIS_STD.replace(/^\//, ""));
+}
+const OD_DATENSTAND = () => datenBasis() + "/datenstand.json:/content";
+const OD_SNAPSHOT = () => datenBasis() + "/snapshot.json:/content";
 
 // ------------------------------------------- Erledigt-Knopf (Phase 5)
 
@@ -2835,9 +2904,13 @@ async function datenstandPersistieren() {
   datenstand.geaendert_von = "Cockpit-App";
   try { await idbSchreib("datenstand", datenstand); } catch (_) {}
   const ok = typeof OD !== "undefined" &&
-    await OD.graphPutLeise(OD_DATENSTAND, datenstand);
+    await OD.graphPutLeise(OD_DATENSTAND(), datenstand);
+  // Ehrlich melden (Tobias 04.09.): "folgt beim naechsten Abgleich" war eine
+  // beruhigende Unwahrheit - fehlt der Ordner, folgt nie etwas. Andreas
+  // Eintraege lagen wochenlang nur im Geraetespeicher.
   banner(ok ? "Eingetragen — gesichert auf Gerät + OneDrive."
-            : "Eingetragen — auf dem Gerät gespeichert, OneDrive folgt beim nächsten Abgleich.");
+            : "⚠ Nur auf dem Gerät! OneDrive-Ordner nicht erreichbar — "
+              + "Cockpit-Ordner in den Einstellungen prüfen.");
 }
 
 // IndexedDB-Minimum: eine DB "cockpit", ein Key-Value-Store "kv".
@@ -2878,7 +2951,7 @@ async function datenstandLaden() {
     if (a.ok) lokal = await a.json();
   } catch (_) {}
   const cloud = typeof OD !== "undefined"
-    ? await OD.graphLeise(OD_DATENSTAND)
+    ? await OD.graphLeise(OD_DATENSTAND())
     : null;
   let geraet = null;
   try { geraet = await idbLies("datenstand"); } catch (_) {}
@@ -2895,7 +2968,7 @@ async function datenstandLaden() {
     // Auto-Abgleich: Geraet ist neuer als OneDrive -> still zuruecksichern.
     // ponytail: keine WLAN-Erkennung (koennen Browser nicht zuverlaessig),
     // die Datei ist winzig - Abgleich laeuft einfach bei jedem Laden.
-    OD.graphPutLeise(OD_DATENSTAND, datenstand);
+    OD.graphPutLeise(OD_DATENSTAND(), datenstand);
   }
   // Datiertes Backup, falls faellig. Bewusst OHNE await: der Start soll
   // nicht auf einen Upload warten.
@@ -2913,7 +2986,7 @@ async function datenstandLaden() {
 // - spart das Anlegen des Ordners per Graph. Unterordner, wenn es dort
 // unuebersichtlich wird.
 const OD_BACKUP = (datum) =>
-  `/me/drive/root:/Apps/Cockpit/cockpit-datenstand-${datum}.json:/content`;
+  `${datenBasis()}/cockpit-datenstand-${datum}.json:/content`;
 
 // Pur gehalten (Datum wird hereingereicht), damit test_kadenz.js das
 // Faelligkeits-Rechnen ohne Uhr und ohne OneDrive pruefen kann.
@@ -2958,7 +3031,7 @@ async function datenstandSichern(statusEl) {
   if (!datenstand) { banner("Kein Datenstand geladen."); return; }
   statusEl.textContent = "Sichere …";
   const ok = typeof OD !== "undefined" &&
-    await OD.graphPutLeise(OD_DATENSTAND, datenstand);
+    await OD.graphPutLeise(OD_DATENSTAND(), datenstand);
   if (ok) {
     einst.gesichert = new Date().toISOString().slice(0, 16).replace("T", " ");
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
@@ -3001,7 +3074,7 @@ async function laden() {
     lokalFehler = fehler.message;
   }
   const cloud = typeof OD !== "undefined"
-    ? await OD.graphLeise("/me/drive/root:/Apps/Cockpit/snapshot.json:/content")
+    ? await OD.graphLeise(OD_SNAPSHOT())
     : null;
   // Dritte Quelle: letzter aufs Geraet gesicherter Snapshot (IndexedDB).
   // Ohne die zeigte die App im Flugmodus "Keine Daten" (Tobias 30.08.) -
