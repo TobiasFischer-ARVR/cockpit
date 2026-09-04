@@ -42,7 +42,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v71"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v72"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -307,7 +307,10 @@ function sheetEinstellungen() {
     // Rating-Unterordner und die zwei Templates. Fehlt etwas, faellt es
     // hier auf und nicht erst beim naechsten Brand-Book.
     const da = new Set((d.value || []).map((x) => x.name));
-    const fehlt = ["A Brands", "B Brands", "C Brands",
+    // "D Brands" gehoert dazu (Tobias 04.09.): dort landen inaktive Kunden.
+    // Fehlt der Ordner, scheitert erst das Anlegen des ersten D-Books -
+    // Graph legt fehlende Elternordner beim PUT nicht an (Muster aus v71).
+    const fehlt = ["A Brands", "B Brands", "C Brands", "D Brands",
       "Template Brand-Book A Brand.docx", "Template Brand-Book B-C Brand.docx"]
       .filter((n) => !da.has(n));
     pStand.textContent = fehlt.length
