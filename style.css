@@ -81,8 +81,40 @@ main {
   margin-bottom: 20px;
 }
 @media (min-width: 700px) {
-  .kacheln { grid-template-columns: repeat(5, 1fr); }
+  .kacheln { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* Zwei Kachel-Seiten nebeneinander, gewischt wird nativ per scroll-snap.
+   Kein Gesten-Handler - der kollidiert auf Touch mit dem vertikalen
+   Scrollen (dieselbe Falle wie beim Wisch-zum-Schliessen). */
+.kachel-seiten {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.kachel-seiten::-webkit-scrollbar { display: none; }
+.kachel-seiten > .kacheln {
+  flex: 0 0 100%;
+  scroll-snap-align: start;
+  margin-bottom: 0;
+}
+
+.punkte {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin: 10px 0 20px;
+}
+.punkt {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rand);
+  transition: background .15s;
+}
+.punkt.aktiv { background: var(--blau); }
 
 .kachel {
   background: var(--panel);
@@ -96,6 +128,24 @@ main {
   background: rgba(242, 102, 76, .10);
   border-top-color: var(--coral);
 }
+/* Titel links, Quote rechts oben - beide auf einer Grundlinie */
+.kachel-kopf {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.kachel-kopf .titel { flex: 1; margin-bottom: 0; }
+.kachel .quote {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--blau);
+  white-space: nowrap;
+}
+/* Kennzahl ohne Datenquelle: sichtbar, aber zurueckgenommen */
+.kachel.leer { opacity: .55; }
+.kachel.leer .wert { color: var(--text-leise); }
+
 .kachel .titel {
   font-size: 12px;
   text-transform: uppercase;

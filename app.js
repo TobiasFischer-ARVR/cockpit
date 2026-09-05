@@ -14,7 +14,68 @@ const KACHEL_TITEL = {
   antworten: "Antworten",
   positiv: "Davon positiv",
   nach_erstkontakt: "Nach Erstkontakt",
+  // Seite 2 - die restlichen Zeilen aus Andreas Kennzahlen-Blatt
+  nach_followup: "Nach Follow-up",
+  gespraeche: "Kennenlerngespräche",
+  kooperationen: "Kooperationen",
+  koop_quote: "Kooperationsquote",
+  abschlussquote: "Abschlussquote",
+  auftragswert: "Ø Auftragswert",
+  // Ohne eigene Kachel: nur als Prozentwert oben rechts in ihrer Kachel
+  // und als zweites Diagramm im Verlaufs-Sheet.
+  quote_antworten: "Antwortquote",
+  quote_positiv: "Positivquote",
 };
+
+// Zwei Seiten zu je sechs Kacheln, horizontal wischbar (Tobias 05.09.).
+const KACHEL_SEITEN = [
+  ["marken", "pitches", "followups", "antworten", "positiv",
+   "nach_erstkontakt"],
+  ["nach_followup", "gespraeche", "kooperationen", "koop_quote",
+   "abschlussquote", "auftragswert"],
+];
+
+// Welche Kachel traegt oben rechts eine Quote.
+const KACHEL_QUOTE = { antworten: "quote_antworten", positiv: "quote_positiv" };
+
+// Quoten in PROZENTPUNKTEN (0-100), nicht als Bruch: das Verlaufs-Diagramm
+// rechnet seine Gitterlinien in ganzen Schritten, bei Werten unter 1 haette
+// es nur die Linien 0 und 1 gezogen.
+function quote(a, b) {
+  return b > 0 ? Math.round((a / b) * 1000) / 10 : null;
+}
+
+// Kennzahlen, die nicht im Snapshot stehen, sich aber vollstaendig aus ihm
+// rechnen. Die beiden Quotenformeln sind aus Andreas echten Monatswerten
+// zurueckgerechnet und ueber alle vier Monate gegengeprueft (05.09.):
+// 3/28 · 3/23 · 5/46 · 5/20 bzw. 2/3 · 1/3 · 1/5 · 2/5.
+// ACHTUNG: Ablaufplan.md nennt fuer die Antwortquote noch "=B7/B4"
+// (Antworten je Marke). Das galt vor dem Einfuegen der Zeile
+// "Anzahl Pitches" am 30.08. - seither sind es die Kontakte im Nenner.
+const KPI_ABGELEITET = {
+  nach_followup:   (g) => g.antworten - g.nach_erstkontakt,
+  quote_antworten: (g) => quote(g.antworten, g.pitches + g.followups),
+  quote_positiv:   (g) => quote(g.positiv, g.antworten),
+};
+
+const KPI_EINHEIT = { quote_antworten: " %", quote_positiv: " %",
+                      koop_quote: " %", abschlussquote: " %",
+                      auftragswert: " €" };
+
+// Ohne Datenquelle (Stand 05.09.): Kennenlerngespraeche, Kooperationen und
+// Auftragswert stehen in keinem Brand-Book, Andrea tippt sie heute von Hand
+// ins Excel; Kooperations- und Abschlussquote haengen daran. Solange das so
+// ist, zeigt die Kachel einen Platzhalter - eine 0 waere eine Behauptung.
+function kpiWert(gesamt, schluessel) {
+  if (schluessel in gesamt) return gesamt[schluessel];
+  const f = KPI_ABGELEITET[schluessel];
+  return f ? f(gesamt) : null;
+}
+
+function kpiText(schluessel, wert) {
+  return wert === null || wert === undefined
+    ? "—" : String(wert) + (KPI_EINHEIT[schluessel] || "");
+}
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -43,7 +104,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v75"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v76"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -398,7 +459,15 @@ function sheetInfo() {
       zeile("Davon positiv: Antworten, die in den Books mit „X“ markiert sind."),
       zeile("Nach Erstkontakt: Antworten direkt auf einen Pitch, " +
             "ohne Follow-up dazwischen."),
+      zeile("Antwortquote = Antworten ÷ (Pitches + Follow-ups). " +
+            "Positivquote = positive ÷ alle Antworten. Beide stehen als " +
+            "Prozentwert oben rechts in ihrer Kachel."),
+      zeile("Kennenlerngespräche, Kooperationen und Ø Auftragswert stehen " +
+            "in keinem Brand-Book — sie zeigen „—“, bis es eine Quelle " +
+            "gibt. Kooperations- und Abschlussquote hängen daran."),
       titel("Bedienung"),
+      zeile("Kachelblock nach links wischen → die restlichen sechs " +
+            "Kennzahlen. Die Punkte darunter zeigen, wo man ist."),
       zeile("Kachel antippen → Verlauf über die Monate. Diagrammtyp " +
             "(Linie / Punkte / Balken / Fläche) je Kachel wählbar."),
       zeile("Brand-Block: Zahl rechts oben = Marken in der Gruppe, " +
@@ -513,8 +582,8 @@ function chartTyp(schluessel) {
 // 2px-Linie, der gewaehlte Monat als Punkt mit 2px Flaechen-Ring.
 // Balken-Typ: der gewaehlte Monat ist der volle, die anderen gedaempft.
 function sparkline(schluessel) {
-  const werte = monate().map((z) => z.gesamt[schluessel]);
-  if (werte.length < 2) return null;
+  const werte = monate().map((z) => kpiWert(z.gesamt, schluessel));
+  if (werte.length < 2 || werte.some((w) => w === null)) return null;
   const typ = chartTyp(schluessel);
   const B = 120, H = 30, R = 4, P = R + 2;
   const max = Math.max(...werte, 1);
@@ -552,22 +621,52 @@ function sparkline(schluessel) {
   return svg;
 }
 
-function kpiKacheln(gesamt) {
-  const reihe = el("div", "kacheln");
-  for (const [schluessel, titel] of Object.entries(KACHEL_TITEL)) {
-    const kachel = el("div", "kachel");
-    kachel.dataset.k = schluessel; // Anker fuer gezielten Sparkline-Tausch
-    kachel.append(el("div", "titel", titel),
-                  el("div", "wert", String(gesamt[schluessel])));
-    const sp = sparkline(schluessel);
-    if (sp) {
-      kachel.append(sp);
-      kachel.classList.add("tippbar");
-      kachel.onclick = () => sheetVerlauf(schluessel);
-    }
-    reihe.append(kachel);
+function kpiKachel(gesamt, schluessel) {
+  const wert = kpiWert(gesamt, schluessel);
+  const kachel = el("div", "kachel" + (wert === null ? " leer" : ""));
+  kachel.dataset.k = schluessel; // Anker fuer gezielten Sparkline-Tausch
+  const kopf = el("div", "kachel-kopf");
+  kopf.append(el("div", "titel", KACHEL_TITEL[schluessel]));
+  const quoteK = KACHEL_QUOTE[schluessel];
+  if (quoteK) {
+    kopf.append(el("div", "quote", kpiText(quoteK, kpiWert(gesamt, quoteK))));
   }
-  return reihe;
+  kachel.append(kopf, el("div", "wert", kpiText(schluessel, wert)));
+  const sp = sparkline(schluessel);
+  if (sp) {
+    kachel.append(sp);
+    kachel.classList.add("tippbar");
+    kachel.onclick = () => sheetVerlauf(schluessel);
+  }
+  return kachel;
+}
+
+// Seiten-Punkte spiegeln nur, wo der Browser gerade steht. Bewusst KEIN
+// Gesten-Handler: das Wischen macht CSS scroll-snap: mandatory, ein
+// eigener Touch-Handler wuerde mit dem vertikalen Scrollen der Seite
+// kollidieren (dieselbe Falle wie beim Wisch-zum-Schliessen).
+function seitenPunkte(seiten) {
+  const leiste = el("div", "punkte");
+  KACHEL_SEITEN.forEach(() => leiste.append(el("span", "punkt")));
+  const setzen = () => {
+    const i = Math.round(seiten.scrollLeft / Math.max(1, seiten.clientWidth));
+    [...leiste.children].forEach((p, j) => p.classList.toggle("aktiv", j === i));
+  };
+  seiten.onscroll = setzen;
+  setzen();
+  return leiste;
+}
+
+function kpiKacheln(gesamt) {
+  const seiten = el("div", "kachel-seiten");
+  for (const keys of KACHEL_SEITEN) {
+    const reihe = el("div", "kacheln");
+    for (const schluessel of keys) reihe.append(kpiKachel(gesamt, schluessel));
+    seiten.append(reihe);
+  }
+  const block = el("div");
+  block.append(seiten, seitenPunkte(seiten));
+  return block;
 }
 
 function markenKarte(m) {
@@ -653,9 +752,11 @@ window.addEventListener("popstate", () => {
 // Gitter in Randfarbe, saubere Y-Ticks, Wert-Label nur am Endpunkt.
 // Serie je nach gewaehltem Typ (Linie/Punkte/Balken/Flaeche, siehe
 // CHART_TYPEN). Antippen zeigt den naechstgelegenen Monat.
-function verlaufsDiagramm(schluessel, readout) {
+// typK: Diagrammtyp eines ANDEREN Schluessels benutzen. Das Quoten-
+// Diagramm haengt bewusst am Typ seiner Kachel - eine Wahl, nicht zwei.
+function verlaufsDiagramm(schluessel, readout, typK) {
   const ms = monate();
-  const werte = ms.map((z) => z.gesamt[schluessel]);
+  const werte = ms.map((z) => kpiWert(z.gesamt, schluessel));
   const B = 340, H = 190, L = 34, R = 14, O = 16, U = 26;
   const max = Math.max(...werte, 1);
   const schritt = Math.max(1, Math.ceil(max / 4));
@@ -671,7 +772,7 @@ function verlaufsDiagramm(schluessel, readout) {
     s += `<line x1="${L}" y1="${y(w)}" x2="${B - R}" y2="${y(w)}"` +
          ` stroke="var(--rand)" stroke-width="1"/>` +
          `<text x="${L - 6}" y="${y(w) + 3}" text-anchor="end"` +
-         ` font-size="9" fill="var(--text-leise)">${w}</text>`;
+         ` font-size="9" fill="var(--text-leise)">${kpiText(schluessel, w)}</text>`;
   }
   // X-Labels: nur Monatskuerzel, bei vielen Monaten jeden n-ten
   const nter = Math.ceil(ms.length / 6);
@@ -682,7 +783,7 @@ function verlaufsDiagramm(schluessel, readout) {
   });
   // Serie je nach gewaehltem Diagrammtyp (chartTyp), danach fuer alle:
   // Endwert-Label + unsichtbarer Tipp-Punkt
-  const typ = chartTyp(schluessel);
+  const typ = chartTyp(typK || schluessel);
   const punkte = werte.map((w, i) => `${x(i)},${y(w)}`).join(" ");
   const letzte = werte.length - 1;
   if (typ === "balken") {
@@ -709,7 +810,8 @@ function verlaufsDiagramm(schluessel, readout) {
          ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
   }
   s += `<text x="${x(letzte)}" y="${y(werte[letzte]) - 9}" text-anchor="end"` +
-       ` font-size="10" font-weight="600" fill="var(--text)">${werte[letzte]}</text>` +
+       ` font-size="10" font-weight="600" fill="var(--text)">` +
+       `${kpiText(schluessel, werte[letzte])}</text>` +
        `<circle id="tipp-punkt" r="4" fill="var(--blau)"` +
        ` stroke="var(--panel)" stroke-width="2" visibility="hidden"/>`;
 
@@ -728,7 +830,8 @@ function verlaufsDiagramm(schluessel, readout) {
     p.setAttribute("cx", x(i));
     p.setAttribute("cy", y(werte[i]));
     p.setAttribute("visibility", "visible");
-    readout.textContent = `${ms[i].label}: ${werte[i]}`;
+    readout.textContent =
+      `${ms[i].label}: ${kpiText(schluessel, werte[i])}`;
   };
   return svg;
 }
@@ -736,7 +839,9 @@ function verlaufsDiagramm(schluessel, readout) {
 function sheetVerlauf(schluessel) {
   const wrap = el("div");
   const readout = el("div", "readout", "Diagramm antippen für Monatswerte");
+  const quoteK = KACHEL_QUOTE[schluessel];
   let svg = verlaufsDiagramm(schluessel, readout);
+  let qsvg = quoteK ? verlaufsDiagramm(quoteK, readout, schluessel) : null;
   // Diagrammtyp-Chips: Wahl gilt sofort hier UND fuer die Sparkline der
   // Kachel dahinter. Bewusst KEIN render() - das raeumt jedes offene Sheet
   // weg (Router-Regel). Stattdessen nur die eine Sparkline austauschen.
@@ -752,20 +857,32 @@ function sheetVerlauf(schluessel) {
       const neu = verlaufsDiagramm(schluessel, readout);
       svg.replaceWith(neu);
       svg = neu;
+      if (qsvg) {
+        const qneu = verlaufsDiagramm(quoteK, readout, schluessel);
+        qsvg.replaceWith(qneu);
+        qsvg = qneu;
+      }
       const spark = document.querySelector(
         `.kachel[data-k="${schluessel}"] svg.spark`);
       if (spark) spark.replaceWith(sparkline(schluessel));
     };
     typZeile.append(chip);
   });
-  wrap.append(readout, svg, typZeile);
+  wrap.append(readout, svg);
+  if (qsvg) wrap.append(el("div", "abschnitt", KACHEL_TITEL[quoteK]), qsvg);
+  wrap.append(typZeile);
   // Monatswerte zusaetzlich als Tabelle (dataviz-Skill: Tabellen-Ansicht
   // als verlaesslicher Kanal neben dem Diagramm)
   const tab = el("div", "tabelle");
   monate().forEach((z) => {
     const zeile = el("div", "zeile");
     zeile.append(el("span", "leise", z.label),
-                 el("span", "num", String(z.gesamt[schluessel])));
+                 el("span", "num",
+                    kpiText(schluessel, kpiWert(z.gesamt, schluessel))));
+    if (quoteK) {
+      zeile.append(el("span", "num",
+                      kpiText(quoteK, kpiWert(z.gesamt, quoteK))));
+    }
     tab.append(zeile);
   });
   wrap.append(tab);
