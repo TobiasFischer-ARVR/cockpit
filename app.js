@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v80"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v81"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2988,8 +2988,22 @@ async function xlsxTabellenPfade(zip, blattPfad) {
 // Liefert einen ArrayBuffer, den Graph per PUT hochladen kann.
 async function xlsxBefuellen(puffer, blaetter) {
   const zip = await JSZip.loadAsync(puffer);
+  // Einmal lesen, von beiden Blatt-Arten gebraucht
+  const sharedDatei = zip.file("xl/sharedStrings.xml");
+  const shared = sharedDatei
+    ? xlsxSharedStrings(await sharedDatei.async("string")) : [];
   for (const b of blaetter) {
     const pfad = await xlsxBlattPfad(zip, b.name);
+    // Kennzahlen-Blatt: nur Zellen setzen, Zeilen und Formeln bleiben
+    if (b.kennzahlen) {
+      const k = xlsxKennzahlen(await zip.file(pfad).async("string"),
+        shared, b.kennzahlen);
+      if (!k.zeilen)
+        throw new Error("Kennzahlen-Blatt: keine bekannte Beschriftung in "
+          + "Spalte A gefunden");
+      zip.file(pfad, k.xml);
+      continue;
+    }
     const tabellen = await xlsxTabellenPfade(zip, pfad);
     // Kopftexte kommen aus der Tabellendefinition, NICHT aus der Kopfzeile
     // des Blatts: dort stehen nur Verweise in xl/sharedStrings.xml. In
@@ -3018,6 +3032,95 @@ async function xlsxBefuellen(puffer, blaetter) {
     : wb.replace("</workbook>", '<calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>');
   zip.file(wbPfad, wb);
   return zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+}
+
+// --- Kennzahlen-Blatt: einzelne Zellen setzen -------------------------
+// Andere Schreibart als bei den Listen, und das mit Absicht: dort werden
+// alle Datenzeilen neu gebaut, hier duerfen die Zeilen gerade NICHT
+// angefasst werden - in Zeile 8 und 10 stehen Andreas Quotenformeln.
+// Geschrieben werden nur die sechs gezaehlten Werte, je Monatsspalte eine
+// Zelle. Wie schreibe_kennzahlen() am PC.
+const KENNZAHL_LABELS = {
+  marken: "Anzahl kontaktierter Marken",
+  pitches: "Anzahl Pitches",
+  followups: "Anzahl Follow-ups",
+  antworten: "Antworten insgesamt",
+  positiv: "Positive Antworten",
+  nach_erstkontakt: "Antworten nach Erstkontakt",
+};
+
+// xl/sharedStrings.xml -> Array der Texte. Die Kopfzeile und die
+// Beschriftungen in Spalte A stehen dort, im Blatt selbst steht nur der
+// Index (t="s"). Beim Schreiben umgehen wir sharedStrings per inlineStr,
+// beim LESEN fuehrt aber kein Weg daran vorbei.
+function xlsxSharedStrings(xml) {
+  return [...xml.matchAll(/<si>([\s\S]*?)<\/si>/g)].map((si) =>
+    [...si[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((t) => t[1]).join("")
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"));
+}
+
+// Klartext einer Zelle, egal ob sharedString, inlineStr oder Zahl.
+function xlsxZellText(xml, ref, shared) {
+  const treffer = xml.match(new RegExp(
+    '<c r="' + ref + '"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)'));
+  if (!treffer || !treffer[2]) return "";
+  if (/t="s"/.test(treffer[1])) {
+    const i = treffer[2].match(/<v>(\d+)<\/v>/);
+    return i ? (shared[+i[1]] || "") : "";
+  }
+  const inline = treffer[2].match(/<t[^>]*>([\s\S]*?)<\/t>/);
+  if (inline) return inline[1].replace(/&amp;/g, "&");
+  const zahl = treffer[2].match(/<v>([\s\S]*?)<\/v>/);
+  return zahl ? zahl[1] : "";
+}
+
+// Setzt eine einzelne Zelle und behaelt ihren Style. Fehlt die Zelle im
+// XML, passiert nichts - besser eine Zahl fehlt, als dass die Datei
+// kaputtgeht.
+function xlsxZelleSetzen(xml, ref, wert) {
+  const re = new RegExp('<c r="' + ref + '"([^>]*?)(?:/>|>[\\s\\S]*?</c>)');
+  const treffer = xml.match(re);
+  if (!treffer) return xml;
+  const stil = treffer[1].match(/s="(\d+)"/);
+  return xml.replace(re, xlsxZelle(ref, stil ? stil[1] : null, wert));
+}
+
+// "01.06. - 30.06.2026" -> { start: "01.06.2026", ende: "30.06.2026" }
+// Das Jahr steht nur einmal, am Ende - es gilt fuer beide Daten.
+function xlsxZeitraumKopf(text) {
+  const zahlen = String(text || "").match(/\d+/g);
+  if (!zahlen || zahlen.length < 5) return null;
+  const jahr = zahlen[zahlen.length - 1];
+  const zwei = (z) => String(z).padStart(2, "0");
+  return { start: zwei(zahlen[0]) + "." + zwei(zahlen[1]) + "." + jahr,
+           ende: zwei(zahlen[2]) + "." + zwei(zahlen[3]) + "." + jahr };
+}
+
+// Traegt die Kennzahlen ins Blatt. zeitraeume sind die aus snapshot.json
+// (start/ende als "TT.MM.JJJJ", Werte fertig gerechnet unter .gesamt).
+// Zeilen werden ueber die Beschriftung in Spalte A gesucht, nicht ueber
+// feste Nummern - dieselbe Lehre wie am PC (30.08.: Zeilenversatz beim
+// Umbau der Live-Datei).
+function xlsxKennzahlen(xml, shared, zeitraeume) {
+  const zeilen = {};
+  for (let r = 4; r <= 40; r++) {
+    const text = xlsxZellText(xml, "A" + r, shared).trim();
+    for (const [schluessel, label] of Object.entries(KENNZAHL_LABELS))
+      if (text === label) zeilen[schluessel] = r;
+  }
+  let neu = xml, spalten = 0;
+  for (let c = 1; c < 30; c++) {
+    const sp = spalteName(c);
+    const kopf = xlsxZeitraumKopf(xlsxZellText(xml, sp + "3", shared));
+    if (!kopf) continue;
+    const z = zeitraeume.find((x) => x.start === kopf.start &&
+                                     x.ende === kopf.ende);
+    if (!z || !z.gesamt) continue;
+    for (const [schluessel, zeile] of Object.entries(zeilen))
+      neu = xlsxZelleSetzen(neu, sp + zeile, z.gesamt[schluessel] || 0);
+    spalten += 1;
+  }
+  return { xml: neu, spalten, zeilen: Object.keys(zeilen).length };
 }
 
 // --- Spaltenzuordnung: Kopftext der Vorlage -> Feld im Datenstand ------
@@ -3163,6 +3266,11 @@ async function excelErzeugen() {
       { name: "Pitchliste", kopfzeile: 3,
         zeilen: (namen) => xlsxSortiertPitch(marken).map(
           (m) => xlsxPitchZeile(m, namen.map((k) => [pitchSpalte(k), k]))) },
+      // Zahlen kommen fertig gerechnet aus dem Snapshot - die App rechnet
+      // sie fuers Dashboard ohnehin. Ohne Snapshot bleibt das Blatt wie
+      // es ist, statt Nullen hineinzuschreiben.
+      ...(snap && snap.zeitraeume
+        ? [{ name: "Kennzahlen", kennzahlen: snap.zeitraeume }] : []),
     ]);
   } catch (fehler) {
     return "Vorlage passt nicht: " + fehler.message;
