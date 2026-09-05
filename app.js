@@ -52,8 +52,13 @@ function quote(a, b) {
 // ACHTUNG: Ablaufplan.md nennt fuer die Antwortquote noch "=B7/B4"
 // (Antworten je Marke). Das galt vor dem Einfuegen der Zeile
 // "Anzahl Pitches" am 30.08. - seither sind es die Kontakte im Nenner.
+// "nach_followup" stand hier bis v76 als (antworten - nach_erstkontakt).
+// Das war falsch: eine Antwort, deren Pitch im Vormonat lag, faellt aus
+// BEIDEN Kategorien (siehe kpis_pro_marke in ugc_core.py) - die Differenz
+// hat sie dann stillschweigend den Follow-ups zugeschlagen. Der Snapshot
+// liefert den Wert seit dem Fix selbst; fehlt er in einem alten Snapshot,
+// zeigt die Kachel ehrlich "—" statt einer geratenen Zahl.
 const KPI_ABGELEITET = {
-  nach_followup:   (g) => g.antworten - g.nach_erstkontakt,
   quote_antworten: (g) => quote(g.antworten, g.pitches + g.followups),
   quote_positiv:   (g) => quote(g.positiv, g.antworten),
 };
@@ -104,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v76"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v77"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
