@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v79"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v80"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -141,6 +141,7 @@ const REITER = {
   // Einstellungs-Sheet (v61)
   "Darstellung": "Darstellung",
   "Datenstand-Sicherung": "Sicherung",
+  "Excel erzeugen": "Sicherung",
   "Automatisches Backup": "Sicherung",
   "Brand-Book-Ordner": "OneDrive",
   "Cockpit-Ordner": "OneDrive",
@@ -274,6 +275,34 @@ function sheetEinstellungen() {
     el("div", "stand",
       "Backup laden: eine cockpit-datenstand-….json auswählen " +
       "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand.")));
+
+  // Excel erzeugen (v80): frische Datei aus der Vorlage, direkt vom Geraet.
+  // Bis dahin ging das nur am PC ueber excel_generator.py - Andrea hat
+  // weder Python noch Excel-COM. Gebaut wird im Browser mit JSZip, genau
+  // wie das Brand-Book: die .xlsm ist ein ZIP mit XML.
+  const xStatus = el("div", "stand",
+    "Vorlage → fertige Excel im Ordner „Export“.");
+  const xZeile = el("div", "chips");
+  const xKnopf = el("button", "chip", "📊 Excel erzeugen");
+  xKnopf.onclick = async () => {
+    xKnopf.disabled = true;
+    xStatus.textContent = "Erzeuge Excel …";
+    try {
+      xStatus.textContent = await excelErzeugen();
+    } catch (fehler) {
+      // Nichts still schlucken (v70/v71/v75): der echte Fehler gehoert in
+      // die Anzeige, sonst sucht Andrea im Dunkeln.
+      xStatus.textContent = "Fehlgeschlagen: " + fehler.message;
+    }
+    xKnopf.disabled = false;
+  };
+  xZeile.append(xKnopf);
+  wrap.append(abschnitt("Excel erzeugen", xStatus, xZeile,
+    el("div", "stand",
+      "Brand Rating und Pitchliste werden neu geschrieben; Kriterien, " +
+      "Formeln und Formatierung bleiben aus der Vorlage. Vorlage und " +
+      "Export liegen neben dem Cockpit-Ordner. Gleicher Tag = gleiche " +
+      "Datei, sie wird ersetzt.")));
 
   // Cockpit-Ordner (Tobias 04.09.): snapshot.json, datenstand.json und die
   // Backups lagen fest auf "/Apps/Cockpit". Den Ordner gibt es nur in Tobias'
@@ -2824,6 +2853,338 @@ async function docxBefuellen(puffer, werte) {
   xml = xml.replace(/\{\{[^{}]{1,40}\}\}/g, "");
   zip.file("word/document.xml", xml);
   return zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+}
+
+// ---------------------------------------- Excel aus der Vorlage (v80)
+// Dieselbe Mechanik wie docxBefuellen: die Datei ist ein ZIP mit XML,
+// JSZip oeffnet sie im Browser, Graph laedt sie zurueck. Unterschied zum
+// Word: dort wird ein Platzhalter ersetzt, hier werden Tabellenzeilen neu
+// gebaut.
+//
+// Drei Entscheidungen, die das klein halten:
+//   1. Die Datenzeilen werden KOMPLETT neu erzeugt, nicht einzeln
+//      gepatcht. Muster ist die erste Datenzeile der Vorlage - dort steht
+//      der Style je Spalte (s="12"/"13"/"40") schon drin, die App muss
+//      ihn nie berechnen. Auch die Datumsformate haengen daran.
+//   2. Texte gehen als t="inlineStr" direkt in die Zelle. Damit bleibt
+//      xl/sharedStrings.xml unangetastet - sonst muesste jeder neue Text
+//      dort angehaengt und sein Index verwaltet werden.
+//   3. Formeln werden nicht angefasst. Damit Excel sie mit den neuen
+//      Zahlen rechnet, setzt fullCalcOnLoad das Neuberechnen beim Oeffnen
+//      an - eine Zeile statt calcChain-Pflege.
+const XLSM_TYP = "application/vnd.ms-excel.sheet.macroEnabled.12";
+
+// Spaltenindex -> Excel-Buchstabe. 0 -> "A", 25 -> "Z", 26 -> "AA".
+function spalteName(i) {
+  let s = "";
+  for (i += 1; i > 0; i = Math.floor((i - 1) / 26))
+    s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+  return s;
+}
+
+// "2026-08-17" oder "17.08.2026" -> Excel-Serienzahl (Tage seit
+// 30.12.1899). null, wenn nichts Brauchbares drinsteht.
+// Gerechnet wird in UTC: mit lokalen Daten verschiebt die Sommerzeit das
+// Ergebnis um einen Tag. Im PC-Generator dieselbe Falle - dort deshalb
+// auch eine Serienzahl statt eines datetime an Excel-COM.
+function excelSerial(text) {
+  const t = String(text || "").trim();
+  let j, m, d, tr = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (tr) { j = tr[1]; m = tr[2]; d = tr[3]; }
+  else {
+    tr = t.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    if (!tr) return null;
+    d = tr[1]; m = tr[2]; j = tr[3];
+  }
+  return Math.round(Date.UTC(+j, +m - 1, +d) / 86400000) + 25569;
+}
+
+// Eine Zelle. Zahl -> <v>, Text -> inlineStr, leer -> Zelle ohne Inhalt
+// (der Style muss trotzdem stehen, sonst verliert sie die Formatierung).
+function xlsxZelle(ref, stil, wert) {
+  const s = stil ? ' s="' + stil + '"' : "";
+  if (wert === null || wert === undefined || wert === "")
+    return "<c r=\"" + ref + "\"" + s + "/>";
+  if (typeof wert === "number")
+    return "<c r=\"" + ref + "\"" + s + "><v>" + wert + "</v></c>";
+  return "<c r=\"" + ref + "\"" + s + " t=\"inlineStr\"><is><t xml:space=\"preserve\">"
+    + xmlText(wert) + "</t></is></c>";
+}
+
+// Ersetzt alle Datenzeilen eines Blatts (alles unter der Kopfzeile).
+// Liefert das neue XML und die letzte belegte Zeilennummer.
+function xlsxBlatt(xml, kopfzeile, zeilen) {
+  const alle = [...xml.matchAll(/<row r="(\d+)"([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g)];
+  const daten = alle.filter((m) => +m[1] > kopfzeile);
+  if (!daten.length) throw new Error("Vorlage hat keine Datenzeile als Muster");
+  // Muster: Zeilenattribute (Hoehe) und Style je Spalte aus der ersten
+  // Datenzeile. spans wird neu gesetzt, es haengt an der Spaltenzahl.
+  const attr = daten[0][2].replace(/ spans="[^"]*"/, "");
+  const stile = {};
+  for (const c of (daten[0][3] || "").matchAll(/<c r="([A-Z]+)\d+"([^>]*)>?/g)) {
+    const s = c[2].match(/s="(\d+)"/);
+    if (s) stile[c[1]] = s[1];
+  }
+  const neu = zeilen.map((werte, i) => {
+    const r = kopfzeile + 1 + i;
+    const zellen = werte.map((w, j) =>
+      xlsxZelle(spalteName(j) + r, stile[spalteName(j)], w)).join("");
+    return '<row r="' + r + '"' + attr + ' spans="1:' + werte.length + '">'
+      + zellen + "</row>";
+  }).join("");
+  const von = daten[0].index;
+  const letzte = daten[daten.length - 1];
+  const bis = letzte.index + letzte[0].length;
+  return { xml: xml.slice(0, von) + neu + xml.slice(bis),
+           letzteZeile: kopfzeile + zeilen.length };
+}
+
+// Tabellenbereich (und der Autofilter darin) muss die neue Zeilenzahl
+// abdecken - sonst stehen Zeilen ausserhalb der Tabelle und Andreas
+// bedingte Formatierung greift dort nicht.
+function xlsxTabelle(xml, letzteZeile) {
+  return xml.replace(/ref="([A-Z]+)(\d+):([A-Z]+)\d+"/g,
+    (_, a, z1, b) => 'ref="' + a + z1 + ":" + b + letzteZeile + '"');
+}
+
+// Regex-Sonderzeichen in einem Blattnamen entschaerfen ("Brand Rating
+// (Entwurf)" hat Klammern, die sonst als Gruppe gelesen wuerden).
+function reEscape(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Blattname -> Pfad im ZIP. Die Nummer im Dateinamen sagt NICHTS ueber
+// die Reihenfolge: "Brand Rating" liegt in sheet4.xml, seine Tabelle aber
+// nur zufaellig in table4.xml. Der Weg fuehrt immer ueber workbook.xml
+// (Name -> r:id) und die rels-Datei (r:id -> Datei).
+async function xlsxBlattPfad(zip, blattName) {
+  const wb = await zip.file("xl/workbook.xml").async("string");
+  const treffer = wb.match(
+    new RegExp('<sheet[^>]*name="' + reEscape(blattName) + '"[^>]*>'));
+  if (!treffer) throw new Error("Blatt fehlt in der Vorlage: " + blattName);
+  const rid = treffer[0].match(/r:id="([^"]+)"/);
+  if (!rid) throw new Error("Blatt ohne r:id: " + blattName);
+  const rels = await zip.file("xl/_rels/workbook.xml.rels").async("string");
+  const ziel = rels.match(
+    new RegExp('Id="' + rid[1] + '"[^>]*Target="([^"]+)"'));
+  if (!ziel) throw new Error("Blattdatei nicht auffindbar: " + blattName);
+  return "xl/" + ziel[1].replace(/^\/?xl\//, "");
+}
+
+// Die Tabellendefinitionen eines Blatts (0..n), ueber seine rels-Datei.
+async function xlsxTabellenPfade(zip, blattPfad) {
+  const rels = zip.file(blattPfad.replace("xl/worksheets/",
+    "xl/worksheets/_rels/") + ".rels");
+  if (!rels) return [];
+  const text = await rels.async("string");
+  return [...text.matchAll(/Target="([^"]*tables\/[^"]+)"/g)]
+    .map((m) => "xl/tables/" + m[1].split("/").pop());
+}
+
+// Befuellt eine Excel-Vorlage im Speicher.
+// blaetter: [{ name, kopfzeile, zeilen }] - zeilen ist eine Funktion, die
+// die Kopftexte der Vorlage bekommt und die Zeilen liefert (Arrays in
+// Spaltenreihenfolge: Zahl, Text oder "" fuer leer).
+// Liefert einen ArrayBuffer, den Graph per PUT hochladen kann.
+async function xlsxBefuellen(puffer, blaetter) {
+  const zip = await JSZip.loadAsync(puffer);
+  for (const b of blaetter) {
+    const pfad = await xlsxBlattPfad(zip, b.name);
+    const tabellen = await xlsxTabellenPfade(zip, pfad);
+    // Kopftexte kommen aus der Tabellendefinition, NICHT aus der Kopfzeile
+    // des Blatts: dort stehen nur Verweise in xl/sharedStrings.xml. In
+    // tableColumn steht der Text im Klartext.
+    const namen = tabellen.length
+      ? [...(await zip.file(tabellen[0]).async("string"))
+          .matchAll(/<tableColumn[^>]*name="([^"]*)"/g)]
+          .map((m) => m[1].replace(/&amp;/g, "&").replace(/&quot;/g, '"'))
+      : [];
+    const alt = await zip.file(pfad).async("string");
+    const neu = xlsxBlatt(alt, b.kopfzeile, b.zeilen(namen));
+    // <dimension> mitziehen: Excel liest daraus den belegten Bereich
+    zip.file(pfad, neu.xml.replace(/<dimension ref="([A-Z]+\d+):([A-Z]+)\d+"\/>/,
+      '<dimension ref="$1:$2' + neu.letzteZeile + '"/>'));
+    for (const t of tabellen)
+      zip.file(t, xlsxTabelle(await zip.file(t).async("string"),
+        neu.letzteZeile));
+  }
+  // Formeln (die Quoten im Kennzahlen-Blatt) bleiben stehen; damit Excel
+  // sie mit den neuen Zahlen rechnet, beim Oeffnen einmal alles neu
+  // rechnen. Ohne das zeigte die Datei die zwischengespeicherten Altwerte.
+  const wbPfad = "xl/workbook.xml";
+  let wb = await zip.file(wbPfad).async("string");
+  wb = wb.includes("<calcPr")
+    ? wb.replace(/<calcPr[^>]*?\/>/, '<calcPr calcId="191029" fullCalcOnLoad="1"/>')
+    : wb.replace("</workbook>", '<calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>');
+  zip.file(wbPfad, wb);
+  return zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+}
+
+// --- Spaltenzuordnung: Kopftext der Vorlage -> Feld im Datenstand ------
+// Spiegel von _rating_spalte()/_pitch_spalte() in export_snapshot.py,
+// inklusive Reihenfolge: "Brand" steckt auch in "Brandfit" und
+// "Brand-Book", deshalb kommt es zuletzt. Unbekannte Spalten werden zu
+// "extra:<Kopftext>" - dieselben Schluessel, die der Import vergibt.
+// Damit landen Andreas "Paid Ad Aktivitaet" und "Adventskalender 2026"
+// ohne Sonderfall wieder in ihrer eigenen Spalte.
+function ratingSpalte(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return null;
+  if (t.includes("book")) return "brandbook";
+  if (t.includes("fit")) return "brandfit";
+  if (t.includes("begeisterung")) return "begeisterung";
+  if (t.includes("erfolg")) return "erfolgschance";
+  if (t.includes("rating")) return "rating";
+  if (t.includes("status")) return "status";
+  if (t.includes("kategorie") || t.includes("nische")) return "kategorie";
+  if (t.includes("notiz")) return "notizen";
+  if (t.startsWith("brand")) return "name";
+  return "extra:" + String(text).trim();
+}
+
+function pitchSpalte(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return null;
+  if (t.startsWith("name")) return "name";
+  if (t.includes("rating")) return "rating";
+  if (t.includes("kategorie") || t.includes("nische")) return "kategorie";
+  if (t.includes("status")) return "status";
+  if (t.includes("kontakt")) return "letzter_kontakt";   // vor "datum"!
+  if (t.includes("koop")) return "kooperation";          // vor "datum"!
+  if (t.includes("follow") || t.includes("hler")) return "zaehler";
+  if (t.includes("aktion"))
+    return t.includes("datum") ? "datum_naechste_aktion" : "naechste_aktion";
+  if (t.includes("dringlich")) return null;  // die App rechnet die Ampel live
+  return "extra:" + String(text).trim();
+}
+
+// Eine Brand-Rating-Zeile in Spaltenreihenfolge. Marken ohne Rating-Zeile
+// (neu aus Book/Pitchliste) bekommen vorbelegt, was der Datenstand weiss -
+// gleiche Regel wie zeile_brandrating() im PC-Generator.
+function xlsxRatingZeile(m, spalten) {
+  const br = m.brandrating, p = m.pitchliste || {};
+  return spalten.map((s) => {
+    if (s === "name") return m.name;
+    if (br) return br[s] === undefined || br[s] === null ? "" : br[s];
+    if (s === "rating") return p.rating || "";
+    if (s === "kategorie") return p.kategorie || "";
+    if (s === "brandbook") return m.quelle ? "✔️" : "";
+    return "";
+  });
+}
+
+// Eine Pitchlisten-Zeile. Datumsfelder als Serienzahl (das Zellformat der
+// Vorlage macht daraus die Anzeige), "Dringlichkeit" bekommt das feste
+// Zeichen - die Farbe macht Andreas bedingte Formatierung.
+function xlsxPitchZeile(m, spalten) {
+  const p = m.pitchliste || {};
+  return spalten.map(([s, kopf]) => {
+    if (s === "name") return m.name;
+    if (s === "letzter_kontakt" || s === "datum_naechste_aktion") {
+      const serial = excelSerial(p[s]);
+      return serial === null ? "" : serial;
+    }
+    if (s) return p[s] === undefined || p[s] === null ? "" : p[s];
+    if (String(kopf).toLowerCase().includes("dringlich")) return "●";
+    return "";
+  });
+}
+
+// Name -> Sortierschluessel mit Umlaut-Faltung, identisch zu
+// sortschluessel() in excel_generator.py. localeCompare("de") waere
+// naheliegender, sortiert aber nach anderer Regel (ue = u statt ue = ue)
+// - dann haetten App und PC-Generator bei jeder Umlaut-Marke eine andere
+// Reihenfolge. Gefaltet wird wie im Namensschluessel seit v74.
+function xlsxSortSchluessel(name) {
+  return String(name).toLowerCase().replace(/ä/g, "ae")
+    .replace(/ö/g, "oe").replace(/ü/g, "ue")
+    .replace(/ß/g, "ss");
+}
+
+// Sortierung wie im PC-Generator: Rating alphabetisch, Pitchliste nach
+// Rating und dann Name. Andreas urspruengliche Zeilenreihenfolge steht
+// nicht im Datenstand, es braucht also eine feste Regel.
+function xlsxSortiertRating(marken) {
+  const key = (m) => xlsxSortSchluessel(m.name);
+  return [...marken].sort((a, b) =>
+    key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+
+// Rating kommt aus der PITCHLISTE, nicht aus dem Brandrating - sonst
+// weicht die Reihenfolge vom PC-Generator ab. Leeres Rating ganz nach
+// hinten ("~" liegt hinter allen Buchstaben).
+function xlsxSortiertPitch(marken) {
+  const key = (m) => [String(m.pitchliste.rating || "~").trim(),
+                      xlsxSortSchluessel(m.name)].join(" ");
+  return marken.filter((m) => m.pitchliste)
+    .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+}
+
+// --- Ordner: Vorlage und Export liegen NEBEN dem Cockpit-Ordner -------
+//   .../Testdaten/App Data   <- Cockpit-Ordner (Geraete-Einstellung)
+//   .../Testdaten/Vorlage    <- die .xlsm-Vorlage
+//   .../Testdaten/Export     <- hierhin schreibt die App
+// Genau die Struktur, die der PC-Generator seit 05.09. benutzt. Deshalb
+// keine zweite Einstellung: wer den Cockpit-Ordner richtig gesetzt hat,
+// trifft auch die anderen beiden. Graph legt fehlende Ordner beim PUT
+// NICHT an - fehlt "Export", meldet die App das als Fehler.
+function excelNachbar(unter) {
+  return datenBasis().replace(/\/[^/]+$/, "") + "/" + unter;
+}
+
+// Erzeugt die Excel aus der Vorlage und legt sie in den Export-Ordner.
+// Liefert einen Text fuer die Anzeige - jeder Fehler wird benannt, nichts
+// wird still geschluckt (die Lehre aus v70/v71/v75).
+async function excelErzeugen() {
+  if (!datenstand || !datenstand.marken || !datenstand.marken.length)
+    return "Kein Datenstand geladen.";
+  if (typeof JSZip === "undefined") return "jszip.min.js fehlt.";
+  const ordner = await OD.graphRoh(excelNachbar("Vorlage") + ":/children");
+  if (!ordner) return "Nicht angemeldet.";
+  if (!ordner.ok)
+    return "Vorlage-Ordner nicht gefunden (HTTP " + ordner.status + "): " +
+      excelNachbar("Vorlage").split("root:")[1];
+  const liste = (await ordner.json()).value || [];
+  const vorlage = liste.filter((f) => /\.xls[xm]$/i.test(f.name) &&
+    !f.name.startsWith("~$")).sort((a, b) => a.name.localeCompare(b.name))[0];
+  if (!vorlage) return "Keine Excel im Vorlage-Ordner.";
+
+  const datei = await OD.graphRoh(
+    excelNachbar("Vorlage") + "/" + vorlage.name + ":/content");
+  if (!datei || !datei.ok) return "Vorlage nicht lesbar.";
+
+  const marken = datenstand.marken;
+  let inhalt;
+  try {
+    inhalt = await xlsxBefuellen(await datei.arrayBuffer(), [
+      { name: "Brand Rating", kopfzeile: 3,
+        zeilen: (namen) => xlsxSortiertRating(marken).map(
+          (m) => xlsxRatingZeile(m, namen.map(ratingSpalte))) },
+      { name: "Pitchliste", kopfzeile: 3,
+        zeilen: (namen) => xlsxSortiertPitch(marken).map(
+          (m) => xlsxPitchZeile(m, namen.map((k) => [pitchSpalte(k), k]))) },
+    ]);
+  } catch (fehler) {
+    return "Vorlage passt nicht: " + fehler.message;
+  }
+
+  // Gleicher Tag = gleicher Name = wird ersetzt. Sonst sammeln sich bei
+  // jedem Probelauf Dateien an. Gleiche Regel wie im PC-Generator.
+  const name = vorlage.name.replace(/ ?Template ?/i, " ").replace(/ +/g, " ")
+    .replace(/(\.[a-z]+)$/i, " " + lokalIso().slice(0, 10) + "$1");
+  const hoch = await OD.graphRoh(
+    excelNachbar("Export") + "/" + name +
+      ":/content?@microsoft.graph.conflictBehavior=replace",
+    { method: "PUT", body: inhalt,
+      headers: { "Content-Type": XLSM_TYP } });
+  if (!hoch) return "Nicht angemeldet.";
+  if (!hoch.ok)
+    return hoch.status === 404
+      ? "Export-Ordner fehlt: " + excelNachbar("Export").split("root:")[1] +
+        " (Graph legt Ordner nicht selbst an)"
+      : "Hochladen fehlgeschlagen (HTTP " + hoch.status + ").";
+  return "✓ " + name + " — " + xlsxSortiertRating(marken).length +
+    " Marken, " + xlsxSortiertPitch(marken).length + " auf der Pitchliste";
 }
 
 // ------------------------------------- Pitch-Historie ins Book (Phase 6)
