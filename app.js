@@ -1937,6 +1937,12 @@ function sheetBrandrating(m) {
         m.bookordner && m.bookordner !== String(br.rating).trim()
           ? `${m.bookordner} Brands (Rating ist inzwischen ${br.rating})` : ""],
       ["Notizen", br.notizen],
+      // Spalten, die der Code nicht kennt ("Paid Ad Aktivität",
+      // "Adventskalender 2026", alles Kuenftige). Der Import reicht sie
+      // unter ihrem Kopftext durch, hier stehen sie unter genau dem
+      // Namen, den Andrea in der Excel sieht. Neue Spalte = kein Code.
+      ...Object.entries(br).filter(([k]) => k.startsWith("extra:"))
+        .map(([k, w]) => [k.slice(6), w]),
     ].filter(([, w]) => w);
     const tab = el("div", "tabelle");
     for (const [label, wert] of felder) {
