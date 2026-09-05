@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v78"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v79"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1684,34 +1684,6 @@ function ratingFormular(m, fertig) {
   zeile("Brand Fit", skala, "fit");
   zeile("Begeisterung", skala, "geist");
   zeile("Erfolgschance", skala, "chance");
-  // Direktlinks auf die ueblichen Unterseiten - ein Tipp statt Umweg ueber
-  // eine Trefferliste. Immer sichtbar, auch ohne Website: sonst muesste das
-  // Formular beim Tippen neu zeichnen, und der Hinweis erklaert besser, was
-  // fehlt, als ein Knopf, der gar nicht erst da ist.
-  wrap.append(el("div", "stand", "Seiten der Marke direkt öffnen"));
-  const sz = el("div", "chips");
-  const sHinweis = el("div", "stand");
-  // Website aus dem aktuellen Stand (Book + App-Overlay) - im Rating-Formular
-  // gibt es kein Eingabefeld dafuer. Vorher stand hier eingaben["Website"],
-  // das lebt aber nur in kontaktFormular(): jeder Klick warf ReferenceError.
-  const website = kerninfosAktuell(m, quelleZuName(m.name))["Website"] || "";
-  for (const [pfad, titel] of MARKEN_SEITEN) {
-    const b = el("button", "chip", titel);
-    b.onclick = () => {
-      const url = seitenLink(website, pfad);
-      if (!url) {
-        sHinweis.textContent = "Dafür erst die Website eintragen.";
-        return;
-      }
-      sHinweis.textContent = "";
-      window.open(url, "_blank", "noopener");
-    };
-    sz.append(b);
-  }
-  wrap.append(sz, sHinweis, el("div", "stand",
-    "Geraten aus der Website — gibt es die Seite nicht, kommt eine " +
-    "Fehlermeldung der Marke. Prüfen können wir das vorher nicht."));
-
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
   ok.onclick = () => {
@@ -1849,6 +1821,38 @@ function kontaktFormular(m, fertig) {
       wrap.append(z, hinweis);
     }
   }
+
+  // Direktlinks auf die ueblichen Unterseiten - ein Tipp statt Umweg ueber
+  // eine Trefferliste. Immer sichtbar, auch ohne Website: sonst muesste das
+  // Formular beim Tippen neu zeichnen, und der Hinweis erklaert besser, was
+  // fehlt, als ein Knopf, der gar nicht erst da ist.
+  //
+  // Standen bis v78 im ratingFormular - dort aber ohne Website-Feld, und
+  // der urspruengliche Zugriff auf eingaben["Website"] (v73: ReferenceError)
+  // zeigt, dass sie von Anfang an hierher gehoerten. Sie dienen der
+  // Kontaktrecherche, nicht dem Rating-Urteil (Tobias 05.09.).
+  // Wie bei den Such-Knoepfen wird die Website beim KLICK gelesen: gerade
+  // eingetippt und sofort ausprobierbar, ohne Speichern.
+  wrap.append(el("div", "stand", "Seiten der Marke direkt öffnen"));
+  const sz = el("div", "chips");
+  const sHinweis = el("div", "stand");
+  for (const [pfad, titel] of MARKEN_SEITEN) {
+    const b = el("button", "chip", titel);
+    b.onclick = () => {
+      const url = seitenLink(eingaben["Website"].value, pfad);
+      if (!url) {
+        sHinweis.textContent = "Dafür erst die Website eintragen.";
+        return;
+      }
+      sHinweis.textContent = "";
+      window.open(url, "_blank", "noopener");
+    };
+    sz.append(b);
+  }
+  wrap.append(sz, sHinweis, el("div", "stand",
+    "Geraten aus der Website — gibt es die Seite nicht, kommt eine " +
+    "Fehlermeldung der Marke. Prüfen können wir das vorher nicht."));
+
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
   ok.onclick = () => {
