@@ -9,6 +9,7 @@
 
 const KACHEL_TITEL = {
   marken: "Kontaktierte Marken",
+  pitches: "Pitches",
   followups: "Follow-ups",
   antworten: "Antworten",
   positiv: "Davon positiv",
@@ -42,7 +43,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v74"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v75"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -393,7 +394,7 @@ function sheetInfo() {
       zeile("Kontaktierte Marken: Marken mit mindestens einem Pitch oder " +
             "Follow-up im Zeitraum. „Gesamt“ zählt jede Marke nur einmal — " +
             "deshalb ist Gesamt kleiner als die Summe der Monate."),
-      zeile("Follow-ups / Antworten: alle Einträge im Zeitraum."),
+      zeile("Pitches / Follow-ups / Antworten: alle Einträge im Zeitraum."),
       zeile("Davon positiv: Antworten, die in den Books mit „X“ markiert sind."),
       zeile("Nach Erstkontakt: Antworten direkt auf einen Pitch, " +
             "ohne Follow-up dazwischen."),
