@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v81"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v82"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3235,6 +3235,22 @@ function excelNachbar(unter) {
   return datenBasis().replace(/\/[^/]+$/, "") + "/" + unter;
 }
 
+// "Brand-Uebersicht Update Template.xlsm" + "2026-09-06"
+//   -> "Brand-Uebersicht Update 2026-09-06.xlsm"
+//
+// Stamm und Endung getrennt behandeln: entfernt man "Template" mitten im
+// Namen, bleibt sonst ein Leerzeichen stehen und der Name bekommt zwei
+// davon - "Update  2026-09-06.xlsm". Gefunden am 06.09., weil dieselbe
+// Excel danach doppelt im Export-Ordner lag, einmal vom PC und einmal von
+// der App. Gleiche Regel wie frische_kopie() in excel_generator.py; laufen
+// die beiden auseinander, entstehen wieder zwei Dateien.
+function xlsxExportName(vorlageName, datum) {
+  const punkt = vorlageName.lastIndexOf(".");
+  const stamm = (punkt < 0 ? vorlageName : vorlageName.slice(0, punkt))
+    .replace(/ ?Template ?/i, " ").replace(/\s+/g, " ").trim();
+  return stamm + " " + datum + (punkt < 0 ? "" : vorlageName.slice(punkt));
+}
+
 // Erzeugt die Excel aus der Vorlage und legt sie in den Export-Ordner.
 // Liefert einen Text fuer die Anzeige - jeder Fehler wird benannt, nichts
 // wird still geschluckt (die Lehre aus v70/v71/v75).
@@ -3278,8 +3294,7 @@ async function excelErzeugen() {
 
   // Gleicher Tag = gleicher Name = wird ersetzt. Sonst sammeln sich bei
   // jedem Probelauf Dateien an. Gleiche Regel wie im PC-Generator.
-  const name = vorlage.name.replace(/ ?Template ?/i, " ").replace(/ +/g, " ")
-    .replace(/(\.[a-z]+)$/i, " " + lokalIso().slice(0, 10) + "$1");
+  const name = xlsxExportName(vorlage.name, lokalIso().slice(0, 10));
   const hoch = await OD.graphRoh(
     excelNachbar("Export") + "/" + name +
       ":/content?@microsoft.graph.conflictBehavior=replace",
