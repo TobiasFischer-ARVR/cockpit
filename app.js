@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v82"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v83"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -138,6 +138,10 @@ const REITER = {
   "Verwaltung": "Rating",
   "Kontakt & Infos": "Kontakt",
   "Historie": "Historie",
+  // Eigener, vierter Reiter (v83) - die Excel-Spalten ohne eigenes
+  // Formular. Bewusst nicht unter "Rating" einsortiert: dort steht die
+  // Anzeige-Tabelle, hier stehen Eingabefelder.
+  "Sonstiges": "Sonstiges",
   // Einstellungs-Sheet (v61)
   "Darstellung": "Darstellung",
   "Datenstand-Sicherung": "Sicherung",
@@ -1228,6 +1232,7 @@ function sheetPitch(p) {
     // Sheet muss deshalb nicht anders aufgebaut sein. markenDetails deckt
     // beides ab; fehlt ein Book, sagen das die Leerzustaende.
     wrap.append(markenDetails(quelleZuName(p.name), false, mv, kontaktKnopf));
+    wrap.append(bereichSonstiges(mv, bau));
 
     if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
     zuReitern(wrap, "reiterPitch");
@@ -1923,6 +1928,162 @@ function bereichLoeschen(m) {
   return frag;
 }
 
+// ------------------------------------------------------ Sonstiges (v83)
+// Vierter Reiter in beiden Brand-Sheets. Hier stehen die Excel-Spalten,
+// fuer die es bisher KEIN Eingabefeld gab - sie kamen beim Import herein
+// und waren in der App nur Text zum Anschauen (Tobias 06.09.).
+// Abgleich Kopfzeile Vorlage <-> App, was fehlte:
+//   Brand Rating: Status, Kategorie, Notizen, Paid Ad Aktivitaet,
+//                 Adventskalender 2026
+//   Pitchliste:   Kooperation
+// Der Export braucht dafuer keine Zeile: xlsxRatingZeile/xlsxPitchZeile
+// holen jeden Spaltenschluessel per Zugriff auf br/p, "extra:" ein-
+// geschlossen. Feld hier gefuellt = Wert steht in der Excel.
+// Alles ausser Paid Ad ist ein schlichtes Textfeld - die Excel-Spalten
+// sind Freitext, ein Auswahlfeld waere geraten. Vorschlaege kommen per
+// <datalist> aus den Werten, die schon im Datenstand stehen: nativ, kein
+// Widget, waechst mit den Daten mit. Gegen "Selfcare"/"selfcare"-Dubletten
+// beim Tippen auf dem Handy.
+// Fehlt der Zweig (Marke ohne Pitchlisten-Zeile), faellt das Feld weg
+// statt einen leeren Zweig anzulegen: eine erfundene Pitchlisten-Zeile
+// wuerde die Marke in Liste UND Excel schwemmen.
+const SONST_FELDER = [
+  ["Status", "brandrating", "status", true],
+  ["Kategorie / Nische", "brandrating", "kategorie", true],
+  ["Notizen", "brandrating", "notizen", false],
+  ["Kooperation (Ja/Nein, Datum)", "pitchliste", "kooperation", true],
+];
+
+// Fallback-Spaltenname, falls noch keine Marke die Spalte hat (frisch in
+// der App angelegt, Datenstand ohne die Spalte).
+const PAID_AD = "extra:Paid Ad Aktivität";
+
+// Die Excel-Zelle "Paid Ad Aktivität" ist EIN String "<Anzeigen> (<Budget>)"
+// - "3", "2 (350)", auch "0 ( 830)" mit Leerzeichen. In der App sind es zwei
+// Felder (Tobias 06.09.): laufende Anzeigen in der Werbebibliothek und
+// Werbebudget der Firma. Beides traegt Andrea von Hand ein, gerechnet wird
+// nichts. Zahlen sind NICHT auf 0-3 begrenzt: die Stufen aus dem Kriterien-
+// Blatt sind nur Andreas erste Eintraege, kuenftig stehen dort 8, 17, 40.
+// Was gar nicht ins Muster passt ("keine Anzeigen"), wandert unveraendert
+// ins erste Feld und kommt unveraendert wieder heraus - lieber eine
+// unschoene Zelle als ein stillschweigend geloeschter Wert.
+function paidAdTeile(wert) {
+  const t = String(wert == null ? "" : wert).trim();
+  const m = t.match(/^(\d*)\s*(?:\(\s*(\d+)\s*\))?$/);
+  return m && (m[1] || m[2]) ? [m[1], m[2] || ""] : [t, ""];
+}
+
+function paidAdText(anzeigen, budget) {
+  const a = String(anzeigen == null ? "" : anzeigen).trim();
+  const b = String(budget == null ? "" : budget).trim();
+  return (a + (b ? " (" + b + ")" : "")).trim();
+}
+
+// Alle "extra:"-Spalten, die der Import IRGENDWO gefunden hat. Union ueber
+// alle Marken, nicht nur die eine im Sheet: eine in der App angelegte Brand
+// hat die Schluessel noch gar nicht, braucht die Felder aber trotzdem.
+function extraSpalten() {
+  const s = new Set();
+  for (const x of (datenstand ? datenstand.marken : []))
+    for (const k of Object.keys(x.brandrating || {}))
+      if (k.startsWith("extra:")) s.add(k);
+  return [...s].sort();
+}
+
+// Vorschlagswerte fuer ein Feld: was im Datenstand schon unter diesem
+// Schluessel steht. Deckel bei 40, damit die Liste bedienbar bleibt.
+function sonstVorschlaege(zweig, feld) {
+  const werte = new Set();
+  for (const x of (datenstand ? datenstand.marken : [])) {
+    const w = String((x[zweig] || {})[feld] || "").trim();
+    if (w) werte.add(w);
+  }
+  return [...werte].sort(nameVgl).slice(0, 40);
+}
+
+function bereichSonstiges(m, fertig) {
+  const frag = document.createDocumentFragment();
+  if (!m || !datenstand) return frag;
+  const wrap = el("div");
+  const speichern = [];            // Funktionen, die beim Speichern schreiben
+
+  const feld = (label, zweig, name, vorschlag) => {
+    if (!m[zweig]) return;         // kein Zweig, kein Feld (s.o.)
+    wrap.append(el("div", "stand", label));
+    const i = el("input", "feld");
+    const w = m[zweig][name];
+    i.value = w == null ? "" : String(w);
+    if (vorschlag) {
+      const liste = sonstVorschlaege(zweig, name);
+      if (liste.length) {
+        const dl = el("datalist");
+        dl.id = "vs-" + zweig + "-" + name.replace(/\W+/g, "-");
+        for (const v of liste) {
+          const o = el("option");
+          o.value = v;
+          dl.append(o);
+        }
+        i.setAttribute("list", dl.id);
+        wrap.append(dl);
+      }
+    }
+    wrap.append(i);
+    speichern.push(() => { m[zweig][name] = i.value.trim(); });
+  };
+
+  for (const [label, zweig, name, vorschlag] of SONST_FELDER)
+    feld(label, zweig, name, vorschlag);
+
+  const extras = extraSpalten();
+  const paidKey = extras.find((k) => k.toLowerCase().includes("paid ad")) || PAID_AD;
+  if (m.brandrating) {
+    const [a0, b0] = paidAdTeile(m.brandrating[paidKey]);
+    wrap.append(el("div", "stand",
+      paidKey.slice(6) + " — laufende Anzeigen in der Werbebibliothek"));
+    const anz = el("input", "feld");
+    anz.inputMode = "numeric";
+    anz.value = a0;
+    wrap.append(anz, el("div", "stand", "Werbebudget der Firma"));
+    const bud = el("input", "feld");
+    bud.inputMode = "numeric";
+    bud.value = b0;
+    // Vorschau zeigt die fertige Zelle. Die Zusammensetzung passiert sonst
+    // unsichtbar, und die Excel ist erst nach dem Export nachpruefbar.
+    const vorschau = el("div", "stand");
+    const zeig = () => { vorschau.textContent =
+      "Kommt als eine Zelle in die Excel: „" + paidAdText(anz.value, bud.value) + "“"; };
+    anz.oninput = bud.oninput = zeig;
+    zeig();
+    wrap.append(bud, vorschau);
+    speichern.push(() => {
+      m.brandrating[paidKey] = paidAdText(anz.value, bud.value);
+    });
+  }
+
+  // Restliche Excel-Spalten, die der Code nicht namentlich kennt
+  // ("Adventskalender 2026", alles Kuenftige). Neue Spalte in der Excel =
+  // neues Eingabefeld, ohne eine Zeile Code - gleiche Regel wie beim Import.
+  for (const k of extras.filter((k) => k !== paidKey))
+    feld(k.slice(6), "brandrating", k, true);
+
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip aktiv", "✓ Speichern");
+  ok.onclick = () => {
+    for (const s of speichern) s();
+    if (m.pitchliste) m.pitchliste.geaendert = lokalIso();
+    listeVeraltet = true;
+    datenstandPersistieren();
+    banner("Gespeichert — steht beim nächsten „Excel erzeugen“ in der Datei.");
+    fertig();
+  };
+  okZ.append(ok);
+  wrap.append(okZ);
+  frag.append(abschnitt("Sonstiges", wrap, el("div", "stand",
+    "Die Excel-Spalten ohne eigenes Formular. Landet beim nächsten " +
+    "„Excel erzeugen“ in der jeweiligen Spalte.")));
+  return frag;
+}
+
 function brKarte(m) {
   const br = m.brandrating;
   const karte = el("div", "karte" + (br.brandbook ? "" : " leer"));
@@ -1993,6 +2154,7 @@ function sheetBrandrating(m) {
     // jetzt unter der Tabelle, die es bearbeitet.
     wrap.append(markenDetails(quelleZuName(m.name), true, m,
       datenstand ? formularKnopf(z, bau, "kontakt", "✎ Kontaktdaten") : null));
+    wrap.append(bereichSonstiges(m, bau));
     if (m.erstellt) wrap.append(bereichLoeschen(m));
     zuReitern(wrap, "reiterRating");
   }
