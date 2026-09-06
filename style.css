@@ -551,6 +551,7 @@ main {
 .punkt-pitch { background: var(--blau); }
 .punkt-followup { background: var(--gelb); }
 .punkt-antwort { background: var(--grau); }
+.punkt-rating { background: var(--gelb); }
 .punkt-positiv { background: var(--gruen); }
 
 /* Meldungs-Banner (Briefing Abschnitt 3): unten, coral umrandet, kurzlebig */

@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v91"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v92"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -309,6 +309,9 @@ const REITER = {
   "Datenstand-Sicherung": "Sicherung",
   "Excel erzeugen": "Sicherung",
   "Automatisches Backup": "Sicherung",
+  // Die Pruefung vergleicht Book gegen Excel, also Daten gegen Daten -
+  // sie gehoert zu den Pfaden, nicht zur Sicherung (v92).
+  "Daten prüfen": "OneDrive",
   "Pfad Brand-Books": "OneDrive",
   "Pfad Datenbank": "OneDrive",
 };
@@ -667,6 +670,38 @@ function sheetEinstellungen() {
       "Formeln und Formatierung bleiben aus der Vorlage. Vorlage und " +
       "Export liegen neben dem Datenbank-Ordner. Gleicher Tag = gleiche " +
       "Datei, sie wird ersetzt.")));
+
+  // Datenpruefung (v92): Word-Book gegen Excel. Findet Marken, bei denen
+  // das Brand-Book noch ein aelteres Rating traegt - ein stiller
+  // Widerspruch, den vorher niemand sehen konnte (3 von 45 am 06.09.).
+  const pStatus = el("div", "stand",
+    "Vergleicht Rating, Brand Fit, Begeisterung und Erfolgschance " +
+    "zwischen Brand-Book und Excel.");
+  const pZeile = el("div", "chips");
+  const pKnopf = el("button", "chip", "🔍 Daten prüfen");
+  pKnopf.onclick = () => {
+    if (!datenstand || !datenstand.marken) {
+      pStatus.textContent = "Kein Datenstand geladen.";
+      return;
+    }
+    const treffer = ratingAbweichungen(datenstand.marken);
+    if (!treffer.length) {
+      pStatus.textContent =
+        "✓ Keine Abweichungen — Book und Excel sind sich einig.";
+      return;
+    }
+    pStatus.textContent = "";
+    pStatus.append(el("div", null,
+      `⚠ ${treffer.length} Marke(n) mit Abweichung — das Book hält meist ` +
+      "den älteren Stand. „↻ Book aktualisieren“ zieht es nach:"));
+    for (const { marke, abw } of treffer) {
+      pStatus.append(el("div", null, "• " + marke.name + ": " +
+        abw.map((a) => `${a.feld} Book ${a.book} / Excel ${a.excel}`)
+          .join(" · ")));
+    }
+  };
+  pZeile.append(pKnopf);
+  wrap.append(abschnitt("Daten prüfen", pStatus, pZeile));
 
   // Datenbank- und Brand-Books-Pfad: seit v86 wird der Pfad NICHT mehr
   // getippt, sondern durchgeklickt (Tobias 06.09.). Beide Abschnitte
@@ -1417,8 +1452,24 @@ function bereichHistorie(m, quelle) {
     zeile.append(el("span", "num leise datum", e.datum), label);
     tab.append(zeile);
   }
+  // Rating-Wechsel (v92): eigener Block, NICHT zwischen den Ereignissen.
+  // Ein Rating-Wechsel ist kein Kontakt - stuende er in derselben Liste,
+  // laese man ihn als Teil des Pitch-Verlaufs.
+  const rTab = [];
+  if ((m.ratingHistorie || []).length) {
+    const t2 = el("div", "tabelle");
+    for (const r of m.ratingHistorie) {
+      const z = el("div", "zeile historie");
+      const label = el("span");
+      label.append(el("span", "punkt punkt-rating"),
+        document.createTextNode(`Rating ${r.von} → ${r.nach}`));
+      z.append(el("span", "num leise datum", r.datum), label);
+      t2.append(z);
+    }
+    rTab.push(el("div", "stand", "Rating-Wechsel"), t2);
+  }
   // Titel zeigt die Anzahl - so sieht man zugeklappt, ob es was zu sehen gibt
-  frag.append(abschnitt("Historie", ...leer, tab));
+  frag.append(abschnitt("Historie", ...leer, tab, ...rTab));
   return frag;
 }
 
@@ -1997,6 +2048,62 @@ function symAnzahl(s) {
   return (String(s || "").match(/[⭐❤★]/gu) || []).length;
 }
 
+// ------------------------------------- Word gegen Excel pruefen (v92)
+// Befund 06.09.: das Brand-Book haelt das Rating, das beim SCHREIBEN galt,
+// die Excel das aktuelle. Aendert Andrea das Rating, laeuft das Dokument
+// stumm aus dem Tritt - bei 3 von 45 Marken mit beiden Quellen war das so
+// ("Besser im Glas" B/D, "Deltahub" B/D, "Greevi" A/D). Auffallen konnte
+// es niemandem: es gibt keinen Abgleich zwischen den beiden Quellen.
+//
+// Verglichen wird NORMALISIERT: das Book schreibt "2", Excel/App "⭐⭐" -
+// beides ist dieselbe Stufe. Ohne das meldete die Pruefung 45 Fehlalarme.
+function ratingStufe(wert) {
+  return symAnzahl(wert) || Number(String(wert).trim()) || 0;
+}
+
+// Die vier Felder, die in BEIDEN Quellen stehen. Links das Label im Book
+// (= Schluessel der Kerninfos), rechts das Feld im Brandrating.
+const RATING_PAARE = [["Rating (A-D)", "rating"], ["Brand Fit", "brandfit"],
+                      ["Begeisterung", "begeisterung"],
+                      ["Erfolgschance", "erfolgschance"]];
+
+// Abweichungen EINER Marke. Leeres Array = in Ordnung.
+// Felder, die in einer der Quellen fehlen, werden uebersprungen - ein
+// leeres Book-Feld ist kein Widerspruch, sondern nur ungepflegt.
+function ratingAbweichung(m) {
+  const k = m.kerninfos || {}, br = m.brandrating || {};
+  const raus = [];
+  for (const [label, feld] of RATING_PAARE) {
+    const b = String(k[label] || "").trim();
+    const e = String(br[feld] || "").trim();
+    if (!b || !e) continue;
+    const gleich = label === "Rating (A-D)"
+      ? b.toUpperCase() === e.toUpperCase()
+      : ratingStufe(b) === ratingStufe(e);
+    if (!gleich) raus.push({ feld: label, book: b, excel: e });
+  }
+  return raus;
+}
+
+// Alle Marken auf einmal - fuer die Pruefung in den Einstellungen.
+function ratingAbweichungen(marken) {
+  return (marken || []).map((m) => ({ marke: m, abw: ratingAbweichung(m) }))
+    .filter((x) => x.abw.length);
+}
+
+// Rating-Wechsel protokollieren. BEWUSST NICHT in m.events:
+// dort haengen die KPI-Zaehlung und das Word-Book dran, ein Rating-Wechsel
+// ist aber weder Kontakt noch Antwort. Eigene Liste, eigene Anzeige.
+// Gibt true zurueck, wenn wirklich etwas eingetragen wurde.
+function ratingWechselEintragen(m, alt, neu, datum) {
+  const a = String(alt || "").trim().toUpperCase();
+  const n = String(neu || "").trim().toUpperCase();
+  if (!n || a === n) return false;
+  (m.ratingHistorie = m.ratingHistorie || []).push(
+    { datum, von: a, nach: n });
+  return true;
+}
+
 // Stufe 2 erledigt = Brand steht in der Pitchliste (App-Eintrag oder
 // schon im Excel-Snapshot) - eine Bedingung fuer Statuszeile und Knopf.
 function inPitchliste(m) {
@@ -2068,18 +2175,44 @@ function ratingFormular(m, fertig) {
   zeile("Erfolgschance", skala, "chance");
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
-  ok.onclick = () => {
+  ok.onclick = async () => {
     if (!f.rating) { banner("Rating (A–D) fehlt."); return; }
     if (f.rating === "D" && String(br.rating || "").trim() !== "D" &&
         !confirm(`„${m.name}“ auf D setzen?\n` +
           "D = inaktiv/Archiv — die Brand verschwindet aus der " +
           "Pitchliste, bleibt aber im Brand Rating.")) return;
+    const altRating = String(br.rating || "").trim();
     Object.assign(br, { rating: f.rating,
       brandfit: "⭐".repeat(f.fit || 0),
       begeisterung: "❤️".repeat(f.geist || 0),
       erfolgschance: "⭐".repeat(f.chance || 0) });
     if (m.pitchliste)
       Object.assign(m.pitchliste, { rating: f.rating, geaendert: lokalIso() });
+
+    // Wechsel festhalten (v92). Vorher gab es keinerlei Rating-Historie -
+    // die Frage "war das mal ein B?" war schlicht nicht beantwortbar,
+    // man konnte sie nur aus dem Widerspruch Book/Excel erschliessen.
+    const gewechselt =
+      ratingWechselEintragen(m, altRating, f.rating, deDatum(isoInTagen(0)));
+
+    // Book in den Ordner des neuen Ratings ziehen. bookordner wird IMMER
+    // gesetzt - auch wenn das Verschieben scheitert, dann eben auf den
+    // alten Ordner. Sonst wandert der berechnete Pfad mit dem Rating,
+    // die Datei aber nicht, und das Book ist unauffindbar. Genau so ist
+    // "Besser im Glas" entstanden (gefunden 06.09.).
+    if (gewechselt && br.brandbook) {
+      const alt = m.bookordner || altRating;
+      const erg = await bookVerschieben(m, alt, f.rating);
+      m.bookordner = erg === "verschoben" ? f.rating : alt;
+      if (erg === "verschoben")
+        banner(`Book nach „${f.rating} Brands“ verschoben.`);
+      else if (erg === "nicht gefunden")
+        banner(`Book nicht in „${alt} Brands“ gefunden — bitte von Hand ` +
+               `nach „${f.rating} Brands“ schieben.`);
+      else if (erg !== "gleich")
+        banner("Book konnte nicht verschoben werden — es bleibt in " +
+               `„${alt} Brands“.`);
+    }
     listeVeraltet = true;
     datenstandPersistieren();
     fertig();
@@ -4080,6 +4213,30 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
 // ersetzen=true ("Book aktualisieren"): conflictBehavior=replace statt fail,
 // also bewusstes Ueberschreiben. Der Aufrufer stellt sicher, dass das nur
 // vor Stufe 2 passiert, wo im Book noch nichts von Hand drinsteht.
+// Book in den Ordner des neuen Ratings schieben (v92).
+// Graph-PATCH auf parentReference - kein Download/Upload, die Datei-ID
+// bleibt und damit auch Andreas Freigaben und Versionsverlauf.
+//
+// Warum das sein MUSS und nicht nur nett ist: bookPfad() rechnet den
+// Ordner aus `bookordner || rating`. Bei Andreas gewachsenen Books ist
+// bookordner nicht gesetzt - ein Rating-Wechsel liess den berechneten
+// Pfad also mitwandern, die Datei aber nicht. Danach fanden "Book
+// oeffnen", "aktualisieren" und "loeschen" nichts mehr, ohne jede
+// Meldung. Genau so ist "Besser im Glas" entstanden (gefunden 06.09.).
+async function bookVerschieben(m, vonOrdner, nachOrdner) {
+  if (String(vonOrdner) === String(nachOrdner)) return "gleich";
+  const datei = `${bookBasis()}/${vonOrdner} Brands/Brand-Book ${m.name}.docx`;
+  const zielPfad = "/drive/root:" + bookBasis().split("root:")[1] +
+    "/" + nachOrdner + " Brands";
+  const r = await OD.graphRoh(datei, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parentReference: { path: zielPfad } }),
+  });
+  if (!r) return "offline";
+  return r.ok ? "verschoben" : r.status === 404 ? "nicht gefunden" : "fehler";
+}
+
 async function bookErzeugen(m, ersetzen) {
   const tplName = String(m.brandrating.rating).trim() === "A"
     ? "Template Brand-Book A Brand.docx"
