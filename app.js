@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v84"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v85"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2150,12 +2150,13 @@ function sheetBrandrating(m) {
         m.bookordner && m.bookordner !== String(br.rating).trim()
           ? `${m.bookordner} Brands (Rating ist inzwischen ${br.rating})` : ""],
       ["Notizen", br.notizen],
-      // Spalten, die der Code nicht kennt ("Paid Ad Aktivität",
-      // "Adventskalender 2026", alles Kuenftige). Der Import reicht sie
-      // unter ihrem Kopftext durch, hier stehen sie unter genau dem
-      // Namen, den Andrea in der Excel sieht. Neue Spalte = kein Code.
-      ...Object.entries(br).filter(([k]) => k.startsWith("extra:"))
-        .map(([k, w]) => [k.slice(6), w]),
+      // Die "extra:"-Spalten (Paid Ad Aktivität, Adventskalender 2026, …)
+      // standen hier seit v82 - damals der einzige Ort, an dem sie ueber-
+      // haupt sichtbar waren. Seit v83 haben sie im Reiter "Sonstiges" ein
+      // echtes Eingabefeld, hier waeren sie nur noch eine Dublette
+      // (Tobias 06.09.). Unsichtbar werden koennen sie dadurch nicht:
+      // renderBrandrating steigt ohne Datenstand vorher aus, und mit
+      // Datenstand zeichnet bereichSonstiges die Felder immer.
     ].filter(([, w]) => w);
     const tab = el("div", "tabelle");
     for (const [label, wert] of felder) {
