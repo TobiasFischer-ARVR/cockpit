@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v90"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v91"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -641,8 +641,11 @@ function sheetEinstellungen() {
   // Bis dahin ging das nur am PC ueber excel_generator.py - Andrea hat
   // weder Python noch Excel-COM. Gebaut wird im Browser mit JSZip, genau
   // wie das Brand-Book: die .xlsm ist ein ZIP mit XML.
+  // Den WIRKLICHEN Zielpfad zeigen, nicht nur "Ordner Export" (Tobias
+  // 06.09.: Excel erzeugt, Datei nirgends gefunden). Der Pfad haengt am
+  // Datenbank-Ordner - steht der falsch, sieht man es hier sofort.
   const xStatus = el("div", "stand",
-    "Vorlage → fertige Excel im Ordner „Export“.");
+    "Vorlage → fertige Excel nach " + excelNachbar("Export").split("root:")[1]);
   const xZeile = el("div", "chips");
   const xKnopf = el("button", "chip", "📊 Excel erzeugen");
   xKnopf.onclick = async () => {
@@ -3890,8 +3893,9 @@ async function excelErzeugen() {
       ? "Export-Ordner fehlt: " + excelNachbar("Export").split("root:")[1] +
         " (Graph legt Ordner nicht selbst an)"
       : "Hochladen fehlgeschlagen (HTTP " + hoch.status + ").";
-  return "✓ " + name + " — " + xlsxSortiertRating(marken).length +
-    " Marken, " + xlsxSortiertPitch(marken).length + " auf der Pitchliste";
+  return "✓ " + excelNachbar("Export").split("root:")[1] + "/" + name +
+    " — " + xlsxSortiertRating(marken).length + " Marken, " +
+    xlsxSortiertPitch(marken).length + " auf der Pitchliste";
 }
 
 // ------------------------------------- Pitch-Historie ins Book (Phase 6)
