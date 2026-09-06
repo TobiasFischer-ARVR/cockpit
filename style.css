@@ -388,7 +388,10 @@ main {
   gap: 10px;
 }
 .sheet-kopf .titel { font-size: 17px; font-weight: 600; line-height: 1.35; flex: 1; }
-.sheet-inhalt { padding: 14px 18px; overflow-y: auto; flex: 1; }
+/* overscroll-behavior: contain (v86) - ohne das scrollt die Liste HINTER
+   dem Sheet weiter, sobald der Sheet-Inhalt am Ende ist (Scroll-Chaining).
+   Native CSS-Eigenschaft, genau dafuer gemacht. */
+.sheet-inhalt { padding: 14px 18px; overflow-y: auto; overscroll-behavior: contain; flex: 1; }
 .sheet-inhalt .kontext {
   font-size: 11.5px;
   color: var(--text-leise);
@@ -443,6 +446,66 @@ main {
 .karte.ampel-neutral { border-left-color: var(--blau); }
 .karte.ampel-grau { border-left-color: var(--grau); opacity: .58; }
 .karte.zugang { margin-bottom: 12px; }
+/* Platzhalter-Karte (v86): sichtbar, aber erkennbar noch ohne Funktion */
+.karte.platzhalter { opacity: .55; border-style: dashed; cursor: default; }
+
+/* Ordner-Browser (v86): die Liste bekommt einen Deckel, sonst schiebt ein
+   OneDrive mit 40 Ordnern die Knoepfe aus dem Sheet. overscroll-behavior
+   haelt das Scrollen in der Liste - gleicher Grund wie beim Sheet-Inhalt. */
+.ordnerliste {
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 8px 0;
+  border: 1px solid var(--rand);
+  border-radius: 12px;
+  padding: 6px;
+}
+.ordner {
+  display: block;
+  width: 100%;
+  min-height: 44px;          /* Daumenziel, wie .chip */
+  text-align: left;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ordner:active { background: rgba(75, 123, 212, .18); }
+/* Verknuepfung auf ein fremdes OneDrive: sichtbar, aber nicht begehbar */
+.ordner.gesperrt { color: var(--text-leise); font-style: italic; }
+
+/* Sonstiges-Reiter als Kacheln (v86). auto-fit statt fester Spaltenzahl:
+   das Handy bekommt zwei schmale Kacheln, ein breiteres Geraet mehr - ohne
+   Media-Query. Freitext-Felder tragen ".breit" und nehmen die ganze Zeile,
+   damit die Eingabe am Handy nicht enger wird als vorher. */
+.sonst-gitter {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 6px 0 4px;
+}
+.sonst-kachel {
+  background: var(--panel);
+  border: 1px solid var(--rand);
+  border-radius: 12px;
+  padding: 9px 11px 2px;
+  min-width: 0;                 /* sonst sprengt ein langes Feld das Gitter */
+}
+.sonst-kachel.breit { grid-column: 1 / -1; }
+.sonst-label {
+  font-size: 11.5px;
+  color: var(--text-leise);
+  margin-bottom: 4px;
+}
+.sonst-vorschau { grid-column: 1 / -1; margin: -2px 0 2px; }
 
 .abschnitt {
   font-size: 12px;

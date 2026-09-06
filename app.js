@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v85"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v86"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -259,6 +259,201 @@ function einstZeile(titel, paare, feld) {
   return wrap;
 }
 
+// --------------------------------------------------- Ordner-Browser (v86)
+// Tobias 06.09.: der OneDrive-Pfad wird nicht mehr getippt, sondern
+// durchgeklickt. Ein Tippfehler im Book-Pfad hat bei Andrea schon einmal
+// eine halbe Stunde Suche gekostet (v56), und ein falscher Cockpit-Ordner
+// sichert still gar nichts (v71) - Graph legt fehlende Ordner beim PUT
+// nicht an.
+//
+// Bewusst KEIN eigenes Sheet: der Browser zeichnet in den Abschnitt, aus
+// dem er aufgerufen wurde. Ein zweites Sheet ueber dem Einstellungs-Sheet
+// haette einen zweiten History-Eintrag gebraucht, und die Android-
+// Zurueck-Geste haette dann zwei Ebenen abzuraeumen gehabt.
+//
+// Abwaegung (Tobias 06.09.): ohne Tippfeld gibt es keinen Weg mehr, einen
+// Pfad ohne OneDrive-Anmeldung zu setzen. Verschmerzbar - ohne Anmeldung
+// nuetzt der Pfad ohnehin nichts, und "Pruefen" braucht sie auch heute.
+// Wer trotzdem zurueck muss: "Standard" setzt ohne Verbindung zurueck.
+
+// Graph-Adresse fuer die Kinder eines Pfades. Die Wurzel hat KEIN ":" -
+// "/me/drive/root:/:/children" waere ein 400er.
+function graphKinder(teile) {
+  return teile.length
+    ? "/me/drive/root:/" + teile.join("/") + ":/children"
+    : "/me/drive/root/children";
+}
+
+// Ein Graph-Fehlerstatus als Klartext. Frueher dreimal fast gleich im
+// Einstellungs-Sheet; 404 heisst je nach Ordner etwas anderes, deshalb
+// als Parameter.
+function graphFehlerText(status, text404) {
+  return status === 404 ? text404
+    : status === 403
+      ? "✗ Keine Berechtigung (403) — beim Anmelden dem Datei-Zugriff zustimmen."
+      : "✗ OneDrive-Fehler " + status + " — Screenshot an Tobias.";
+}
+
+// Zeichnet den Browser in "ziel". fertig(pfad) bekommt den gewaehlten
+// Pfad ohne fuehrenden Slash ("" = OneDrive-Wurzel), abbruch() nichts.
+function ordnerBrowser(ziel, startTeile, fertig, abbruch) {
+  const teile = startTeile.slice();
+  zeichnen();
+
+  async function zeichnen() {
+    ziel.innerHTML = "";
+    // Brotkrumen: jedes Segment springt auf seine Ebene zurueck. Ersetzt
+    // einen "eine Ebene hoch"-Knopf - aus fuenf Ebenen ist das ein Tipp
+    // statt vier.
+    const krumen = el("div", "chips");
+    const wurzel = el("button", "chip" + (teile.length ? "" : " aktiv"), "OneDrive");
+    wurzel.onclick = () => { teile.length = 0; zeichnen(); };
+    krumen.append(wurzel);
+    teile.forEach((name, i) => {
+      const b = el("button", "chip" + (i === teile.length - 1 ? " aktiv" : ""), name);
+      b.onclick = () => { teile.length = i + 1; zeichnen(); };
+      krumen.append(b);
+    });
+    ziel.append(krumen);
+
+    const liste = el("div", "ordnerliste");
+    liste.append(el("div", "stand", "Lade …"));
+    const knoepfe = el("div", "chips");
+    const nehmen = el("button", "chip aktiv", "✓ Diesen Ordner nehmen");
+    nehmen.onclick = () => fertig(teile.join("/"));
+    const ab = el("button", "chip", "Abbrechen");
+    ab.onclick = abbruch;
+    knoepfe.append(nehmen, ab);
+    ziel.append(liste, knoepfe);
+
+    const r = await OD.graphRoh(graphKinder(teile) +
+      "?$select=name,folder,remoteItem&$top=400");
+    liste.innerHTML = "";
+    if (!r) {
+      liste.append(el("div", "stand",
+        "✗ Kein Zugriff aufs Konto — ab- und neu anmelden."));
+      return;
+    }
+    if (!r.ok) {
+      liste.append(el("div", "stand", graphFehlerText(r.status,
+        "✗ Ordner nicht mehr da — eine Ebene zurück.")));
+      return;
+    }
+    // Nur Ordner. Verknuepfungen (remoteItem) tragen ihren folder-Facet
+    // eine Ebene tiefer - ohne die zweite Bedingung fehlten sie in der
+    // Liste, und man haette sich gewundert, wo der Ordner hin ist.
+    const alle = ((await r.json()).value || [])
+      .filter((x) => x.folder || (x.remoteItem && x.remoteItem.folder))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), "de"));
+    if (!alle.length) {
+      liste.append(el("div", "stand", "Keine Unterordner — " +
+        "„Diesen Ordner nehmen“ oder eine Ebene zurück."));
+      return;
+    }
+    for (const x of alle) {
+      // Verknuepfung auf ein fremdes OneDrive: taucht in /children auf,
+      // laesst sich aber nicht oeffnen (HTTP 422, siehe Projektnotiz
+      // "Ordner & Konten"). Anzeigen und erklaeren statt in den Fehler
+      // laufen lassen.
+      const verknuepft = !x.folder && !!x.remoteItem;
+      const b = el("button", "ordner" + (verknuepft ? " gesperrt" : ""),
+        (verknuepft ? "🔗 " : "📁 ") + x.name);
+      b.onclick = verknuepft
+        ? () => banner("„" + x.name + "“ ist eine Verknüpfung " +
+            "auf ein anderes OneDrive — da kann die App nicht hinein.")
+        : () => { teile.push(x.name); zeichnen(); };
+      liste.append(b);
+    }
+  }
+}
+
+// Ein Pfad-Abschnitt fuer die Einstellungen: Anzeige, Ordner-Browser,
+// Pruefen, Standard. basis() liefert die Graph-Adresse, pruefer() den
+// Ergebnistext.
+function pfadAbschnitt(titel, schluessel, standard, basis, pruefer, hilfe) {
+  const koerper = el("div");
+  const stand = el("div", "stand");
+  const ergebnis = el("div", "stand");   // Pruefergebnis, eigene Zeile: der
+                                         // Pfad soll dabei sichtbar bleiben
+  const zeigeStand = () => {
+    stand.textContent = "Aktuell: " + basis().split("root:")[1];
+  };
+  const setzen = (pfad) => {
+    einst[schluessel] = pfad;
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    ergebnis.textContent = "";
+    zeigeStand();
+  };
+  const angemeldet = () => typeof OD !== "undefined" && OD.konto();
+
+  const pruefen = async () => {
+    if (!angemeldet()) {
+      ergebnis.textContent = "Zum Prüfen erst bei OneDrive anmelden."; return;
+    }
+    ergebnis.textContent = "Prüfe …";
+    ergebnis.textContent = await pruefer();
+  };
+
+  function normal() {
+    koerper.innerHTML = "";
+    const zeile = el("div", "chips");
+    const waehlen = el("button", "chip aktiv", "📁 Ordner wählen");
+    waehlen.onclick = () => {
+      if (!angemeldet()) {
+        ergebnis.textContent =
+          "Zum Auswählen erst bei OneDrive anmelden."; return;
+      }
+      koerper.innerHTML = "";
+      ordnerBrowser(koerper,
+        String(einst[schluessel] || standard).split("/").filter(Boolean),
+        (pfad) => { setzen(pfad); normal(); pruefen(); },
+        normal);
+    };
+    const pKnopf = el("button", "chip", "Prüfen");
+    pKnopf.onclick = pruefen;
+    const std = el("button", "chip", "Standard");
+    std.onclick = () => setzen("");
+    zeile.append(waehlen, pKnopf, std);
+    koerper.append(zeile);
+    zeigeStand();
+  }
+  normal();
+  return abschnitt(titel, koerper, stand, ergebnis, el("div", "stand", hilfe));
+}
+
+// Der Ordner allein reicht nicht: ohne snapshot.json bleibt das
+// UGC-Dashboard leer, und genau das war Andreas Symptom (v71).
+async function pruefeCockpit() {
+  const r = await OD.graphRoh(datenBasis() + ":/children?$select=name");
+  if (!r) return "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
+  if (!r.ok) return graphFehlerText(r.status,
+    "✗ Ordner nicht gefunden — hier wird NICHTS gesichert.");
+  const da = new Set((((await r.json()).value) || []).map((x) => x.name));
+  return "✓ Ordner erreichbar · "
+    + (da.has("snapshot.json") ? "snapshot.json da"
+       : "⚠ snapshot.json fehlt — Dashboard bleibt leer")
+    + (da.has("datenstand.json") ? " · Arbeitsstand gesichert"
+       : " · noch kein Arbeitsstand");
+}
+
+// Genau das pruefen, was die App dort braucht (Plan 01.09.): die vier
+// Rating-Unterordner und die zwei Templates. "D Brands" gehoert dazu
+// (Tobias 04.09.) - fehlt er, scheitert erst das Anlegen des ersten
+// D-Books, weil Graph fehlende Elternordner beim PUT nicht anlegt.
+async function pruefeBooks() {
+  const r = await OD.graphRoh(bookBasis() + ":/children?$select=name");
+  if (!r) return "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
+  if (!r.ok) return graphFehlerText(r.status,
+    "✗ Ordner nicht gefunden — neu auswählen.");
+  const da = new Set((((await r.json()).value) || []).map((x) => x.name));
+  const fehlt = ["A Brands", "B Brands", "C Brands", "D Brands",
+    "Template Brand-Book A Brand.docx", "Template Brand-Book B-C Brand.docx"]
+    .filter((n) => !da.has(n));
+  return fehlt.length
+    ? "⚠ Ordner gefunden, aber es fehlt: " + fehlt.join(", ")
+    : "✓ Ordner gefunden — Unterordner und Templates sind da.";
+}
+
 function sheetEinstellungen() {
   const wrap = el("div");
   wrap.append(abschnitt("Darstellung",
@@ -308,123 +503,22 @@ function sheetEinstellungen() {
       "Export liegen neben dem Cockpit-Ordner. Gleicher Tag = gleiche " +
       "Datei, sie wird ersetzt.")));
 
-  // Cockpit-Ordner (Tobias 04.09.): snapshot.json, datenstand.json und die
-  // Backups lagen fest auf "/Apps/Cockpit". Den Ordner gibt es nur in Tobias'
-  // OneDrive - bei Andrea scheiterte jeder Schreibversuch still. Gleiches
-  // Muster wie der Book-Pfad darunter: Feld, Speichern, Pruefen, Standard.
-  const dFeld = el("input", "feld");
-  dFeld.type = "text";
-  dFeld.placeholder = DATEN_BASIS_STD;
-  dFeld.value = einst.datenPfad || "";
-  const dStand = el("div", "stand", "Aktuell: " + datenBasis().split("root:")[1]);
-  const dZeile = el("div", "chips");
-  const dSpeichern = el("button", "chip aktiv", "Speichern");
-  dSpeichern.onclick = () => {
-    einst.datenPfad = dFeld.value.trim();
-    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
-    dStand.textContent = "Aktuell: " + datenBasis().split("root:")[1];
-  };
-  const dPruefen = el("button", "chip", "Prüfen");
-  dPruefen.onclick = async () => {
-    dSpeichern.onclick();
-    if (typeof OD === "undefined" || !OD.konto()) {
-      dStand.textContent = "Zum Prüfen erst bei OneDrive anmelden."; return;
-    }
-    dStand.textContent = "Prüfe …";
-    const r = await OD.graphRoh(datenBasis() + ":/children?$select=name");
-    if (!r) {
-      dStand.textContent = "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
-      return;
-    }
-    if (!r.ok) {
-      dStand.textContent = r.status === 404
-        ? "✗ Ordner nicht gefunden — hier wird NICHTS gesichert."
-        : r.status === 403
-          ? "✗ Keine Berechtigung (403) — beim Anmelden dem Datei-Zugriff zustimmen."
-          : "✗ OneDrive-Fehler " + r.status + " — Screenshot an Tobias.";
-      return;
-    }
-    // Der Ordner allein reicht nicht: ohne snapshot.json bleibt das
-    // UGC-Dashboard leer, und genau das war Andreas Symptom.
-    const da = new Set(((await r.json()).value || []).map((x) => x.name));
-    dStand.textContent = "✓ Ordner erreichbar · "
-      + (da.has("snapshot.json") ? "snapshot.json da" : "⚠ snapshot.json fehlt — Dashboard bleibt leer")
-      + (da.has("datenstand.json") ? " · Arbeitsstand gesichert" : " · noch kein Arbeitsstand");
-  };
-  const dStandard = el("button", "chip", "Standard");
-  dStandard.onclick = () => { dFeld.value = ""; dSpeichern.onclick(); };
-  dZeile.append(dSpeichern, dPruefen, dStandard);
-  wrap.append(abschnitt("Cockpit-Ordner", dFeld, dZeile, dStand,
-    el("div", "stand",
-      "Pfad ab OneDrive-Wurzel. Hier liegen die Daten fürs Dashboard " +
-      "(snapshot.json), der Arbeitsstand und die Backups. Der Ordner muss " +
-      "existieren — die App legt ihn nicht an. Leer = Standard. " +
-      "Gilt nur für dieses Gerät.")));
-
-  // Brand-Book-Ordner (Tobias 03.09.): der Pfad kann sich aendern, also
-  // gehoert er in die Einstellungen und nicht in den Code. "Prüfen"
-  // fragt OneDrive, ob es den Ordner wirklich gibt - ein Tippfehler soll
-  // hier auffallen und nicht erst beim naechsten Brand-Book.
-  const pFeld = el("input", "feld");
-  pFeld.type = "text";
-  pFeld.placeholder = BOOK_BASIS_STD;
-  pFeld.value = einst.bookPfad || "";
-  const pStand = el("div", "stand", "Aktuell: " + bookBasis().split("root:")[1]);
-  const pZeile = el("div", "chips");
-  const pSpeichern = el("button", "chip aktiv", "Speichern");
-  pSpeichern.onclick = () => {
-    einst.bookPfad = pFeld.value.trim();
-    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
-    pStand.textContent = "Aktuell: " + bookBasis().split("root:")[1];
-  };
-  const pPruefen = el("button", "chip", "Prüfen");
-  pPruefen.onclick = async () => {
-    pSpeichern.onclick();
-    if (typeof OD === "undefined" || !OD.konto()) {
-      pStand.textContent = "Zum Prüfen erst bei OneDrive anmelden."; return;
-    }
-    pStand.textContent = "Prüfe …";
-    // Roh-Aufruf statt graphLeise (Tobias 04.09.): graphLeise schluckt jeden
-    // Fehler und lieferte immer "Ordner nicht gefunden" - auch bei 403
-    // (fehlende Zustimmung) oder Token-Problem. Bei Andreas Erst-Anmeldung
-    // hat das eine halbe Stunde Suche nach einem Tippfehler gekostet, den es
-    // nie gab. Jetzt sagt die App, was wirklich los ist.
-    const r = await OD.graphRoh(bookBasis() + ":/children?$select=name");
-    if (!r) {
-      pStand.textContent = "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
-      return;
-    }
-    if (!r.ok) {
-      pStand.textContent = r.status === 404
-        ? "✗ Ordner nicht gefunden — Schreibweise prüfen."
-        : r.status === 403
-          ? "✗ Keine Berechtigung (403) — beim Anmelden dem Datei-Zugriff zustimmen."
-          : "✗ OneDrive-Fehler " + r.status + " — Screenshot an Tobias.";
-      return;
-    }
-    const d = await r.json();
-    // Genau das pruefen, was die App dort braucht (Plan 01.09.): die drei
-    // Rating-Unterordner und die zwei Templates. Fehlt etwas, faellt es
-    // hier auf und nicht erst beim naechsten Brand-Book.
-    const da = new Set((d.value || []).map((x) => x.name));
-    // "D Brands" gehoert dazu (Tobias 04.09.): dort landen inaktive Kunden.
-    // Fehlt der Ordner, scheitert erst das Anlegen des ersten D-Books -
-    // Graph legt fehlende Elternordner beim PUT nicht an (Muster aus v71).
-    const fehlt = ["A Brands", "B Brands", "C Brands", "D Brands",
-      "Template Brand-Book A Brand.docx", "Template Brand-Book B-C Brand.docx"]
-      .filter((n) => !da.has(n));
-    pStand.textContent = fehlt.length
-      ? "⚠ Ordner gefunden, aber es fehlt: " + fehlt.join(", ")
-      : "✓ Ordner gefunden — Unterordner und Templates sind da.";
-  };
-  const pStandard = el("button", "chip", "Standard");
-  pStandard.onclick = () => { pFeld.value = ""; pSpeichern.onclick(); };
-  pZeile.append(pSpeichern, pPruefen, pStandard);
-  wrap.append(abschnitt("Brand-Book-Ordner", pFeld, pZeile, pStand,
-    el("div", "stand",
-      "Pfad ab OneDrive-Wurzel, ohne die „A Brands“/„B Brands“-Unterordner — " +
-      "die hängt die App selbst an. In diesem Ordner müssen auch die beiden " +
-      "Template-Dateien liegen. Leer = Standard. Gilt nur für dieses Gerät.")));
+  // Cockpit- und Brand-Book-Ordner: seit v86 wird der Pfad NICHT mehr
+  // getippt, sondern durchgeklickt (Tobias 06.09.). Beide Abschnitte
+  // kommen aus derselben Funktion - zwei Bedienungen fuer dieselbe Sache
+  // waeren Unsinn, und der halbe Abschnitt war ohnehin schon doppelt.
+  wrap.append(pfadAbschnitt("Cockpit-Ordner",
+    "datenPfad", DATEN_BASIS_STD, datenBasis, pruefeCockpit,
+    "Hier liegen die Daten fürs Dashboard (snapshot.json), der " +
+    "Arbeitsstand und die Backups. Der Ordner muss existieren — die " +
+    "App legt ihn nicht an. „Standard“ setzt zurück auf " +
+    DATEN_BASIS_STD + ". Gilt nur für dieses Gerät."));
+  wrap.append(pfadAbschnitt("Brand-Book-Ordner",
+    "bookPfad", BOOK_BASIS_STD, bookBasis, pruefeBooks,
+    "Der Ordner ÜBER den „A Brands“/„B Brands“-" +
+    "Unterordnern — die hängt die App selbst an. In diesem Ordner " +
+    "müssen auch die beiden Template-Dateien liegen. Gilt nur für " +
+    "dieses Gerät."));
 
   // Automatisches Backup (Tobias 01.09.): datierte Kopie nach OneDrive
   const aStand = el("div", "stand", autoBackupText());
@@ -1966,11 +2060,16 @@ function bereichLoeschen(m) {
 // Fehlt der Zweig (Marke ohne Pitchlisten-Zeile), faellt das Feld weg
 // statt einen leeren Zweig anzulegen: eine erfundene Pitchlisten-Zeile
 // wuerde die Marke in Liste UND Excel schwemmen.
+// [Label, Zweig, Feldname, Vorschlagsliste?, volle Breite?]
+// "breit" = das Feld bekommt die ganze Zeile statt einer halben Kachel.
+// Kurze Werte (Status: "Kontaktiert") vertragen die halbe Breite, Freitext
+// nicht. Unbekannte Excel-Spalten bekommen im Zweifel die volle Breite -
+// wir wissen nicht, wie lang ihr Inhalt wird.
 const SONST_FELDER = [
-  ["Status", "brandrating", "status", true],
-  ["Kategorie / Nische", "brandrating", "kategorie", true],
-  ["Notizen", "brandrating", "notizen", false],
-  ["Kooperation (Ja/Nein, Datum)", "pitchliste", "kooperation", true],
+  ["Status", "brandrating", "status", true, false],
+  ["Kategorie / Nische", "brandrating", "kategorie", true, true],
+  ["Notizen", "brandrating", "notizen", false, true],
+  ["Kooperation (Ja/Nein, Datum)", "pitchliste", "kooperation", true, true],
 ];
 
 // Fallback-Spaltenname, falls noch keine Marke die Spalte hat (frisch in
@@ -2024,11 +2123,25 @@ function bereichSonstiges(m, fertig) {
   const frag = document.createDocumentFragment();
   if (!m || !datenstand) return frag;
   const wrap = el("div");
+  // Kachel-Gitter (v86, Tobias 06.09.): statt einer flachen Liste aus
+  // Label+Feld. Die Spaltenzahl macht CSS per auto-fit - auf dem Handy
+  // zwei schmale Kacheln, auf dem Tablet mehr. Freitext-Felder bekommen
+  // die volle Zeile ("breit"), damit die Bedienung am Handy nicht
+  // schlechter wird als vorher (Vorbehalt Tobias, 06.09.).
+  const gitter = el("div", "sonst-gitter");
   const speichern = [];            // Funktionen, die beim Speichern schreiben
 
-  const feld = (label, zweig, name, vorschlag) => {
+  // Eine Kachel: Beschriftung oben, Eingabefeld darunter.
+  const kachel = (label, breit) => {
+    const k = el("div", "sonst-kachel" + (breit ? " breit" : ""));
+    k.append(el("div", "sonst-label", label));
+    gitter.append(k);
+    return k;
+  };
+
+  const feld = (label, zweig, name, vorschlag, breit) => {
     if (!m[zweig]) return;         // kein Zweig, kein Feld (s.o.)
-    wrap.append(el("div", "stand", label));
+    const k = kachel(label, breit);
     const i = el("input", "feld");
     const w = m[zweig][name];
     i.value = w == null ? "" : String(w);
@@ -2043,37 +2156,40 @@ function bereichSonstiges(m, fertig) {
           dl.append(o);
         }
         i.setAttribute("list", dl.id);
-        wrap.append(dl);
+        k.append(dl);
       }
     }
-    wrap.append(i);
+    k.append(i);
     speichern.push(() => { m[zweig][name] = i.value.trim(); });
   };
 
-  for (const [label, zweig, name, vorschlag] of SONST_FELDER)
-    feld(label, zweig, name, vorschlag);
+  for (const [label, zweig, name, vorschlag, breit] of SONST_FELDER)
+    feld(label, zweig, name, vorschlag, breit);
 
   const extras = extraSpalten();
   const paidKey = extras.find((k) => k.toLowerCase().includes("paid ad")) || PAID_AD;
   if (m.brandrating) {
     const [a0, b0] = paidAdTeile(m.brandrating[paidKey]);
-    wrap.append(el("div", "stand",
-      paidKey.slice(6) + " — laufende Anzeigen in der Werbebibliothek"));
+    // Zwei Zahlenfelder, bewusst nebeneinander: sie gehoeren zusammen und
+    // sind beide kurz - genau der Fall, fuer den das Gitter gemacht ist.
+    const kA = kachel(paidKey.slice(6) + " — laufende Anzeigen", false);
     const anz = el("input", "feld");
     anz.inputMode = "numeric";
     anz.value = a0;
-    wrap.append(anz, el("div", "stand", "Werbebudget der Firma"));
+    kA.append(anz);
+    const kB = kachel("Werbebudget der Firma", false);
     const bud = el("input", "feld");
     bud.inputMode = "numeric";
     bud.value = b0;
+    kB.append(bud);
     // Vorschau zeigt die fertige Zelle. Die Zusammensetzung passiert sonst
     // unsichtbar, und die Excel ist erst nach dem Export nachpruefbar.
-    const vorschau = el("div", "stand");
+    const vorschau = el("div", "stand sonst-vorschau");
     const zeig = () => { vorschau.textContent =
       "Kommt als eine Zelle in die Excel: „" + paidAdText(anz.value, bud.value) + "“"; };
     anz.oninput = bud.oninput = zeig;
     zeig();
-    wrap.append(bud, vorschau);
+    gitter.append(vorschau);
     speichern.push(() => {
       m.brandrating[paidKey] = paidAdText(anz.value, bud.value);
     });
@@ -2083,8 +2199,9 @@ function bereichSonstiges(m, fertig) {
   // ("Adventskalender 2026", alles Kuenftige). Neue Spalte in der Excel =
   // neues Eingabefeld, ohne eine Zeile Code - gleiche Regel wie beim Import.
   for (const k of extras.filter((k) => k !== paidKey))
-    feld(k.slice(6), "brandrating", k, true);
+    feld(k.slice(6), "brandrating", k, true, true);
 
+  wrap.append(gitter);
   const okZ = el("div", "chips");
   const ok = el("button", "chip aktiv", "✓ Speichern");
   ok.onclick = () => {
@@ -2580,6 +2697,20 @@ function renderUgc() {
     zugang.onclick = () => { location.hash = "#/pitchliste"; };
     c.append(zugang);
   }
+
+  // Platzhalter Kundenauftraege (v86, Tobias 06.09.): das Kundenauftraege-
+  // Blatt der Excel (Liste2346) wird noch nicht gelesen. Es ist die Quelle
+  // fuer die vier leeren KPI-Kacheln (Kennenlerngespraeche, Kooperationen,
+  // Abschlussquote, Oe Auftragswert). Bewusst NICHT tippbar und ohne Zahl -
+  // eine 0 waere eine Behauptung, ein toter Knopf eine Enttaeuschung.
+  const kunden = el("div", "karte block zugang platzhalter");
+  const kKopf = el("div", "kopf");
+  kKopf.append(el("span", "pill", "Geplant"));
+  kunden.append(kKopf, el("div", "titel", "Kundenaufträge"),
+    el("div", "kontext",
+      "Noch keine Datenquelle — füllt später Kennenlerngespräche, " +
+      "Kooperationen, Abschlussquote und Ø Auftragswert."));
+  c.append(kunden);
 
   if (!z.marken.length) {
     c.append(el("div", "leerzustand", "Keine Aktivität in diesem Zeitraum."));
