@@ -253,7 +253,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v87"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v88"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -291,8 +291,8 @@ const REITER = {
   "Datenstand-Sicherung": "Sicherung",
   "Excel erzeugen": "Sicherung",
   "Automatisches Backup": "Sicherung",
-  "Brand-Book-Ordner": "OneDrive",
-  "Cockpit-Ordner": "OneDrive",
+  "Pfad Brand-Books": "OneDrive",
+  "Pfad Datenbank": "OneDrive",
 };
 
 // Fertig gebautes Sheet in Reiter aufteilen. Bewusst HINTERHER statt in
@@ -406,7 +406,7 @@ function einstZeile(titel, paare, feld) {
 // --------------------------------------------------- Ordner-Browser (v86)
 // Tobias 06.09.: der OneDrive-Pfad wird nicht mehr getippt, sondern
 // durchgeklickt. Ein Tippfehler im Book-Pfad hat bei Andrea schon einmal
-// eine halbe Stunde Suche gekostet (v56), und ein falscher Cockpit-Ordner
+// eine halbe Stunde Suche gekostet (v56), und ein falscher Datenbank-Ordner
 // sichert still gar nichts (v71) - Graph legt fehlende Ordner beim PUT
 // nicht an.
 //
@@ -644,20 +644,20 @@ function sheetEinstellungen() {
     el("div", "stand",
       "Brand Rating und Pitchliste werden neu geschrieben; Kriterien, " +
       "Formeln und Formatierung bleiben aus der Vorlage. Vorlage und " +
-      "Export liegen neben dem Cockpit-Ordner. Gleicher Tag = gleiche " +
+      "Export liegen neben dem Datenbank-Ordner. Gleicher Tag = gleiche " +
       "Datei, sie wird ersetzt.")));
 
-  // Cockpit- und Brand-Book-Ordner: seit v86 wird der Pfad NICHT mehr
+  // Datenbank- und Brand-Books-Pfad: seit v86 wird der Pfad NICHT mehr
   // getippt, sondern durchgeklickt (Tobias 06.09.). Beide Abschnitte
   // kommen aus derselben Funktion - zwei Bedienungen fuer dieselbe Sache
   // waeren Unsinn, und der halbe Abschnitt war ohnehin schon doppelt.
-  wrap.append(pfadAbschnitt("Cockpit-Ordner",
+  wrap.append(pfadAbschnitt("Pfad Datenbank",
     "datenPfad", DATEN_BASIS_STD, datenBasis, pruefeCockpit,
     "Hier liegen die Daten fürs Dashboard (snapshot.json), der " +
     "Arbeitsstand und die Backups. Der Ordner muss existieren — die " +
     "App legt ihn nicht an. „Standard“ setzt zurück auf " +
     DATEN_BASIS_STD + ". Gilt nur für dieses Gerät."));
-  wrap.append(pfadAbschnitt("Brand-Book-Ordner",
+  wrap.append(pfadAbschnitt("Pfad Brand-Books",
     "bookPfad", BOOK_BASIS_STD, bookBasis, pruefeBooks,
     "Der Ordner ÜBER den „A Brands“/„B Brands“-" +
     "Unterordnern — die hängt die App selbst an. In diesem Ordner " +
@@ -1301,8 +1301,31 @@ function bookOeffnenZeile(quelle) {
 // "02.09.2026" -> sortierbare Zahl. Unbekanntes Format ans Ende, damit
 // ein kaputtes Datum die Reihenfolge nicht durcheinanderwirft.
 function datumWert(d) {
-  const t = String(d || "").match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-  return t ? Number(t[3]) * 10000 + Number(t[2]) * 100 + Number(t[1]) : 1e12;
+  // Sucht das Datum IM Text, statt den ganzen Text als Datum zu verlangen
+  // (v88, Tobias 06.09.). Der PC-Parser (ugc_core.parse_datum) kann das
+  // laengst - die App war strenger, und ein Leerzeichen hinter dem Datum
+  // machte das Ereignis unlesbar und damit fuer die KPI-Rechnung
+  // unsichtbar. Zwei Parser mit verschiedener Toleranz sind eine stille
+  // Falle: der PC liest die Zeile, die App nicht.
+  // Vertraegt jetzt dasselbe wie der PC:
+  //   "06.09.2026 "   Leerzeichen dahinter
+  //   "06.09.2026\u00a0" geschuetztes Leerzeichen aus Word
+  //   "06. 09. 2026"  Leerzeichen zwischen den Teilen
+  //   "06-09-2026"    Bindestriche
+  //   "06.09.26"      zweistelliges Jahr
+  //   "am 06.09.2026" Text drumherum
+  const t = String(d == null ? "" : d)
+    .match(/(\d{1,2})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*(\d{2,4})/);
+  if (!t) return 1e12;
+  const jahr = Number(t[3]) < 100 ? Number(t[3]) + 2000 : Number(t[3]);
+  const monat = Number(t[2]), tag = Number(t[1]);
+  // Unmoegliche Daten (31.02.) sind KEIN Datum - wie am PC, wo
+  // datetime(...) dafuer ValueError wirft. Ueber ein echtes Date-Objekt
+  // geprueft statt ueber tag <= 31: der Februar hat nun mal keinen 31.
+  const probe = new Date(jahr, monat - 1, tag);
+  if (probe.getFullYear() !== jahr || probe.getMonth() !== monat - 1
+      || probe.getDate() !== tag) return 1e12;
+  return jahr * 10000 + monat * 100 + tag;
 }
 
 // Ereignisse aus BEIDEN Quellen zusammenfuehren (Tobias 02.09.):
@@ -1316,15 +1339,26 @@ function datumWert(d) {
 // Nach einem Export steht dasselbe Ereignis in beiden Quellen - Doppelte
 // fallen ueber Datum+Typ+Aktion raus, Schreibweise normalisiert, weil das
 // Book "Follow-up 1" schreibt und die App "Follow up 1".
+// Ein Historien-Eintrag auf seinen Kern reduziert: Kleinschreibung, alles
+// ausser Buchstaben und Ziffern weg. Damit sind "Follow Up 2", "Follow up 2"
+// und "Follow-up 2" derselbe Eintrag.
+// EINE Regel, zwei Verwender (v88): die Entdopplung der Anzeige
+// (historieAktuell) und die Dublettensperre beim Schreiben ins Brand-Book
+// (historieXml). Vorher gab es die Regel nur beim Anzeigen - deshalb stand
+// derselbe Follow-up bei "Coffeecycle Hamburg" und "Nuts and Golden"
+// zweimal im Book: Andrea schreibt "Follow Up", die App "Follow up".
+function historieSchluessel(...teile) {
+  return teile.map((x) => String(x || "").toLowerCase()
+    .replace(/[^a-z0-9]/g, "")).join("|");
+}
+
 function historieAktuell(m, quelle) {
   const alle = [...((m && m.events) || []),
                 ...((snap && snap.historie && snap.historie[quelle]) || [])];
   const gesehen = new Set();
   const raus = [];
   for (const e of alle) {
-    const id = [e.datum, e.typ, e.aktion, e.positiv]
-      .map((x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, ""))
-      .join("|");
+    const id = historieSchluessel(e.datum, e.typ, e.aktion, e.positiv);
     if (gesehen.has(id)) continue;
     gesehen.add(id);
     raus.push(e);
@@ -2673,7 +2707,7 @@ function renderHauptmenu() {
     el("div", "kontext",
       snap ? `KPI-Dashboard · ${snap.zeitraeume[0].marken.length} Marken`
            : (typeof OD !== "undefined" && OD.konto())
-             ? "Angemeldet, aber keine snapshot.json im Cockpit-Ordner"
+             ? "Angemeldet, aber keine snapshot.json im Datenbank-Ordner"
              : "Keine Daten — erst bei OneDrive anmelden"));
   ugc.onclick = () => { location.hash = "#/ugc"; };
 
@@ -3002,12 +3036,12 @@ function render() {
 
 let datenstand = null;
 let datenstandQuelle = "";
-// Cockpit-Ordner in OneDrive: hier liegen snapshot.json, datenstand.json und
+// Datenbank-Ordner in OneDrive: hier liegen snapshot.json, datenstand.json und
 // die datierten Backups. Seit v71 einstellbar (Tobias 04.09.) - bei Andrea
 // existiert "/Apps/Cockpit" nicht, ihre Schreibversuche liefen ins Leere und
 // die App meldete trotzdem Erfolg. Graph legt fehlende Ordner beim PUT NICHT
 // an, ein 404 ist endgueltig. Geraete-Einstellung wie der Book-Pfad.
-const DATEN_BASIS_STD = "/Apps/Cockpit";
+const DATEN_BASIS_STD = "/UGC/App/Datenbank";
 
 function datenBasis() {
   const roh = String(einst.datenPfad || DATEN_BASIS_STD).trim()
@@ -3247,7 +3281,7 @@ function brandLoeschen(m) {
 // Seit v56 (Tobias 03.09.) in den Einstellungen aenderbar - Andreas Ordner
 // kann sich aendern. Pro Geraet in localStorage, wie die uebrigen
 // Einstellungen: der Pfad haengt am OneDrive-Konto, nicht an den Daten.
-const BOOK_BASIS_STD = "/Apps/Cockpit/Testdaten/Brand-Books";
+const BOOK_BASIS_STD = "/UGC/Brand-Books";
 
 // Eingetippten Pfad -> Graph-Adresse. Fuehrender Slash wird ergaenzt,
 // nachlaufende entfernt, damit "Dokumente/Brand-Books/" genauso geht wie
@@ -3684,12 +3718,12 @@ function xlsxSortiertPitch(marken) {
     .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
 
-// --- Ordner: Vorlage und Export liegen NEBEN dem Cockpit-Ordner -------
-//   .../Testdaten/App Data   <- Cockpit-Ordner (Geraete-Einstellung)
-//   .../Testdaten/Vorlage    <- die .xlsm-Vorlage
-//   .../Testdaten/Export     <- hierhin schreibt die App
+// --- Ordner: Vorlage und Export liegen NEBEN dem Datenbank-Ordner -------
+//   /UGC/App/Datenbank   <- Datenbank-Ordner (Geraete-Einstellung)
+//   /UGC/App/Vorlage     <- die .xlsm-Vorlage
+//   /UGC/App/Export      <- hierhin schreibt die App
 // Genau die Struktur, die der PC-Generator seit 05.09. benutzt. Deshalb
-// keine zweite Einstellung: wer den Cockpit-Ordner richtig gesetzt hat,
+// keine zweite Einstellung: wer den Datenbank-Ordner richtig gesetzt hat,
 // trifft auch die anderen beiden. Graph legt fehlende Ordner beim PUT
 // NICHT an - fehlt "Export", meldet die App das als Fehler.
 function excelNachbar(unter) {
@@ -3850,6 +3884,19 @@ function historieXml(xml, datum, aktion, entfernen) {
     if (!leer) return null;
     tblNeu = tbl.replace(zeilen[i], () => leer);
   } else {
+    // Steht der Eintrag schon da? Dann NICHT noch einmal anhaengen (v88).
+    // Andrea traegt Aktionen auch von Hand ins Book ein; erledigt man
+    // dieselbe Aktion danach in der App, stand sie zweimal drin - und
+    // beide Seiten zaehlten sie doppelt (Befund 06.09.: "Coffeecycle
+    // Hamburg", "Nuts and Golden"). Verglichen wird normalisiert, sonst
+    // rutscht "Follow Up 2" neben "Follow up 2".
+    // Beide Seiten als EIN Schluessel bilden: wordText(z) liefert die Zelle
+    // "06.09.2026 Follow Up 2" am Stueck, deshalb hier auch Datum und
+    // Aktion zusammen - sonst stuende links ein Trenner und rechts keiner.
+    const suche = historieSchluessel(datum + " " + aktion);
+    const schon = zeilen.some((z, j) =>
+      j > 0 && historieSchluessel(wordText(z)) === suche);
+    if (schon) return "dublette";
     const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
     const neu = zeileBauen(zeilen[zeilen.length - 1], datum, aktion);
     if (!neu) return null;
@@ -3876,6 +3923,7 @@ async function bookHistorie(m, datum, aktion, entfernen) {
     const d = zip.file("word/document.xml");
     if (!d) return "fehler";
     const xml = historieXml(await d.async("string"), datum, aktion, entfernen);
+    if (xml === "dublette") return "dublette";   // steht schon im Book
     if (!xml) return "fehler";
     zip.file("word/document.xml", xml);
     const put = await OD.graphRoh(
@@ -3899,6 +3947,11 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
       banner(entfernen
         ? `„${aktion}“ auch im Brand-Book wieder entfernt.`
         : `„${aktion}“ auch in die Pitch-Historie im Brand-Book eingetragen.`);
+    } else if (s === "dublette") {
+      // Bewusst gemeldet statt still uebergangen: der Nutzer soll wissen,
+      // dass sein Klick nichts geschrieben hat - und warum.
+      banner(`„${aktion}“ stand am ${datum} schon im Brand-Book — ` +
+        "nicht doppelt eingetragen.");
     } else if (s === "fehler") {
       banner("Brand-Book konnte nicht nachgetragen werden — " +
         "die Pitch-Historie dort bitte von Hand ergänzen.");
@@ -4000,7 +4053,7 @@ async function datenstandPersistieren() {
   // Eintraege lagen wochenlang nur im Geraetespeicher.
   banner(ok ? "Eingetragen — gesichert auf Gerät + OneDrive."
             : "⚠ Nur auf dem Gerät! OneDrive-Ordner nicht erreichbar — "
-              + "Cockpit-Ordner in den Einstellungen prüfen.");
+              + "Datenbank-Ordner in den Einstellungen prüfen.");
 }
 
 // IndexedDB-Minimum: eine DB "cockpit", ein Key-Value-Store "kv".
@@ -4187,25 +4240,16 @@ async function update() {
   const btn = document.getElementById("update");
   btn.disabled = true;
   try {
-    let ergebnis = null;
-    try {
-      const antwort = await fetch("/update", { method: "POST" });
-      ergebnis = await antwort.json();
-    } catch (_) { /* kein Heimserver erreichbar (unterwegs/GitHub Pages) */ }
-    if (ergebnis && ergebnis.ok) {
-      await laden();
-      render();
-      banner(`${ergebnis.dateien} Dateien eingelesen · ${ergebnis.erzeugt.replace("T", " ")}`);
-    } else if (ergebnis) {
-      banner("Update fehlgeschlagen: " + (ergebnis.fehler || "unbekannt"));
-    } else {
-      // Ohne Heimserver kann niemand die Books neu einlesen - aber den
-      // aktuellsten Snapshot aus OneDrive holen geht von ueberall.
-      await laden();
-      render();
-      banner("Kein Heimserver — aktueller Stand aus OneDrive: " +
-        String(snap.erzeugt || "?").replace("T", " "));
-    }
+    // Bis v88 ging hier ein POST /update an server.py, der die Books am PC
+    // neu einlas. Der Heimserver ist seit dem Umzug auf GitHub Pages
+    // (29.08.) ueberfluessig und am 06.09. geloescht worden - der Aufruf
+    // schlug seither ohnehin immer fehl und lief in genau diesen Zweig.
+    // Books neu einlesen macht jetzt der PC (datenstand.py /
+    // export_snapshot.py), das Ergebnis kommt ueber OneDrive hier an.
+    await laden();
+    render();
+    banner("Aktueller Stand aus OneDrive: " +
+      String(snap.erzeugt || "?").replace("T", " "));
   } catch (fehler) {
     banner("Keine Datenquelle erreichbar: " + fehler.message);
   } finally {
