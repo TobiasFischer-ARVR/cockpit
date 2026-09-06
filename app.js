@@ -253,7 +253,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v88"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v89"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3877,6 +3877,18 @@ function historieXml(xml, datum, aktion, entfernen) {
   if (entfernen) {
     // Letzten passenden Eintrag leeren (die Zeile bleibt als Leerzeile
     // stehen - harmlos, und Word muss keine Zeile verlieren).
+    //
+    // ACHTUNG, hier wird EXAKT verglichen - anders als beim Anhaengen,
+    // das seit v88 ueber historieSchluessel() normalisiert. Das ist
+    // Absicht und kein vergessener Fall:
+    // Andrea traegt Aktionen von Hand ein und schreibt "Follow Up",
+    // die App schreibt "Follow up". Wuerde hier normalisiert verglichen,
+    // loeschte ein Rueckgaengig in der App IHRE handgeschriebene Zeile
+    // mit - die App darf aber nur zuruecknehmen, was sie selbst
+    // geschrieben hat. Findet sie ihre Zeile nicht, sagt sie das
+    // (bookHistorieMelden) statt auf gut Glueck etwas zu leeren.
+    // Wer das hier "zur Konsistenz" normalisiert, baut genau den
+    // Datenverlust ein, den v88 verhindern sollte.
     const i = zeilen.map(wordText).reduce((tr, t, j) =>
       (j > 0 && t.includes(datum) && t.includes(aktion) ? j : tr), -1);
     if (i < 0) return null;
@@ -3953,8 +3965,15 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
       banner(`„${aktion}“ stand am ${datum} schon im Brand-Book — ` +
         "nicht doppelt eingetragen.");
     } else if (s === "fehler") {
-      banner("Brand-Book konnte nicht nachgetragen werden — " +
-        "die Pitch-Historie dort bitte von Hand ergänzen.");
+      // Richtungsabhaengig (v88): beim Entfernen "ergaenzen" zu sagen war
+      // genau verkehrt herum. Faellt vor allem auf, seit die
+      // Dublettensperre greift - dann steht im Book Andreas Zeile, die
+      // App findet ihre eigene nicht und meldete "ergaenzen".
+      banner(entfernen
+        ? `„${aktion}“ wurde im Brand-Book nicht gefunden — ` +
+          "dort bitte von Hand entfernen."
+        : "Brand-Book konnte nicht nachgetragen werden — " +
+          "die Pitch-Historie dort bitte von Hand ergänzen.");
     }
   });
 }
