@@ -109,7 +109,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v83"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v84"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -965,9 +965,13 @@ function kontaktWert(label, wert) {
 
 // Kerninfos + Historie einer Marke - gemeinsamer Baustein fuer das
 // Firmen-Sheet (UGC-Gruppe) und das Wiedervorlage-Sheet (Pitchliste).
-// ohneRating: im Brand-Rating-Sheet stehen die 4 Bewertungsfelder schon
-// im Excel-Block darueber - das Book kopiert sie nur (Tobias 31.08.:
-// Rating entsteht im Brand Rating, nicht im Book -> nur einmal zeigen).
+// ohneRating: die 4 Bewertungsfelder stehen im Sheet schon weiter oben -
+// das Book kopiert sie nur (Tobias 31.08.: Rating entsteht im Brand
+// Rating, nicht im Book -> nur einmal zeigen). Seit v84 in BEIDEN
+// Brand-Sheets gesetzt; davor zeigte das Pitch-Sheet sie unter "Kontakt",
+// weil das Word sie mit den Kontaktdaten in einer Tabelle fuehrt.
+// Bleibt false fuer das Firmen-Sheet der UGC-Gruppe, das keinen eigenen
+// Rating-Block hat.
 const RATING_FELDER = ["rating (a-d)", "brand fit", "begeisterung",
                        "erfolgschance"];
 
@@ -1208,9 +1212,21 @@ function sheetPitch(p) {
     wrap.append(el("div", "kontext",
       ampel(q.datum_naechste_aktion, heuteNull()).text));
 
+    // Die vier Bewertungsfelder stehen hier, nicht unter "Kontakt"
+    // (Tobias 06.09.). Sie kamen dort nur an, weil das Word sie in
+    // DERSELBEN Kerninfos-Tabelle fuehrt wie Website und E-Mail - eine
+    // Eigenheit der Vorlage, kein Ordnungsprinzip. Jetzt liegen sie in
+    // beiden Brand-Sheets im ersten Reiter, an derselben Stelle.
+    // Quelle ist das Brand Rating (mv.brandrating), genau wie im Brand-
+    // Rating-Sheet - nicht der Book-Stand. Sonst zeigten die zwei Sheets
+    // bei abweichendem Book verschiedene Werte fuer dieselbe Marke.
+    const br = (mv && mv.brandrating) || {};
     const felder = [
       ["Status", q.status],
       ["Rating", q.rating],
+      ["Brand Fit", br.brandfit],
+      ["Begeisterung", br.begeisterung],
+      ["Erfolgschance", br.erfolgschance],
       ["Kategorie", q.kategorie],
       ["Letzter Kontakt", q.letzter_kontakt],
       ["Nächster Schritt", q.naechste_aktion],
@@ -1231,7 +1247,10 @@ function sheetPitch(p) {
     // Andreas Word kam oder in der App entstand, sieht man am Inhalt - das
     // Sheet muss deshalb nicht anders aufgebaut sein. markenDetails deckt
     // beides ab; fehlt ein Book, sagen das die Leerzustaende.
-    wrap.append(markenDetails(quelleZuName(p.name), false, mv, kontaktKnopf));
+    // ohneRating=true wie im Brand-Rating-Sheet: die vier Werte stehen
+    // oben in der Wiedervorlage-Tabelle, unter "Kontakt" gehoeren nur
+    // Website, Ansprechpartner, E-Mail und Social Media.
+    wrap.append(markenDetails(quelleZuName(p.name), true, mv, kontaktKnopf));
     wrap.append(bereichSonstiges(mv, bau));
 
     if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
