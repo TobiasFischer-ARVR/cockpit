@@ -446,6 +446,15 @@ main {
 .karte.ampel-neutral { border-left-color: var(--blau); }
 .karte.ampel-grau { border-left-color: var(--grau); opacity: .58; }
 .karte.zugang { margin-bottom: 12px; }
+/* Warnkarte (v90): der eingestellte OneDrive-Ordner zeigt ins Leere.
+   Coral wie das Meldungs-Banner - dieselbe Sprache fuer "da stimmt was
+   nicht", damit man es nicht fuer eine normale Kachel haelt. */
+.karte.warnung {
+  border: 1px solid var(--coral);
+  background: linear-gradient(160deg, rgba(224,122,95,.14), #141c2d);
+  margin-bottom: 12px;
+}
+.karte.warnung .pill { border-color: var(--coral); color: var(--coral); }
 /* Platzhalter-Karte (v86): sichtbar, aber erkennbar noch ohne Funktion */
 .karte.platzhalter { opacity: .55; border-style: dashed; cursor: default; }
 

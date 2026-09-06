@@ -230,6 +230,9 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 
 let snap = null;
 let ladefehler = null;
+// Gesetzt von laden(), wenn der eingestellte Ordner nicht erreichbar war.
+// null = in Ordnung oder gar nicht angemeldet.
+let datenPfadFehler = null;
 let zi = 0; // gewaehlter Zeitraum-Index (0 = Gesamt), bleibt beim Navigieren erhalten
 
 function el(tag, klasse, text) {
@@ -237,6 +240,21 @@ function el(tag, klasse, text) {
   if (klasse) e.className = klasse;
   if (text !== undefined) e.textContent = text;
   return e;
+}
+
+// Warnkarte fuer einen ins Leere zeigenden Ordner (v90). Gibt null
+// zurueck, wenn alles in Ordnung ist - der Aufrufer haengt sie einfach an.
+// Sie ist ANTIPPBAR und fuehrt direkt in die Einstellungen: eine Warnung,
+// die nicht sagt was zu tun ist, ist nur halb so viel wert.
+function pfadWarnung() {
+  if (!datenPfadFehler) return null;
+  const k = el("div", "karte block warnung tippbar");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "⚠ Achtung"));
+  k.append(kopf, el("div", "titel", "Daten-Ordner nicht erreichbar"),
+    el("div", "kontext", datenPfadFehler + " Zum Ändern hier tippen."));
+  k.onclick = sheetEinstellungen;
+  return k;
 }
 
 function kopfzeile(titel, zurueckSichtbar) {
@@ -253,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v89"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v90"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1584,12 +1602,48 @@ function sheetPitch(p) {
     dText();
     const abstand = el("div", "stand");
     abstand.append("Abstand: ", tage, " Tage — änderbar, gilt dann künftig für diese Marke");
+    // Herkunft nur beim Pitch (v90): bei einem Follow-up ist die Aktion
+    // durchnummeriert, da gibt es nichts zu erklaeren.
+    let herkunft = null;
+    if (s.typ === "Pitch") {
+      herkunft = el("input", "feld");
+      herkunft.type = "text";
+      herkunft.placeholder = "z. B. über Bewerberformular auf der Homepage";
+      const liste = pitchHerkuenfte();
+      if (liste.length) {
+        const dl = el("datalist");
+        dl.id = "vs-pitchherkunft";
+        for (const v of liste) {
+          const o = el("option");
+          o.value = v;
+          dl.append(o);
+        }
+        herkunft.setAttribute("list", dl.id);
+        frag.append(dl);
+      }
+      frag.append(el("div", "stand",
+        "Woher kam der Pitch? (optional — steht so im Brand-Book)"), herkunft);
+    }
+    // Der Text, der im Book und im Datenstand landet.
+    const aktionText = () => {
+      const h = herkunft ? herkunft.value.trim() : "";
+      return h ? `${s.aktion} — ${h}` : s.aktion;
+    };
     const zeile = el("div", "chips");
     const ok = el("button", "chip aktiv", `✓ ${s.aktion} erledigt`);
     ok.onclick = () => {
-      if (!confirm(`${s.aktion} als erledigt eintragen?\n` +
+      if (herkunft && herkunftUnzulaessig(herkunft.value)) {
+        banner("Das Wort „Follow“ darf nicht in die Herkunft — der Eintrag " +
+          "würde beim nächsten Import als Follow-up gezählt statt als Pitch.");
+        return;
+      }
+      const text = aktionText();
+      if (!confirm(`${text} als erledigt eintragen?\n` +
           `Nächster Schritt: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`)) return;
-      erledigen(m, s, dTage(), standard);
+      // s bleibt unangetastet - nur die Aktions-Beschriftung wird ersetzt.
+      // typ/status/naechste/zaehlt kommen weiter aus naechsterSchritt(),
+      // damit die Herkunft NUR Text ist und keine Logik verschiebt.
+      erledigen(m, { ...s, aktion: text }, dTage(), standard);
       bau();
     };
     zeile.append(ok);
@@ -2701,6 +2755,10 @@ function renderHauptmenu() {
   kopfzeile("Cockpit", false);
   const c = document.getElementById("inhalt");
   c.innerHTML = "";
+  // Auch hier, nicht nur im Dashboard: wer die App oeffnet und veraltete
+  // Zahlen sieht, soll den Grund auf dem ersten Bildschirm finden.
+  const warnung = pfadWarnung();
+  if (warnung) c.append(warnung);
 
   const ugc = el("div", "karte menue-karte" + (snap ? "" : " leer"));
   ugc.append(el("div", "titel", "UGC"),
@@ -2829,6 +2887,8 @@ function renderUgc() {
   const z = zeitraum();
   const alleMarken = snap.zeitraeume[0].marken.length;
 
+  const warnung = pfadWarnung();
+  if (warnung) c.append(warnung);
   if (snap.zeitraeume.length > 1) c.append(chipZeile());
   // Pflicht-Hinweis (Briefing Abschnitt 5): Gefiltertes wird gezaehlt,
   // sonst haelt man die Ansicht fuer vollstaendig.
@@ -3060,6 +3120,35 @@ const KADENZ_STD = { fu1: 5, fu2: 5, fu3: 10, pause: 90 };
 
 // Was wird erledigt und was folgt darauf? aktion = fällige naechste_aktion
 // aus der Pitchliste, pos = Follow-ups seit dem letzten Pitch.
+// Was bisher als Pitch-Herkunft in den Books steht - als Vorschlagsliste.
+// Andrea hat die Texte selbst geschrieben ("Ueber Bewerberformular auf der
+// Homepage", "Pitch per E-Mail"); die App soll ihre Sprache uebernehmen
+// statt eine eigene zu erfinden. Deckel bei 30, damit die Liste bedienbar
+// bleibt. "Pitch" und "Neuer Pitch" fliegen raus - das sind keine
+// Herkuenfte, sondern der Standardfall.
+function pitchHerkuenfte() {
+  const werte = new Set();
+  for (const m of (datenstand ? datenstand.marken : [])) {
+    for (const e of (m.events || [])) {
+      if (e.typ !== "Pitch") continue;
+      const t = String(e.aktion || "").trim();
+      if (!t || t === "Pitch" || t === "Neuer Pitch") continue;
+      // Der Praefix, den die App selbst setzt, gehoert nicht in den Vorschlag
+      werte.add(t.replace(/^(Neuer )?Pitch\s*[—-]\s*/i, "").trim());
+    }
+  }
+  werte.delete("");
+  return [...werte].sort(nameVgl).slice(0, 30);
+}
+
+// "follow" im Text macht aus einem Pitch beim naechsten Import einen
+// Follow-up (ugc_core.klassifiziere_aktion: 'follow' im Text -> FollowUp).
+// Eine Herkunft wie "nach Follow-up-Anfrage" wuerde die Kennzahlen also
+// still verfaelschen. Deshalb hier abfangen statt hinterher suchen.
+function herkunftUnzulaessig(text) {
+  return String(text || "").toLowerCase().includes("follow");
+}
+
 function naechsterSchritt(aktion, pos) {
   if (String(aktion || "").toLowerCase().includes("follow")) {
     const nr = Math.min(pos + 1, 3);
@@ -4235,9 +4324,31 @@ async function laden() {
   } catch (fehler) {
     lokalFehler = fehler.message;
   }
-  const cloud = typeof OD !== "undefined"
-    ? await OD.graphLeise(OD_SNAPSHOT())
-    : null;
+  // Warum die OneDrive-Quelle fehlt, wird jetzt AUSGEWERTET (v90).
+  // Vorher: graphLeise() lieferte bei jedem Problem null, die App fiel
+  // still auf die Geraetekopie zurueck und zeigte veraltete Zahlen -
+  // ohne ein Wort. Genau so hat Tobias am 06.09. nach dem Umzug auf
+  // "Datenbank" weiter 62 Follow-ups gesehen, obwohl im frischen
+  // Snapshot 60 standen: sein Handy zeigte noch auf den alten Pfad,
+  // bekam einen 404 und nahm klaglos seinen eigenen alten Stand.
+  // Dieselbe Klasse Fehler wie v70/v71 - stiller Rueckfall statt Ansage.
+  let cloud = null;
+  datenPfadFehler = null;
+  if (typeof OD !== "undefined") {
+    const r = await OD.graphRoh(OD_SNAPSHOT());
+    if (r && r.ok) {
+      try { cloud = await r.json(); } catch (_) { /* kaputtes JSON */ }
+    } else if (r && r.status === 404) {
+      datenPfadFehler = "Der eingestellte Ordner existiert in OneDrive nicht "
+        + "(" + datenBasis().split("root:")[1] + "). Die App zeigt gerade den "
+        + "zuletzt auf diesem Gerät gespeicherten Stand.";
+    } else if (r) {
+      datenPfadFehler = "OneDrive antwortet mit Fehler " + r.status
+        + ". Die App zeigt den zuletzt auf diesem Gerät gespeicherten Stand.";
+    }
+    // r === null: nicht angemeldet oder offline. Das ist kein Fehlpfad -
+    // dafuer gibt es die OneDrive-Karte im Hauptmenue.
+  }
   // Dritte Quelle: letzter aufs Geraet gesicherter Snapshot (IndexedDB).
   // Ohne die zeigte die App im Flugmodus "Keine Daten" (Tobias 30.08.) -
   // auf GitHub Pages kommt der Snapshot nur aus OneDrive, offline = nichts.
