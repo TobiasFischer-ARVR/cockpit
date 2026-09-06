@@ -82,6 +82,150 @@ function kpiText(schluessel, wert) {
     ? "—" : String(wert) + (KPI_EINHEIT[schluessel] || "");
 }
 
+// ------------------------------------------- KPI aus dem Datenstand (v87)
+// Bis v86 zeigten die Kacheln stur `snap.zeitraeume[].gesamt` - also den
+// Stand des letzten PC-Exports. Ein "✓ erledigt" in der App landete im
+// Datenstand und im Word-Book, aber an keiner Kachel (Tobias 06.09.:
+// "der Follow-up zählt nicht hoch"). Betroffen waren alle sechs Zähler;
+// Follow-up war nur die Aktion, die er gemacht hatte.
+//
+// Exakt derselbe Fehler wie am 02.09. eine Ebene höher. Damals für die
+// Historie gelöst (historieAktuell), die Kacheln blieben außen vor.
+//
+// Gezählt wird auf `m.events` ROH - bewusst NICHT über historieAktuell().
+// Das war der erste Versuch und der Rundlauf-Test hat ihn widerlegt: die
+// Entdopplung dort wirft Ereignisse weg, die der PC zählt, und die App
+// kam auf 60 statt 62 Follow-ups. Die Entdopplung ist für die ANZEIGE
+// richtig (dieselbe Zeile nicht zweimal zeigen), für die ZÄHLUNG wäre sie
+// eine zweite, abweichende Semantik - und die erzeugte Excel würde am PC
+// und am Handy verschiedene Zahlen tragen.
+// `m.events` ist ohnehin die vollständige Liste: der Import füllt sie aus
+// dem Word-Book, "✓ erledigt" hängt direkt an. Genau deshalb zählt die
+// Kachel jetzt hoch.
+//
+// (Die 60/62-Differenz war KEIN Rechenfehler, sondern echte Dubletten in
+// zwei Brand-Books - siehe Projektnotiz, eigener Befund.)
+//
+// Portiert aus ugc_core.kpis_pro_marke - Zähl-Definitionen dort, sie sind
+// mit Andrea abgestimmt und über vier Monate gegengerechnet. test_kpi.js
+// prüft den Port gegen die echten Snapshot-Zahlen.
+
+// Unlesbare Daten zählen nirgends mit (wie `dt is None` auf der PC-Seite).
+// datumWert() liefert für Unlesbares 1e12 - das fiele sonst als "ganz spät"
+// in die Rückblick-Schleife und könnte letzterKontakt verfälschen.
+function eventDatum(e) {
+  const d = datumWert(e && e.datum);
+  return d < 1e12 ? d : null;
+}
+
+// Kennzahlen EINER Marke für einen Zeitraum. Gibt null zurück, wenn die
+// Marke im Zeitraum gar nichts hatte - dann taucht sie auch nicht auf.
+function kpiMarke(ereignisse, von, bis) {
+  const gueltig = ereignisse.filter((e) => eventDatum(e) !== null);
+  const drin = (e) => {
+    const d = eventDatum(e);
+    return d >= von && d <= bis;
+  };
+  const imZeitraum = gueltig.filter(drin);
+  if (!imZeitraum.length) return null;
+  const vomTyp = (t) => imZeitraum.filter((e) => e.typ === t);
+  const antworten = vomTyp("Antwort");
+
+  // Der Rückblick geht bewusst über die GANZE Historie, nicht nur über den
+  // Zeitraum (PC-Fix vom 05.09., gefunden an Woodwatch: Pitch 29.06.,
+  // Antwort 01.07.). Sonst stünde eine Antwort ohne Vorgeschichte da und
+  // fiele aus BEIDEN Kategorien heraus.
+  // Bei gleichem Datum kommt der Kontakt vor der Antwort - man kann nicht
+  // antworten, bevor gepitcht wurde (_chronologisch auf der PC-Seite).
+  const sortiert = [...gueltig].sort((a, b) =>
+    (eventDatum(a) - eventDatum(b)) ||
+    ((a.typ === "Antwort" ? 1 : 0) - (b.typ === "Antwort" ? 1 : 0)));
+  let nachErst = 0, nachFu = 0, letzterKontakt = null;
+  for (const e of sortiert) {
+    if (e.typ === "Pitch" || e.typ === "FollowUp") {
+      letzterKontakt = e.typ;
+    } else if (e.typ === "Antwort" && drin(e)) {
+      // Eine Antwort ohne jeden vorherigen Kontakt bleibt bewusst in
+      // keiner der beiden Kategorien - sie zu erfinden wäre schlimmer.
+      if (letzterKontakt === "Pitch") nachErst++;
+      else if (letzterKontakt === "FollowUp") nachFu++;
+    }
+  }
+  return {
+    // Eine Antwort ist KEIN Kontakt - die kommt von der Marke (Andrea 24.08.)
+    kontaktiert: vomTyp("Pitch").length > 0 || vomTyp("FollowUp").length > 0,
+    pitches: vomTyp("Pitch").length,
+    followups: vomTyp("FollowUp").length,
+    antworten: antworten.length,
+    positiv: antworten.filter((e) => e.positiv === "X").length,
+    nach_erstkontakt: nachErst,
+    nach_followup: nachFu,
+  };
+}
+
+const KPI_SUMMEN = ["pitches", "followups", "antworten", "positiv",
+                    "nach_erstkontakt", "nach_followup"];
+
+// Ein Zeitraum, frisch gerechnet: {gesamt, marken}. `historien` ist die
+// vorbereitete Liste [{marke, ereignisse}], damit historieAktuell() nicht
+// je Zeitraum erneut läuft.
+function kpiZeitraum(historien, von, bis) {
+  const gesamt = { marken: 0 };
+  for (const k of KPI_SUMMEN) gesamt[k] = 0;
+  const marken = [];
+  for (const { marke, ereignisse } of historien) {
+    const k = kpiMarke(ereignisse, von, bis);
+    if (!k) continue;
+    if (k.kontaktiert) gesamt.marken++;
+    for (const feld of KPI_SUMMEN) gesamt[feld] += k[feld];
+    marken.push({ name: marke.name, quelle: marke.quelle || "",
+                  gruppe: marke.gruppe || "", ...k });
+  }
+  return { gesamt, marken };
+}
+
+// Schreibt die frisch gerechneten Werte IN den geladenen Snapshot.
+// Absicht: jeder Leser von `z.gesamt` bekommt sie automatisch - die
+// Kacheln, das Verlaufs-Diagramm UND der Excel-Export (xlsxKennzahlen).
+// Hätte ich nur die Anzeige korrigiert, zeigte die App andere Zahlen als
+// die erzeugte Excel - genau die Sorte Divergenz, die heute schon zweimal
+// aufgefallen ist (v84 Rating-Felder, v86 Vorlage-Ordner).
+// Der Snapshot wird nie zurückgeschrieben, die Änderung bleibt im Speicher.
+// Idempotent: rechnet immer aus den Quellen, nicht aus dem Vorstand.
+function kpiNachrechnen() {
+  if (!snap || !Array.isArray(snap.zeitraeume)) return;
+  if (!datenstand || !Array.isArray(datenstand.marken)) return;  // Rückfall
+  const historien = datenstand.marken.map((marke) => ({
+    marke, ereignisse: marke.events || [],
+  }));
+  // Jüngstes Ereignis überhaupt - der "Gesamt"-Zeitraum endet im Snapshot
+  // am letzten Ereignis ZUM EXPORTZEITPUNKT. Ohne das Nachziehen fiele ein
+  // heute erledigter Follow-up aus der Gesamtspalte heraus, während die
+  // Monatskachel ihn zeigt.
+  let juengste = 0;
+  for (const { ereignisse } of historien)
+    for (const e of ereignisse) juengste = Math.max(juengste, eventDatum(e) || 0);
+
+  snap.zeitraeume.forEach((z, i) => {
+    if (i === 0 && juengste > datumWert(z.ende)) z.ende = isoZuDe(juengste);
+    const { gesamt, marken } = kpiZeitraum(historien, datumWert(z.start),
+                                                      datumWert(z.ende));
+    z.gesamt = gesamt;
+    z.marken = marken;
+  });
+  // ponytail: neue MONATE legt die Rechnung nicht an. Läuft der Monat um,
+  // ohne dass am PC exportiert wurde, fehlt die Monatskachel - die Zahl
+  // steckt dann in "Gesamt", geht also nicht verloren. Beim nächsten
+  // PC-Export ist der Monat da. Erst bauen, wenn das je stört.
+}
+
+// Sortierzahl (JJJJMMTT) zurück ins deutsche Datum - Gegenstück zu
+// datumWert(), nur für die Gesamt-Zeitraumgrenze gebraucht.
+function isoZuDe(wert) {
+  const t = String(wert);
+  return t.slice(6, 8) + "." + t.slice(4, 6) + "." + t.slice(0, 4);
+}
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 let snap = null;
@@ -109,7 +253,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v86"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v87"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2824,6 +2968,10 @@ function renderFehler() {
 
 function render() {
   sheetEntfernen(); // beim Ansichtswechsel darf kein Sheet haengenbleiben
+  // Kennzahlen frisch aus dem Datenstand (v87). Hier statt an den
+  // Datenquellen, weil render() nach JEDER Änderung läuft - auch nach
+  // "✓ erledigt" (listeVeraltet) und nach dem OneDrive-Abgleich.
+  kpiNachrechnen();
   if (!snap) {
     // Ohne Daten muss das Hauptmenue erreichbar bleiben, sonst kommt man
     // nie an die OneDrive-Anmeldung (Henne-Ei auf frischem Geraet).
