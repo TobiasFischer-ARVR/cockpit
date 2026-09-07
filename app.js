@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v94"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v95"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1085,6 +1085,9 @@ window.addEventListener("popstate", () => {
   if (sheetEbene) { const zurueck = sheetEbene; sheetEbene = null; zurueck(); return; }
   sheetEntfernen();
   if (listeVeraltet) { listeVeraltet = false; render(); }
+  // Aufgeschobenen Abgleich jetzt nachholen (v95): waehrend das Sheet
+  // offen war, durfte der Datenstand nicht ausgetauscht werden.
+  if (abgleichNachholen) { abgleichNachholen = false; abgleichBeiRueckkehr(); }
 });
 
 // Verlaufs-Diagramm (Inline-SVG, Specs aus der dataviz-Skill): Hairline-
@@ -1502,7 +1505,7 @@ async function bookOeffnen(quelle, btn, m) {
     else window.open(url, "_blank");
   };
   try {
-    // 1. Der Pfad, den die App SELBST kennt (v94). Bis v93 lief das nur
+    // 1. Der Pfad, den die App SELBST kennt (v95). Bis v93 lief das nur
     // ueber die OneDrive-Suche - die ist indexbasiert und liefert eine
     // eben ueberschriebene Datei zeitweise nicht zurueck. Nach
     // "↻ Book aktualisieren" meldete das Oeffnen deshalb "nicht
@@ -1673,7 +1676,7 @@ function sheetPitch(p) {
     tage.value = String(standard);
     const dTage = () => parseInt(tage.value, 10) || standard;
     const danach = el("div", "stand");
-    // Datumsfeld neben den Tagen (v94, Tobias 07.09.): "pausieren bis
+    // Datumsfeld neben den Tagen (v95, Tobias 07.09.): "pausieren bis
     // Datum x" ging vorher nur ueber Kopfrechnen im Tage-Feld. Beide
     // Felder halten denselben Wert, nur anders ausgedrueckt - das
     // Tage-Feld bleibt fuehrend, weil daraus das gemerkte Intervall der
@@ -1796,7 +1799,7 @@ function isoInTagen(t) {
     .toISOString().slice(0, 10);
 }
 
-// Gegenstueck zu isoInTagen (v94): wie viele Tage liegen zwischen heute
+// Gegenstueck zu isoInTagen (v95): wie viele Tage liegen zwischen heute
 // und einem ISO-Datum? Fuer das Datumsfeld im Erledigen-Bereich, das die
 // Tage-Rechnerei ersetzt. Ueber Mitternacht der LOKALEN Zeit gerechnet -
 // mit UTC-Millisekunden kaeme je nach Uhrzeit ein Tag zu viel oder zu
@@ -3443,7 +3446,7 @@ function fuSeitPitch(m) {
 // Erledigt eintragen: Event anhängen + Pitchlisten-Felder fortschreiben,
 // exakt wie Andrea es von Hand macht (Ablauf 8). Der Stand davor wandert
 // nach letzteAktion, damit Rückgängig ihn 1:1 wiederherstellen kann.
-// zielDatum (v94, optional): einmaliger Termin fuer die naechste Aktion,
+// zielDatum (v95, optional): einmaliger Termin fuer die naechste Aktion,
 // z. B. "erst nach dem Urlaub wieder". Ueberschreibt NUR das Faelligkeits-
 // datum - die Kadenz unten (m.intervalle) bleibt unberuehrt, sonst wuerde
 // aus einer einmaligen Pause still eine neue Dauerkadenz.
@@ -3476,7 +3479,7 @@ function rueckgaengig(m, la) {
   const ev = m.events || [];
   const weg = ev.length && ev[ev.length - 1].aktion === la.aktion
     ? ev.pop() : null;
-  // geaendert NEU stempeln (v94). Ein Rueckgaengig ist selbst eine
+  // geaendert NEU stempeln (v95). Ein Rueckgaengig ist selbst eine
   // Aenderung - la.vorher traegt aber den Zeitstempel von DAVOR, und aus
   // der Excel kommen die Zeilen ganz ohne (alle 48 bei Andrea). Damit war
   // die Bedingung in pitchMitDatenstand() falsch, die Ueberlagerung ging
@@ -4756,9 +4759,22 @@ if ("serviceWorker" in navigator) {
 // letzte Schreiber. Dagegen haelt nur ein Abgleich je Marke oder ein
 // If-Match/eTag beim PUT; erst bauen, wenn das real vorkommt.
 let abgleichLaeuft = false;
+let abgleichNachholen = false;      // Abgleich wartet auf ein leeres Sheet
 
 async function abgleichBeiRueckkehr() {
   if (abgleichLaeuft) return;         // Doppelaufrufe beim Aufwachen
+  // Bei OFFENEM Sheet gar nicht erst laden (v95, Tobias 07.09.).
+  // datenstandLaden() ERSETZT das globale datenstand-Objekt - ein offenes
+  // Sheet haelt seine Marke aber per Closure aus dem alten Objekt. Der
+  // naechste Klick veraenderte dann eine verwaiste Marke, und
+  // datenstandPersistieren() schrieb den neuen Stand OHNE die Aenderung
+  // nach OneDrive. Gemeldet als: "Brand-Book befuellt" abgehakt, Brand
+  // kam nicht in die Pitchliste, Rating sah aus wie frisch angelegt.
+  // Das passiert bei JEDER Rueckkehr, nicht nur im Konfliktfall: beim
+  // Parsen entsteht immer ein neues Objekt, egal ob der Inhalt gleich ist.
+  // Bis v95 schuetzte die Klausel unten nur das NEUZEICHNEN - die Daten
+  // wurden trotzdem ausgetauscht. Genau diese Luecke.
+  if (document.getElementById("schleier")) { abgleichNachholen = true; return; }
   abgleichLaeuft = true;
   const vorher = datenstand && datenstand.geaendert;
   try {
