@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v93"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v94"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1352,11 +1352,11 @@ function bookName(quelle, m) {
     ? "Brand-Book " + m.name : null;
 }
 
-function bookOeffnenZeile(quelle) {
+function bookOeffnenZeile(quelle, m) {
   if (!quelle || typeof OD === "undefined" || !OD.konto()) return null;
   const z = el("div", "chips");
   const b = el("button", "chip", "📄 Brand-Book öffnen");
-  b.onclick = () => bookOeffnen(quelle, b);
+  b.onclick = () => bookOeffnen(quelle, b, m);
   z.append(b);
   return z;
 }
@@ -1482,7 +1482,7 @@ function bereichHistorie(m, quelle) {
 
 function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
   const frag = document.createDocumentFragment();
-  const oeffnen = bookOeffnenZeile(bookName(quelle, m));
+  const oeffnen = bookOeffnenZeile(bookName(quelle, m), m);
   if (oeffnen) frag.append(oeffnen);
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
   frag.append(bereichKontakt(m, quelle, ohneRating, kontaktKnopf),
@@ -1493,11 +1493,28 @@ function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
 // Fenster SYNCHRON oeffnen (vor dem await), sonst blockt der Popup-
 // Blocker das window.open nach der Graph-Antwort. Bei mehreren Treffern
 // gewinnt der erste - auf /me/drive gibt es den Namen normal nur einmal.
-async function bookOeffnen(quelle, btn) {
+async function bookOeffnen(quelle, btn, m) {
   btn.disabled = true;
   const fenster = window.open("", "_blank");
   const zu = () => { if (fenster) fenster.close(); };
+  const hin = (url) => {
+    if (fenster) fenster.location = url;
+    else window.open(url, "_blank");
+  };
   try {
+    // 1. Der Pfad, den die App SELBST kennt (v94). Bis v93 lief das nur
+    // ueber die OneDrive-Suche - die ist indexbasiert und liefert eine
+    // eben ueberschriebene Datei zeitweise nicht zurueck. Nach
+    // "↻ Book aktualisieren" meldete das Oeffnen deshalb "nicht
+    // gefunden", obwohl die Datei da war. Dazu: graphLeise() schluckt
+    // jeden Fehler zu null, eine Drosselung sah genauso aus. Und bei
+    // zwei gleichnamigen Dateien nahm die Suche einfach die erste.
+    if (m && m.brandrating) {
+      const t = await OD.graphLeise(bookPfad(m) + "?$select=webUrl");
+      if (t && t.webUrl) { hin(t.webUrl); btn.disabled = false; return; }
+    }
+    // 2. Rueckfall Suche: Andreas gewachsene Books hat die App nie
+    // angelegt - dort kann der Dateiname vom berechneten Pfad abweichen.
     const q = encodeURIComponent(String(quelle).replace(/'/g, "''"));
     const d = await OD.graphLeise(
       `/me/drive/root/search(q='${q}')?$select=name,webUrl,file`);
@@ -1505,8 +1522,7 @@ async function bookOeffnen(quelle, btn) {
     const treffer = ((d && d.value) || []).find(
       (e) => e.file && String(e.name).toLowerCase() === soll);
     if (treffer && treffer.webUrl) {
-      if (fenster) fenster.location = treffer.webUrl;
-      else window.open(treffer.webUrl, "_blank");
+      hin(treffer.webUrl);
     } else {
       zu();
       banner(`„${quelle}.docx“ nicht in OneDrive gefunden.`);
@@ -1657,12 +1673,43 @@ function sheetPitch(p) {
     tage.value = String(standard);
     const dTage = () => parseInt(tage.value, 10) || standard;
     const danach = el("div", "stand");
-    const dText = () => { danach.textContent =
-      `Danach: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`; };
-    tage.oninput = dText;
-    dText();
+    // Datumsfeld neben den Tagen (v94, Tobias 07.09.): "pausieren bis
+    // Datum x" ging vorher nur ueber Kopfrechnen im Tage-Feld. Beide
+    // Felder halten denselben Wert, nur anders ausgedrueckt - das
+    // Tage-Feld bleibt fuehrend, weil daraus das gemerkte Intervall der
+    // Marke wird (m.intervalle). Nativer Android-Kalender wie beim
+    // Startdatum, kein eigener Picker.
+    const datum = el("input", "datum");
+    datum.type = "date";
+    datum.min = isoInTagen(0); // rueckwaerts terminieren ergibt keinen Sinn
+    // WICHTIG: Datum und Tage sind NICHT dasselbe.
+    //   tage  = Kadenz, wird als m.intervalle[key] dauerhaft gemerkt
+    //   datum = einmaliger Termin, aendert die Kadenz NICHT
+    // Beides zu koppeln waere die Falle: wer einmal bis nach dem Urlaub
+    // pausiert, haette sich damit still eine neue Dauerkadenz gesetzt.
+    let einmalDatum = null;
+    const dText = () => {
+      danach.textContent = einmalDatum
+        ? `Danach: ${s.naechste} am ${deDatum(einmalDatum)} — einmalig, ` +
+          `der Abstand bleibt bei ${dTage()} Tagen`
+        : `Danach: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`;
+    };
+    const ausTagen = () => {
+      einmalDatum = null;
+      datum.value = isoInTagen(dTage());
+      dText();
+    };
+    tage.oninput = ausTagen;
+    datum.onchange = () => {
+      const t = tageBis(datum.value);
+      if (t === null) { ausTagen(); return; }   // Feld geleert -> zurueck
+      einmalDatum = datum.value;
+      dText();
+    };
+    ausTagen();
     const abstand = el("div", "stand");
-    abstand.append("Abstand: ", tage, " Tage — änderbar, gilt dann künftig für diese Marke");
+    abstand.append("Abstand: ", tage, " Tage — änderbar, gilt dann künftig ",
+      "für diese Marke. Einmalig auf ein Datum legen: ", datum);
     // Herkunft nur beim Pitch (v90): bei einem Follow-up ist die Aktion
     // durchnummeriert, da gibt es nichts zu erklaeren.
     let herkunft = null;
@@ -1704,7 +1751,7 @@ function sheetPitch(p) {
       // s bleibt unangetastet - nur die Aktions-Beschriftung wird ersetzt.
       // typ/status/naechste/zaehlt kommen weiter aus naechsterSchritt(),
       // damit die Herkunft NUR Text ist und keine Logik verschiebt.
-      erledigen(m, { ...s, aktion: text }, dTage(), standard);
+      erledigen(m, { ...s, aktion: text }, dTage(), standard, einmalDatum);
       bau();
     };
     zeile.append(ok);
@@ -1747,6 +1794,24 @@ function isoInTagen(t) {
   d.setDate(d.getDate() + t);
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
     .toISOString().slice(0, 10);
+}
+
+// Gegenstueck zu isoInTagen (v94): wie viele Tage liegen zwischen heute
+// und einem ISO-Datum? Fuer das Datumsfeld im Erledigen-Bereich, das die
+// Tage-Rechnerei ersetzt. Ueber Mitternacht der LOKALEN Zeit gerechnet -
+// mit UTC-Millisekunden kaeme je nach Uhrzeit ein Tag zu viel oder zu
+// wenig heraus. Rueckgabe null, wenn nichts Brauchbares dasteht.
+// ACHTUNG: new Date(2026, 12, 99) wirft NICHT, sondern rollt still ins
+// naechste Jahr weiter. Ohne die Rundlauf-Pruefung unten haette ein
+// unsinniges Datum klaglos einen Termin ergeben - ein stiller Fehlschlag,
+// der wie Erfolg aussieht. Deshalb: zurueckrechnen und vergleichen.
+function tageBis(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return null;
+  const [j, mo, t] = String(iso).split("-").map(Number);
+  const ziel = new Date(j, mo - 1, t);
+  if (isNaN(ziel.getTime()) || ziel.getFullYear() !== j ||
+      ziel.getMonth() !== mo - 1 || ziel.getDate() !== t) return null;
+  return Math.round((ziel - heuteNull()) / 86400000);
 }
 
 function deDatum(iso) { return String(iso).split("-").reverse().join("."); }
@@ -3378,7 +3443,11 @@ function fuSeitPitch(m) {
 // Erledigt eintragen: Event anhängen + Pitchlisten-Felder fortschreiben,
 // exakt wie Andrea es von Hand macht (Ablauf 8). Der Stand davor wandert
 // nach letzteAktion, damit Rückgängig ihn 1:1 wiederherstellen kann.
-function erledigen(m, s, tage, standard) {
+// zielDatum (v94, optional): einmaliger Termin fuer die naechste Aktion,
+// z. B. "erst nach dem Urlaub wieder". Ueberschreibt NUR das Faelligkeits-
+// datum - die Kadenz unten (m.intervalle) bleibt unberuehrt, sonst wuerde
+// aus einer einmaligen Pause still eine neue Dauerkadenz.
+function erledigen(m, s, tage, standard, zielDatum) {
   const jetzt = lokalIso();
   const heute = deDatum(isoInTagen(0));
   datenstand.letzteAktion =
@@ -3389,7 +3458,7 @@ function erledigen(m, s, tage, standard) {
     status: s.status,
     letzter_kontakt: heute,
     naechste_aktion: s.naechste,
-    datum_naechste_aktion: isoInTagen(tage),
+    datum_naechste_aktion: zielDatum || isoInTagen(tage),
     geaendert: jetzt,
   });
   if (s.zaehlt) {
@@ -3407,7 +3476,14 @@ function rueckgaengig(m, la) {
   const ev = m.events || [];
   const weg = ev.length && ev[ev.length - 1].aktion === la.aktion
     ? ev.pop() : null;
-  m.pitchliste = la.vorher;
+  // geaendert NEU stempeln (v94). Ein Rueckgaengig ist selbst eine
+  // Aenderung - la.vorher traegt aber den Zeitstempel von DAVOR, und aus
+  // der Excel kommen die Zeilen ganz ohne (alle 48 bei Andrea). Damit war
+  // die Bedingung in pitchMitDatenstand() falsch, die Ueberlagerung ging
+  // aus, und die Anzeige fiel auf die Snapshot-Zeile zurueck: das
+  // Rueckgaengig blieb unsichtbar, obwohl es im Datenstand stand. Im Word
+  // war es korrekt entfernt - daher der Widerspruch (Tobias 07.09.).
+  m.pitchliste = { ...la.vorher, geaendert: lokalIso() };
   delete datenstand.letzteAktion;
   listeVeraltet = true;
   datenstandPersistieren();
