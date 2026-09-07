@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v92"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v93"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -691,14 +691,21 @@ function sheetEinstellungen() {
       return;
     }
     pStatus.textContent = "";
+    // Die Anweisung MUSS der PC-Weg sein (Tobias 07.09., v93): "↻ Book
+    // aktualisieren" stand hier bis v92 - der Knopf ist fuer genau diese
+    // Marken aber nie erreichbar. Er wird nur zwischen Stufe 1 und 2
+    // angeboten, Book und Excel driften jedoch erst DANACH auseinander
+    // (D-Archiv oder laengst in der Pitchliste). Die beiden Bedingungen
+    // schliessen sich aus - der Hinweis lief also immer ins Leere.
     pStatus.append(el("div", null,
       `⚠ ${treffer.length} Marke(n) mit Abweichung — das Book hält meist ` +
-      "den älteren Stand. „↻ Book aktualisieren“ zieht es nach:"));
+      "den älteren Stand. Im Word korrigieren, dann am PC neu einlesen:"));
     for (const { marke, abw } of treffer) {
       pStatus.append(el("div", null, "• " + marke.name + ": " +
         abw.map((a) => `${a.feld} Book ${a.book} / Excel ${a.excel}`)
           .join(" · ")));
     }
+    pStatus.append(el("div", "stand", spiegelHinweis()));
   };
   pZeile.append(pKnopf);
   wrap.append(abschnitt("Daten prüfen", pStatus, pZeile));
@@ -2091,6 +2098,51 @@ function ratingAbweichungen(marken) {
     .filter((x) => x.abw.length);
 }
 
+// Spiegel an die eben geschriebene Datei angleichen (Tobias 07.09., v93).
+// Gegenstueck zu bookWerte(): DIESELBEN vier Felder, DIESELBE Quelle
+// (m.brandrating). Wird nur gerufen, nachdem bookErzeugen() "neu" gemeldet
+// hat - dann steht im Word genau das, was hier eingetragen wird.
+// Pur gehalten (keine Persistenz, kein DOM), damit test_rating.js es ohne
+// OneDrive pruefen kann. Gibt die Zahl geaenderter Felder zurueck.
+// ACHTUNG beim Aendern: laeuft bookWerte() und RATING_PAARE auseinander,
+// behauptet der Spiegel etwas, das nicht in der Datei steht - schlimmer als
+// die alte Meldung, weil dann gar nichts mehr warnt.
+// LEERE Excel-Werte werden uebersprungen. Sonst landet "" im Spiegel, und
+// kerninfosAktuell() ueberschreibt damit den aus dem Book gelesenen Wert -
+// es ueberschreibt bei vorhandenem SCHLUESSEL, nicht erst bei Inhalt. Eine
+// Marke ohne Excel-Brandfit haette so ihre Anzeige verloren. Fuer die
+// Pruefung ist das ohne Belang: ratingAbweichung ueberspringt leere Seiten
+// ohnehin, es gibt also nichts stillzulegen.
+function kerninfosNachziehen(m) {
+  const br = (m && m.brandrating) || {};
+  m.kerninfos = m.kerninfos || {};
+  let n = 0;
+  for (const [label, feld] of RATING_PAARE) {
+    const wert = String(br[feld] || "").trim();
+    if (!wert) continue;
+    if (m.kerninfos[label] !== wert) { m.kerninfos[label] = wert; n++; }
+  }
+  return n;
+}
+
+// Alter des Book-Spiegels (Tobias 07.09., v93). Die Pruefung vergleicht NICHT
+// die Word-Datei, sondern m.kerninfos - deren Abbild aus dem letzten PC-Import.
+// Wer direkt im Word korrigiert, sieht hier bis zum naechsten Import weiter die
+// alte Meldung. Genau das kostete am 07.09. einen Abend Fehlersuche: die Books
+// waren laengst richtig, die App zeigte treu den Stand von morgens 08:09.
+// datenstand.geaendert taugt dafuer NICHT - das ueberschreibt die App bei jedem
+// Speichern (siehe datenstandPersistieren). Deshalb ein eigenes Feld, das nur
+// datenstand.py schreibt und die App nie anfasst.
+function spiegelHinweis() {
+  const imp = datenstand && datenstand.importiert;
+  return imp
+    ? "Verglichen wird der Book-Stand aus dem PC-Import vom " +
+      String(imp).replace("T", " ") + ". Direkt im Word gemachte Änderungen " +
+      "erscheinen erst nach einem neuen Import."
+    : "Verglichen wird der Book-Stand aus dem letzten PC-Import. Direkt im " +
+      "Word gemachte Änderungen erscheinen erst nach einem neuen Import.";
+}
+
 // Rating-Wechsel protokollieren. BEWUSST NICHT in m.events:
 // dort haengen die KPI-Zaehlung und das Word-Book dran, ein Rating-Wechsel
 // ist aber weder Kontakt noch Antwort. Eigene Liste, eigene Anzeige.
@@ -2771,6 +2823,16 @@ function sheetBrandrating(m) {
             "geht es nur, solange „Brand-Book befüllt“ nicht gedrückt ist.")) return;
         ak.disabled = true;
         const erg = await bookErzeugen(m, true);
+        // Spiegel nachziehen (Tobias 07.09., v93): bookWerte() hat die vier
+        // Rating-Felder eben AUS DER EXCEL ins Word geschrieben - die App
+        // weiss also, was jetzt in der Datei steht. Ohne diese Zeilen meldet
+        // "Daten pruefen" den Widerspruch weiter, obwohl er behoben ist:
+        // verglichen wird m.kerninfos, und das kam bisher nur vom PC-Import.
+        // Nur bei "neu": bei "neu-leer" stehen im Word noch Platzhalter.
+        if (erg === "neu") {
+          kerninfosNachziehen(m);
+          datenstandPersistieren();
+        }
         ak.disabled = false;
         banner(erg === "fehler"
           ? "Aktualisieren fehlgeschlagen — Internet/OneDrive prüfen."
