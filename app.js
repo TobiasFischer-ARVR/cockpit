@@ -4353,8 +4353,17 @@ const bookKette = new Map();
 // gibt. Laeuft absichtlich NEBEN dem Speichern (kein await): der Erledigt-
 // Knopf soll nicht auf den Word-Upload warten.
 function bookHistorieMelden(m, datum, aktion, entfernen) {
-  const pfad = bookPfad(m);
-  const vorher = bookKette.get(pfad) || Promise.resolve();
+  // Geschluesselt auf den MARKENNAMEN, nicht auf bookPfad(). Zwei Gruende:
+  //   1. bookPfad() liest m.brandrating.rating und knallt bei einer Marke,
+  //      die nur in der Pitchliste steht und kein Brandrating hat - Andreas
+  //      "Onelife" ist genau so eine. Die Schutzpruefung dagegen sitzt in
+  //      bookHistorie(); ein bookPfad() DAVOR springt ueber sie hinweg.
+  //      (Gefunden 08.09. beim Gegenlesen von v96, vor dem Ausliefern.)
+  //   2. Der Pfad aendert sich beim Rating-Wechsel, die Marke nicht. Auf den
+  //      Pfad geschluesselt wuerde die Kette dabei aufreissen und genau die
+  //      zwei Schreibvorgaenge entkoppeln, die sie zusammenhalten soll.
+  const kette = schluessel(m.name);
+  const vorher = bookKette.get(kette) || Promise.resolve();
   const lauf = vorher.then(() => bookHistorie(m, datum, aktion, entfernen))
     .then((s) => {
     if (s === "ok") {
@@ -4380,7 +4389,7 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
   });
   // .catch: ein Fehlschlag darf die Kette nicht abreissen lassen, sonst
   // wuerde jeder weitere Schreibvorgang auf diese Datei still verschluckt.
-  bookKette.set(pfad, lauf.catch(() => {}));
+  bookKette.set(kette, lauf.catch(() => {}));
 }
 
 // Template nach Rating kopieren (A bzw. B-C; D = Archiv, kein Template).
