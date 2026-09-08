@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v96"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v97"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -748,7 +748,16 @@ function sheetEinstellungen() {
       "Legt beim Öffnen der App eine datierte Kopie in OneDrive an " +
       "(cockpit-datenstand-JJJJ-MM-TT.json), die du oben mit „Backup " +
       "laden“ zurückholst. Anders als „Jetzt sichern“, das immer " +
-      "dieselbe Datei überschreibt. Gilt nur für dieses Gerät.")));
+      "dieselbe Datei überschreibt. Gilt nur für dieses Gerät."),
+    // Zweite, unabhaengige Sicherung (v97): eine je App-Version, egal ob
+    // das taegliche Backup an ist. Sichtbar, damit ein dauerhaft
+    // fehlschlagender Upload nicht still bleibt.
+    el("div", "stand", versionsSicherungText()),
+    el("div", "stand",
+      "Zusätzlich legt die App beim ersten Start jeder neuen Version " +
+      "eine Kopie an (cockpit-vor-VERSION-JJJJ-MM-TT.json) — die " +
+      "Rückfahrkarte, falls ein Update schiefgeht. Läuft unabhängig " +
+      "vom Wert oben.")));
   zuReitern(wrap, "reiterEinst");
   sheetOeffnen("Einstellungen", wrap);
 }
@@ -4570,9 +4579,53 @@ async function datenstandLaden() {
     // die Datei ist winzig - Abgleich laeuft einfach bei jedem Laden.
     OD.graphPutLeise(OD_DATENSTAND(), datenstand);
   }
-  // Datiertes Backup, falls faellig. Bewusst OHNE await: der Start soll
-  // nicht auf einen Upload warten.
+  // Rueckfahrkarte fuer ein missratenes Release ZUERST, dann das taegliche
+  // Backup. Beide bewusst OHNE await: der Start soll nicht auf einen
+  // Upload warten.
+  versionsSicherung();
   autoBackupPruefen();
+}
+
+// ------------------------------- Sicherung vor dem Versionswechsel (v97)
+// Die Rueckfahrkarte fuer ein missratenes Update. Die Software rollt man
+// ueber git zurueck (revert + neue Versionsnummer, nicht zurueck auf die
+// alte - die App zeigt APP_VERSION an, und "v95" muss "v95" heissen).
+// Der Datenstand braucht aber eine eigene Kopie, und zwar von VOR dem
+// ersten Lauf der neuen Fassung.
+//
+// Genau EINE Kopie je Version, nicht je Tag - und mit eigenem Dateinamen.
+// Haette sie denselben Namen wie das taegliche Auto-Backup
+// (cockpit-datenstand-<datum>.json), wuerde sie es am selben Tag
+// ueberschreiben und damit eine Sicherung vernichten statt eine anzulegen.
+//
+// Der Stand wird SOFORT eingefroren, nicht erst beim Upload: erledigen()
+// und Co. veraendern datenstand an Ort und Stelle. Ohne den Klon koennte
+// ein Tipp waehrend des laufenden Uploads in die Sicherung durchschlagen -
+// eine Sicherung mit dem Zustand DANACH ist wertlos.
+//
+// Rueckgabewert nur fuer den Selbsttest; der Aufrufer wertet ihn nicht aus.
+async function versionsSicherung() {
+  if (!datenstand || einst.appStand === APP_VERSION) return "uebersprungen";
+  if (typeof OD === "undefined" || !OD.konto()) return "kein-konto";
+  const stand = JSON.parse(JSON.stringify(datenstand));
+  const ziel = `${datenBasis()}/cockpit-vor-${APP_VERSION}-` +
+               `${lokalIso().slice(0, 10)}.json:/content`;
+  // Fehlschlag (offline): Merker NICHT setzen, dann versucht es der
+  // naechste Start erneut. Lieber eine Sicherung zu spaet als keine.
+  if (!await OD.graphPutLeise(ziel, stand)) return "fehler";
+  einst.appStand = APP_VERSION;
+  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  return "gesichert";
+}
+
+// Sichtbar machen, ob die Rueckfahrkarte wirklich existiert. Ohne diese
+// Zeile waere ein dauerhaft fehlschlagender Upload ein stiller Fehlschlag,
+// der wie Erfolg aussieht - das Muster, das dieses Projekt fuenfmal
+// gekostet hat (v70, v71, v90, v93, und der Word-Rueckweg am 08.09.).
+function versionsSicherungText() {
+  return einst.appStand === APP_VERSION
+    ? `Sicherung vor ${APP_VERSION}: liegt in OneDrive`
+    : `Sicherung vor ${APP_VERSION}: steht noch aus`;
 }
 
 // ------------------------------------------- Automatisches Backup (v51)
