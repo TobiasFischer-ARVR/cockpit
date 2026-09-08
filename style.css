@@ -572,3 +572,40 @@ main {
 }
 
 }
+
+/* Filtergruppe im Filter-Sheet (v98): Titelzeile, die Chips klappen erst beim
+   Antippen auf. <details> macht das Auf/Zu selbst - kein JS. */
+.fgruppe { border-bottom: 1px solid var(--rand); }
+.fgruppe:last-child { border-bottom: none; }
+.fgruppe > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.fgruppe[open] > summary { color: #90b3f0; font-weight: 600; }
+.fgruppe > .chips { margin-bottom: 0; }
+
+/* Leiste "Neue Version bereit" (v98). Der neue Service Worker wartet, bis
+   hier gedrueckt wird - sonst laedt sich die App mitten in der Eingabe neu. */
+.updateleiste {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 30;                /* ueber dem Sheet-Schleier (20), wie .banner */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--panel-hoch);
+  border: 1px solid var(--blau);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  box-shadow: 0 24px 70px rgba(0,0,0,.6);
+}
+.updateleiste > span { flex: 1 1 auto; }
+.updateleiste .chip { min-height: 38px; }

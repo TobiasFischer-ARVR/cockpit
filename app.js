@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v97"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v98"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1916,22 +1916,80 @@ function pitchKarte(p) {
   return karte;
 }
 
+// Laufende Anzeigen + Werbebudget einer Marke. Steht als EINE Zelle
+// ("2 (350)") im Brand Rating, nicht in der Pitchliste - deshalb ueber den
+// Namen aus dem Datenstand geholt. Der Spaltenname wird tolerant gesucht,
+// wie in extraSpalten(). Was nicht als Zahl lesbar ist ("keine Anzeigen")
+// zaehlt als 0.
+function adWerte(name) {
+  const m = datenstand ? markeZuName(name) : null;
+  const br = (m && m.brandrating) || {};
+  const key = Object.keys(br).find((k) => k.toLowerCase().includes("paid ad"))
+    || PAID_AD;
+  const [anzeigen, budget] = paidAdTeile(br[key]);
+  return { anzeigen: Number(anzeigen) || 0, budget: Number(budget) || 0 };
+}
+
 // Filterzustand der Pitchliste - bleibt beim Navigieren erhalten (wie zi).
 // faellig: "" = alle, sonst max. Rest-Tage (ueberfaellig zaehlt immer mit).
-const pf = { faellig: "", rating: "", kategorie: "", suche: "", sortierung: "" };
+const pf = { faellig: "", rating: [], kategorie: "", ad: "", suche: "",
+             sortierung: "" };
+
+// Passt ein Pitchlisten-Eintrag zu den gerade gesetzten Filtern? `s` ist
+// der kleingeschriebene Suchtext. Steht bewusst AUSSERHALB von
+// renderPitchliste: eine Bedingung, die in einer Closure eingesperrt ist,
+// kann test_v98.js nur nachbauen - und ein Test, der eine Kopie prueft,
+// merkt nichts, wenn sich das Original aendert.
+function pitchPasst(p, s) {
+  return (pf.faellig === "" || (p.tage !== null && p.tage <= pf.faellig)) &&
+    (!pf.rating.length || pf.rating.includes(p.rating)) &&
+    (!pf.kategorie || p.kategorie === pf.kategorie) &&
+    // "mit" = laufende Anzeigen. Budget ohne Anzeige ("0 (830)") zaehlt
+    // als OHNE - fuer die Budget-Frage ist die Sortierung zustaendig.
+    (!pf.ad || (pf.ad === "mit") === (p.ad.anzeigen > 0)) &&
+    (!s || [p.name, p.status, p.naechste_aktion, p.kooperation, p.kategorie]
+      .join(" ").toLowerCase().includes(s));
+}
+
+// Dasselbe fuers Brand Rating.
+function brandPasst(m, s) {
+  const br = m.brandrating;
+  // Suche gewinnt ueber den Book-Filter (Tobias 31.08.): wer gezielt nach
+  // einer Marke sucht, soll sie auch finden, wenn "Ohne Brand-Book" die
+  // abgehakten gerade ausblendet (wie in der Excel).
+  const hat = Boolean(String(br.rating || "").trim());
+  return (!bf.rating.length || bf.rating.includes(br.rating)) &&
+    (!bf.hatRating || (bf.hatRating === "mit") === hat) &&
+    (!bf.book || s || (bf.book === "mit") === Boolean(br.brandbook)) &&
+    (!bf.fit || symAnzahl(br.brandfit) >= bf.fit) &&
+    (!bf.geist || symAnzahl(br.begeisterung) >= bf.geist) &&
+    (!bf.chance || symAnzahl(br.erfolgschance) >= bf.chance) &&
+    (!s || [m.name, br.status, br.kategorie, br.notizen]
+      .join(" ").toLowerCase().includes(s));
+}
 
 // Eine Chip-Reihe fuer einen Filter: aktiven Chip nochmal antippen = aus.
 // Zeichnet nur die Ergebnisliste neu (neuzeichnen), nie die ganze Ansicht -
 // sonst springt die gescrollte Chip-Leiste zurueck an den Anfang.
-function chipFilter(paare, aktiv, setzen, neuzeichnen) {
+function chipFilter(paare, aktiv, setzen, neuzeichnen, mehrfach) {
   const zeile = el("div", "chips");
+  // `stand` ist die Wahrheit, solange das Sheet offen ist - der Aufrufer
+  // bekommt sie ueber setzen(). Beim Umschalten wird `stand` immer NEU
+  // zugewiesen (filter/spread), nie an Ort und Stelle veraendert - deshalb
+  // reicht die Referenz und es braucht keine Schutzkopie. Der Mutations-
+  // test hat genau das gezeigt: die Kopie war nicht zu Fall zu bringen.
+  let stand = mehrfach ? (aktiv || []) : aktiv;
+  const an = (w) => (mehrfach ? stand.includes(w) : w === stand);
   paare.forEach(([wert, label]) => {
-    const chip = el("button", "chip" + (wert === aktiv ? " aktiv" : ""), label);
+    const chip = el("button", "chip" + (an(wert) ? " aktiv" : ""), label);
     chip.onclick = () => {
-      const neu = chip.classList.contains("aktiv") ? "" : wert;
-      setzen(neu);
+      stand = mehrfach
+        ? (stand.includes(wert) ? stand.filter((w) => w !== wert)
+                                : [...stand, wert])
+        : (chip.classList.contains("aktiv") ? "" : wert);
+      setzen(stand);
       [...zeile.children].forEach(
-        (c, i) => c.classList.toggle("aktiv", paare[i][0] === neu));
+        (c, i) => c.classList.toggle("aktiv", an(paare[i][0])));
       neuzeichnen();
     };
     zeile.append(chip);
@@ -1939,12 +1997,43 @@ function chipFilter(paare, aktiv, setzen, neuzeichnen) {
   return zeile;
 }
 
+// Ist ein Filterwert gesetzt? Ein leeres Array ist truthy - ohne diese
+// Funktion zaehlte ein unbenutzter Mehrfachfilter als "1 aktiv".
+function gesetzt(w) {
+  return Array.isArray(w) ? w.length > 0 : Boolean(w);
+}
+
+// Eine Filtergruppe: Titelzeile, die Chips klappen erst beim Antippen auf.
+// Das Auf/Zu macht <details> selbst - kein eigener Zustand, kein Rerender.
+// Der aktive Wert steht im Titel, damit man ihn auch zugeklappt sieht; eine
+// Gruppe mit aktivem Filter startet aufgeklappt. Grund (Tobias 08.09.): das
+// Filter-Sheet stapelte bis zu 5 Chip-Reihen OHNE Ueberschrift - mit den
+// naechsten Filtern waeren es 7, und man haette raten muessen, welcher Chip
+// zu welchem Thema gehoert.
+function filterGruppe(titel, paare, holen, setzen, neuzeichnen, mehrfach) {
+  const d = el("details", "fgruppe");
+  const kopf = el("summary");
+  const label = (w) => (paare.find(([x]) => x === w) || [, w])[1];
+  const beschriften = () => {
+    const w = holen();
+    const text = Array.isArray(w) ? w.map(label).join(", ") : label(w);
+    kopf.textContent = titel + (gesetzt(w) && text ? " · " + text : "");
+  };
+  beschriften();
+  d.open = gesetzt(holen());
+  d.append(kopf, chipFilter(paare, holen(),
+    (w) => { setzen(w); beschriften(); }, neuzeichnen, mehrfach));
+  return d;
+}
+
 // ---------------------------------------------------------- Sortierung
 // Sortierbar nach denselben Kriterien, nach denen auch gefiltert wird
 // (Tobias 01.09.). "" ist immer die Standard-Sortierung der Liste -
 // der erste Chip ist damit gleichzeitig der Zuruecksetzen-Knopf.
 const SORT_PITCH = [["", "Dringlichkeit"], ["name", "Name A–Z"],
-                    ["rating", "Rating"], ["kategorie", "Kategorie"]];
+                    ["rating", "Rating"], ["kategorie", "Kategorie"],
+                    ["budget", "Werbebudget (hoch → niedrig)"],
+                    ["budget_auf", "Werbebudget (niedrig → hoch)"]];
 const SORT_BRAND = [["", "Name A–Z"], ["rating", "Rating"],
                     ["book", "Brand-Book"], ["fit", "Brand Fit"],
                     ["geist", "Begeisterung"], ["chance", "Erfolgschance"],
@@ -1976,6 +2065,13 @@ function sortierePitch(liste, art) {
   if (art === "name") return k.sort((a, b) => nameVgl(a.name, b.name));
   if (art === "rating") return k.sort(nachSchluessel((p) => p.rating));
   if (art === "kategorie") return k.sort(nachSchluessel((p) => p.kategorie));
+  // Kein Budget bekannt -> "" statt 0, damit diese Marken in BEIDE
+  // Richtungen hinten landen (nachSchluessel sortiert Leeres immer ans
+  // Ende). Sonst fuehrten die Marken ohne Budget die aufsteigende Liste an.
+  if (art === "budget")
+    return k.sort(nachSchluessel((p) => p.ad.budget || "", true));
+  if (art === "budget_auf")
+    return k.sort(nachSchluessel((p) => p.ad.budget || ""));
   // Standard: Dringlichkeit, ohne Termin ans Ende
   return k.sort((a, b) => (a.tage === null ? 1e9 : a.tage) -
                           (b.tage === null ? 1e9 : b.tage));
@@ -2020,7 +2116,8 @@ function renderPitchliste() {
   c.innerHTML = "";
   const heute = heuteNull();
   const alle = pitchlisteAktuell()
-    .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute) }));
+    .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute),
+                   ad: adWerte(p.name) }));
   if (!alle.length) {
     c.append(el("div", "leerzustand",
       "Keine Pitchliste im Snapshot — einmal Update (↻) drücken."));
@@ -2043,21 +2140,27 @@ function renderPitchliste() {
   const filterBtn = el("button", "chip");
   filterBtn.onclick = () => {
     const wrap = el("div");
-    wrap.append(chipFilter(
-      [["", "Alle"], [7, "Fällig ≤ 7 Tage"], [14, "≤ 14 Tage"]],
-      pf.faellig, (w) => { pf.faellig = w; }, zeichnen));
+    wrap.append(filterGruppe("Fällig",
+      [["", "Alle"], [7, "≤ 7 Tage"], [14, "≤ 14 Tage"]],
+      () => pf.faellig, (w) => { pf.faellig = w; }, zeichnen));
     const ratings =
       [...new Set(alle.map((p) => p.rating).filter(Boolean))].sort();
     if (ratings.length > 1) {
-      wrap.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
-        pf.rating, (w) => { pf.rating = w; }, zeichnen));
+      wrap.append(filterGruppe("Rating", ratings.map((r) => [r, r]),
+        () => pf.rating, (w) => { pf.rating = w; }, zeichnen, true));
     }
     const kategorien =
       [...new Set(alle.map((p) => p.kategorie).filter(Boolean))].sort();
     if (kategorien.length > 1) {
-      wrap.append(chipFilter(kategorien.map((k) => [k, k]),
-        pf.kategorie, (w) => { pf.kategorie = w; }, zeichnen));
+      wrap.append(filterGruppe("Kategorie", kategorien.map((k) => [k, k]),
+        () => pf.kategorie, (w) => { pf.kategorie = w; }, zeichnen));
     }
+    // "Anzeigen" = laufende Anzeigen in der Werbebibliothek, NICHT das
+    // Budget. Eine Marke kann "0 (830)" haben: Budget da, gerade nichts am
+    // Laufen. Fuer die Budget-Frage ist die Sortierung zustaendig.
+    wrap.append(filterGruppe("Ad-Aktivität",
+      [["mit", "Mit laufenden Anzeigen"], ["ohne", "Ohne Anzeigen"]],
+      () => pf.ad, (w) => { pf.ad = w; }, zeichnen));
     sheetOeffnen("Filter", wrap);
   };
   const sortBtn = sortierKnopf(SORT_PITCH, () => pf.sortierung,
@@ -2072,19 +2175,14 @@ function renderPitchliste() {
   zeichnen();
 
   function zeichnen() {
-    const n = (pf.faellig === "" ? 0 : 1) +
-      (pf.rating ? 1 : 0) + (pf.kategorie ? 1 : 0);
+    const n = [pf.faellig, pf.rating, pf.kategorie, pf.ad]
+      .filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
     sortBtn.textContent = "⇅ " + sortLabel(SORT_PITCH, pf.sortierung);
     sortBtn.classList.toggle("aktiv", Boolean(pf.sortierung));
     const s = pf.suche.trim().toLowerCase();
-    const gefiltert = alle.filter((p) =>
-      (pf.faellig === "" || (p.tage !== null && p.tage <= pf.faellig)) &&
-      (!pf.rating || p.rating === pf.rating) &&
-      (!pf.kategorie || p.kategorie === pf.kategorie) &&
-      (!s || [p.name, p.status, p.naechste_aktion, p.kooperation, p.kategorie]
-        .join(" ").toLowerCase().includes(s)));
+    const gefiltert = alle.filter((p) => pitchPasst(p, s));
     const liste = sortierePitch(gefiltert, pf.sortierung);
     rumpf.innerHTML = "";
     // Zaehler und Liste aus derselben Bedingung (Briefing Abschnitt 4.9)
@@ -2124,8 +2222,8 @@ function renderPitchliste() {
 // Marken mit Brandrating-Zeile aus dem Datenstand, alphabetisch. Hier
 // entstehen neue Brands ("+ Neue Brand", seit v32 hierher verlegt) und
 // hier kommt in Phase 5 der "Rating abgeschlossen"-Knopf dazu.
-const bf = { rating: "", book: "", fit: "", geist: "", chance: "", suche: "",
-             sortierung: "" };
+const bf = { rating: [], hatRating: "", book: "", fit: "", geist: "",
+             chance: "", suche: "", sortierung: "" };
 
 // Skalenwert aus der Symbol-Kette des Brandrating-Blatts ("⭐⭐⭐" -> 3)
 function symAnzahl(s) {
@@ -2964,18 +3062,24 @@ function renderBrandrating() {
     const ratings = [...new Set(alle.map((m) => m.brandrating.rating)
       .filter(Boolean))].sort();
     if (ratings.length > 1) {
-      wrap.append(chipFilter(ratings.map((r) => [r, "Rating " + r]),
-        bf.rating, (w) => { bf.rating = w; }, zeichnen));
+      wrap.append(filterGruppe("Rating", ratings.map((r) => [r, r]),
+        () => bf.rating, (w) => { bf.rating = w; }, zeichnen, true));
     }
-    wrap.append(chipFilter(
+    // Getrennt vom Rating-Filter darueber: dort waehlt man KONKRETE
+    // Ratings, hier geht es um "ueberhaupt schon bewertet?" - das ist
+    // Andreas Arbeitsliste, die Brands ohne Rating.
+    wrap.append(filterGruppe("Bewertet",
+      [["ohne", "Ohne Rating"], ["mit", "Mit Rating"]],
+      () => bf.hatRating, (w) => { bf.hatRating = w; }, zeichnen));
+    wrap.append(filterGruppe("Brand-Book",
       [["ohne", "Ohne Brand-Book"], ["mit", "Brand-Book ✓"]],
-      bf.book, (w) => { bf.book = w; }, zeichnen));
-    wrap.append(chipFilter(skalenChips("Fit"), bf.fit,
-      (w) => { bf.fit = w; }, zeichnen));
-    wrap.append(chipFilter(skalenChips("Begeisterung"), bf.geist,
-      (w) => { bf.geist = w; }, zeichnen));
-    wrap.append(chipFilter(skalenChips("Erfolgschance"), bf.chance,
-      (w) => { bf.chance = w; }, zeichnen));
+      () => bf.book, (w) => { bf.book = w; }, zeichnen));
+    wrap.append(filterGruppe("Brand Fit", skalenChips(),
+      () => bf.fit, (w) => { bf.fit = w; }, zeichnen));
+    wrap.append(filterGruppe("Begeisterung", skalenChips(),
+      () => bf.geist, (w) => { bf.geist = w; }, zeichnen));
+    wrap.append(filterGruppe("Erfolgschance", skalenChips(),
+      () => bf.chance, (w) => { bf.chance = w; }, zeichnen));
     sheetOeffnen("Filter", wrap);
   };
   const sortBtn = sortierKnopf(SORT_BRAND, () => bf.sortierung,
@@ -2988,26 +3092,14 @@ function renderBrandrating() {
   zeichnen();
 
   function zeichnen() {
-    const n = [bf.rating, bf.book, bf.fit, bf.geist, bf.chance]
-      .filter(Boolean).length;
+    const n = [bf.rating, bf.hatRating, bf.book, bf.fit, bf.geist, bf.chance]
+      .filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
     sortBtn.textContent = "⇅ " + sortLabel(SORT_BRAND, bf.sortierung);
     sortBtn.classList.toggle("aktiv", Boolean(bf.sortierung));
     const s = bf.suche.trim().toLowerCase();
-    const gefiltert = alle.filter((m) => {
-      const br = m.brandrating;
-      // Suche gewinnt ueber den Book-Filter (Tobias 31.08.): wer gezielt
-      // nach einer Marke sucht, soll sie auch finden, wenn "Ohne Brand-
-      // Book" die abgehakten gerade ausblendet (wie in der Excel).
-      return (!bf.rating || br.rating === bf.rating) &&
-        (!bf.book || s || (bf.book === "mit") === Boolean(br.brandbook)) &&
-        (!bf.fit || symAnzahl(br.brandfit) >= bf.fit) &&
-        (!bf.geist || symAnzahl(br.begeisterung) >= bf.geist) &&
-        (!bf.chance || symAnzahl(br.erfolgschance) >= bf.chance) &&
-        (!s || [m.name, br.status, br.kategorie, br.notizen]
-          .join(" ").toLowerCase().includes(s));
-    });
+    const gefiltert = alle.filter((m) => brandPasst(m, s));
     const liste = sortiereBrand(gefiltert, bf.sortierung);
     rumpf.innerHTML = "";
     const ohne = liste.filter((m) => !m.brandrating.brandbook).length;
@@ -3120,9 +3212,8 @@ function markenFilter(m) {
 }
 
 // Mindestwert-Chips fuer eine 1-5-Skala ("Fit ≥ 4" heisst: 4 oder besser)
-function skalenChips(titel) {
-  return [[5, `${titel} 5`], [4, `${titel} ≥ 4`],
-          [3, `${titel} ≥ 3`], [2, `${titel} ≥ 2`]];
+function skalenChips() {
+  return [[5, "5"], [4, "≥ 4"], [3, "≥ 3"], [2, "≥ 2"]];
 }
 
 function markenFilterAnzahl() {
@@ -3136,22 +3227,22 @@ function markenFilterAnzahl() {
 function filterZeilen(neuzeichnen, alles) {
   const zeilen = [];
   if (alles) {
-    zeilen.push(chipFilter(
+    zeilen.push(filterGruppe("Antwort",
       [["antwort", "Mit Antwort"], ["positiv", "Antwort positiv"]],
-      mf.antwort, (w) => { mf.antwort = w; }, neuzeichnen));
+      () => mf.antwort, (w) => { mf.antwort = w; }, neuzeichnen));
     const ratings = [...new Set(Object.values(snap.kerninfos || {})
       .map((k) => String(k["Rating (A-D)"] || "").trim()).filter(Boolean))].sort();
     if (ratings.length > 1) {
-      zeilen.push(chipFilter(ratings.map((r) => [r, "Rating " + r]),
-        mf.rating, (w) => { mf.rating = w; }, neuzeichnen));
+      zeilen.push(filterGruppe("Rating", ratings.map((r) => [r, r]),
+        () => mf.rating, (w) => { mf.rating = w; }, neuzeichnen));
     }
   }
-  zeilen.push(chipFilter(skalenChips("Fit"), mf.fit,
-    (w) => { mf.fit = w; }, neuzeichnen));
-  zeilen.push(chipFilter(skalenChips("Begeisterung"), mf.geist,
-    (w) => { mf.geist = w; }, neuzeichnen));
-  zeilen.push(chipFilter(skalenChips("Erfolgschance"), mf.chance,
-    (w) => { mf.chance = w; }, neuzeichnen));
+  zeilen.push(filterGruppe("Brand Fit", skalenChips(),
+    () => mf.fit, (w) => { mf.fit = w; }, neuzeichnen));
+  zeilen.push(filterGruppe("Begeisterung", skalenChips(),
+    () => mf.geist, (w) => { mf.geist = w; }, neuzeichnen));
+  zeilen.push(filterGruppe("Erfolgschance", skalenChips(),
+    () => mf.chance, (w) => { mf.chance = w; }, neuzeichnen));
   return zeilen;
 }
 
@@ -4815,6 +4906,34 @@ if (navigator.storage && navigator.storage.persist) {
   navigator.storage.persist().catch(() => {});
 }
 
+// Eine fertig geladene, aber noch nicht uebernommene Version meldet sich
+// hier. Der Wartestand ist ein PLATZ, keine Warteschlange: kommt waehrend
+// des Wartens noch ein Release, ersetzt es das wartende - ein Druck landet
+// also immer auf der NEUESTEN Version, nie auf einer Zwischenstufe.
+// Deshalb reicht eine Leiste und ein Knopf, ohne Zaehler.
+let wartenderWorker = null;
+
+function updateBereit(sw) {
+  if (!sw || sw === wartenderWorker) return;
+  wartenderWorker = sw;
+  if (document.getElementById("updateleiste")) return;
+  const leiste = el("div", "updateleiste");
+  leiste.id = "updateleiste";
+  leiste.append(el("span", null, "Neue Version bereit"));
+  const jetzt = el("button", "chip aktiv", "Jetzt laden");
+  // Kein eigener reload hier: der Worker uebernimmt, dadurch feuert
+  // controllerchange - und DORT wird neu geladen. Eine Stelle, nicht zwei.
+  jetzt.onclick = () => {
+    jetzt.disabled = true;
+    jetzt.textContent = "Lädt …";
+    wartenderWorker.postMessage("uebernehmen");
+  };
+  const spaeter = el("button", "chip", "Später");
+  spaeter.onclick = () => leiste.remove();
+  leiste.append(jetzt, spaeter);
+  document.body.append(leiste);
+}
+
 if ("serviceWorker" in navigator) {
   // Soll/Ist-Abgleich (Tobias 30.08.): reg.update() vergleicht den
   // installierten Service Worker byteweise mit dem auf GitHub und laedt
@@ -4827,6 +4946,20 @@ if ("serviceWorker" in navigator) {
       reg.update();
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") reg.update();
+      });
+      // Schon einer da (App war zu, als das Release kam)?
+      updateBereit(reg.waiting);
+      // ... oder es kommt gerade einer rein.
+      reg.addEventListener("updatefound", () => {
+        const neu = reg.installing;
+        if (!neu) return;
+        neu.addEventListener("statechange", () => {
+          // "installed" MIT vorhandenem controller = Update. Ohne
+          // controller ist es die Erstinstallation - da gibt es nichts
+          // zu fragen, die App laeuft ja schon mit diesen Dateien.
+          if (neu.state === "installed" && navigator.serviceWorker.controller)
+            updateBereit(reg.waiting || neu);
+        });
       });
     })
     .catch(() => {});
