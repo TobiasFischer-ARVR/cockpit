@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v95"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v96"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3479,6 +3479,18 @@ function rueckgaengig(m, la) {
   const ev = m.events || [];
   const weg = ev.length && ev[ev.length - 1].aktion === la.aktion
     ? ev.pop() : null;
+  // Kein Treffer -> GAR NICHTS zuruecknehmen (v96). Vorher wurde die
+  // Pitchliste trotzdem zurueckgerollt, das Ereignis blieb aber stehen:
+  // die Liste sagte "nie passiert", die KPI zaehlte es weiter. Wieder zwei
+  // Stellen, die dasselbe anders sehen - die Form aller Fehler vom 07.09.
+  // Ein Rueckgaengig, das nur die Haelfte zuruecknimmt, ist schlimmer als
+  // eines, das ehrlich sagt, dass es nicht mehr geht.
+  if (!weg) {
+    banner(`„${la.aktion}“ lässt sich nicht mehr zurücknehmen — seither ` +
+      "ist ein neueres Ereignis dazugekommen. Die Pitchliste bleibt, " +
+      "wie sie ist.");
+    return;
+  }
   // geaendert NEU stempeln (v95). Ein Rueckgaengig ist selbst eine
   // Aenderung - la.vorher traegt aber den Zeitstempel von DAVOR, und aus
   // der Excel kommen die Zeilen ganz ohne (alle 48 bei Andrea). Damit war
@@ -3490,7 +3502,7 @@ function rueckgaengig(m, la) {
   delete datenstand.letzteAktion;
   listeVeraltet = true;
   datenstandPersistieren();
-  if (weg) bookHistorieMelden(m, weg.datum, weg.aktion, true);
+  bookHistorieMelden(m, weg.datum, weg.aktion, true);
 }
 
 // ----------------------------------------------- Neue Brand (Phase 5)
@@ -4317,11 +4329,34 @@ async function bookHistorie(m, datum, aktion, entfernen) {
   }
 }
 
+// Eine Warteschlange JE BOOK-DATEI (v96). bookHistorie() macht Lesen ->
+// Aendern -> Schreiben; ueberlappen zwei Aufrufe, lesen beide denselben
+// Ausgangsstand und der letzte Schreiber gewinnt.
+//
+// Das ist kein Randfall: "Erledigt" zeichnet das Sheet an Ort und Stelle neu
+// und blendet "Rueckgaengig" direkt darunter ein - zwei Taps im Abstand von
+// einer Sekunde, ohne den Bildschirm zu verlassen. Auf Andreas Mobilnetz
+// dauert ein docx-Rundlauf laenger als das. Dann suchte das Entfernen die
+// Zeile in einer Datei, in der sie noch gar nicht stand, meldete
+// "bitte von Hand entfernen" - und der erste Upload schrieb sie hinterher
+// doch hinein. Datenstand richtig, Word mit Geisterzeile, und der naechste
+// PC-Import holte das zurueckgenommene Ereignis wieder herein.
+// Gefunden im Athena-Lauf 08.09.: von vier Ereignissen blieb eines im Book.
+//
+// Kein Lock, nur eine Kette: der Klick wird weiterhin SOFORT quittiert
+// (kein await), die Schreibvorgaenge laufen nur nicht mehr gleichzeitig.
+// Gekettet wird pro Pfad, nicht global - zwei verschiedene Marken sollen
+// sich nicht gegenseitig ausbremsen.
+const bookKette = new Map();
+
 // Ereignis nachtragen und nur dann etwas sagen, wenn es etwas zu sagen
 // gibt. Laeuft absichtlich NEBEN dem Speichern (kein await): der Erledigt-
 // Knopf soll nicht auf den Word-Upload warten.
 function bookHistorieMelden(m, datum, aktion, entfernen) {
-  bookHistorie(m, datum, aktion, entfernen).then((s) => {
+  const pfad = bookPfad(m);
+  const vorher = bookKette.get(pfad) || Promise.resolve();
+  const lauf = vorher.then(() => bookHistorie(m, datum, aktion, entfernen))
+    .then((s) => {
     if (s === "ok") {
       banner(entfernen
         ? `„${aktion}“ auch im Brand-Book wieder entfernt.`
@@ -4343,6 +4378,9 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
           "die Pitch-Historie dort bitte von Hand ergänzen.");
     }
   });
+  // .catch: ein Fehlschlag darf die Kette nicht abreissen lassen, sonst
+  // wuerde jeder weitere Schreibvorgang auf diese Datei still verschluckt.
+  bookKette.set(pfad, lauf.catch(() => {}));
 }
 
 // Template nach Rating kopieren (A bzw. B-C; D = Archiv, kein Template).
