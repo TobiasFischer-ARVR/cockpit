@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v101"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v102"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4432,6 +4432,51 @@ function historieXml(xml, datum, aktion, entfernen) {
 // Das Ganze am echten Book: laden, Zeile setzen, zurueckschreiben.
 // Rueckgabe: "ok" | "kein-book" (still - Book existiert nicht oder wir
 // sind offline, das ist ein normaler Zustand) | "fehler" (laut melden).
+// Was die Antwort auf den Book-Upload bedeutet (v102). Getrennt gehalten,
+// weil genau diese Unterscheidung den Fehler vom 09.09. verhindert - und
+// weil sie sich ohne OneDrive pruefen laesst.
+//
+//   null            gar nicht angekommen: kein Netz, kein Token. Andrea HAT
+//                   ihr Follow-up gemacht, es waere falsch es wegzuwerfen.
+//   423 / 409       die Datei ist gerade in Word geoeffnet. Im Book steht
+//                   nichts - also darf auch im Datenstand nichts stehen.
+//   sonstiger Fehler wie null behandeln: lieber ein Eintrag zu viel als
+//                   eine verlorene Eingabe.
+function schreibStatus(put) {
+  if (!put) return "fehler";
+  if (put.ok) return "ok";
+  return (put.status === 423 || put.status === 409) ? "gesperrt" : "fehler";
+}
+
+// Ein "Erledigt" zuruecknehmen, weil das Book in Word offen war und der
+// Eintrag dort NICHT ankam (v102).
+//
+// Der Fehler, den das abstellt (gefunden 09.09. bei "Ponyhuetchen
+// Naturkosmetik"): erledigen() schreibt zuerst in den Datenstand und
+// meldet den Word-Upload erst danach. Schlug er fehl, blieb das Ereignis
+// stehen. Andrea las "konnte nicht nachgetragen werden", schloss Word und
+// drueckte noch einmal - der zweite Klick kam dazu. Datenstand zwei
+// Ereignisse, Word eines. Die Dublettensperre aus v88 greift dabei NICHT,
+// weil der zweite Klick einen anderen Aktionstext erzeugt ("Follow up 3").
+//
+// Dieselbe Regel wie rueckgaengig(): NUR wenn das Ereignis noch obenauf
+// liegt. Ist inzwischen ein neueres dazugekommen, wird nichts angefasst -
+// ein halbes Zuruecknehmen waere schlimmer als gar keines (v96).
+function erledigtZurueck(m, datum, aktion) {
+  const la = datenstand && datenstand.letzteAktion;
+  const ev = (m && m.events) || [];
+  const letzte = ev[ev.length - 1];
+  if (!letzte || letzte.datum !== datum || letzte.aktion !== aktion) return false;
+  if (!la || la.aktion !== aktion ||
+      schluessel(la.name) !== schluessel(m.name)) return false;
+  ev.pop();
+  m.pitchliste = { ...la.vorher, geaendert: lokalIso() };
+  delete datenstand.letzteAktion;
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+
 async function bookHistorie(m, datum, aktion, entfernen) {
   if (!m.brandrating || !m.brandrating.brandbook ||
       typeof OD === "undefined" || !OD.konto() ||
@@ -4452,7 +4497,7 @@ async function bookHistorie(m, datum, aktion, entfernen) {
         body: await zip.generateAsync(
           { type: "arraybuffer", compression: "DEFLATE" }),
         headers: { "Content-Type": DOCX_TYP } });
-    return put && put.ok ? "ok" : "fehler";
+    return schreibStatus(put);
   } catch (_) {
     return "fehler";
   }
@@ -4504,6 +4549,28 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
       // dass sein Klick nichts geschrieben hat - und warum.
       banner(`„${aktion}“ stand am ${datum} schon im Brand-Book — ` +
         "nicht doppelt eingetragen.");
+    } else if (s === "gesperrt") {
+      // Word haelt die Datei - im Book steht NICHTS. Also auch im
+      // Datenstand nichts stehen lassen: entweder beides oder keines.
+      // Derselbe Grundsatz wie bei rueckgaengig() (v96): "Ein
+      // Rueckgaengig, das nur die Haelfte zuruecknimmt, ist schlimmer als
+      // eines, das ehrlich sagt, dass es nicht mehr geht."
+      const weg = !entfernen && erledigtZurueck(m, datum, aktion);
+      banner(weg
+        ? `„${aktion}“ wurde NICHT eingetragen — das Brand-Book ist `
+          + "gerade in Word geöffnet. Word schließen, dann noch einmal "
+          + "antippen."
+        : entfernen
+          ? `„${aktion}“ steht im Brand-Book noch — es ist gerade in `
+            + "Word geöffnet. Dort bitte von Hand entfernen."
+          : `„${aktion}“ kam nicht ins Brand-Book (in Word geöffnet). `
+            + "In der App ist es eingetragen — bitte NICHT noch einmal "
+            + "antippen, sondern im Word von Hand ergänzen.");
+      // Neu zeichnen, damit die Kachel zurueckspringt. Nur wenn KEIN Sheet
+      // offen ist: render() wuerde es sonst wegreissen, waehrend Andrea
+      // hineinsieht. Mit offenem Sheet erledigt listeVeraltet das beim
+      // Schliessen (popstate).
+      if (weg && !document.getElementById("schleier")) render();
     } else if (s === "fehler") {
       // Richtungsabhaengig (v88): beim Entfernen "ergaenzen" zu sagen war
       // genau verkehrt herum. Faellt vor allem auf, seit die
