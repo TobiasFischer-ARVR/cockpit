@@ -27,7 +27,11 @@ body {
 }
 
 header {
-  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+  /* Fallback ist PFLICHT: kennt ein Browser safe-area-inset-top nicht,
+     ist env() ohne zweiten Wert "invalid at computed-value time" und
+     der GANZE padding-Kurzschreibweise faellt auf 0 zurueck - auch die
+     12px an den Seiten. (Tobias 09.09.: in Firefox fehlte der Header.) */
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
   border-bottom: 1px solid var(--rand);
   display: flex;
   align-items: center;
@@ -104,9 +108,27 @@ main {
 .punkte {
   display: flex;
   justify-content: center;
+  align-items: center;
   gap: 6px;
   margin: 10px 0 20px;
 }
+/* Pfeile neben den Punkten (v100). Antippflaeche 44px wie alles andere
+   (Briefing Abschnitt 5), das Zeichen selbst bleibt klein und leise -
+   auf dem Handy ist Wischen der Hauptweg, am PC sind sie der EINZIGE:
+   die Scrollleiste der Kachelreihe ist ausgeblendet. */
+.seitenpfeil {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-leise);
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.seitenpfeil:disabled { opacity: .25; cursor: default; }
 .punkt {
   width: 6px;
   height: 6px;

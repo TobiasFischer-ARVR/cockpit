@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v99"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v100"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -995,10 +995,28 @@ function kpiKachel(gesamt, schluessel) {
 // kollidieren (dieselbe Falle wie beim Wisch-zum-Schliessen).
 function seitenPunkte(seiten) {
   const leiste = el("div", "punkte");
-  KACHEL_SEITEN.forEach(() => leiste.append(el("span", "punkt")));
+  // Pfeile links und rechts der Punkte (v100). Am PC laesst sich die Reihe
+  // sonst gar nicht bedienen: die Scrollleiste ist ausgeblendet
+  // (scrollbar-width: none), und ohne Leiste scrollt eine Maus nicht
+  // waagerecht. Auf dem Handy bleibt das Wischen der Hauptweg, die Pfeile
+  // stoeren dort nicht (Tobias 09.09.).
+  const pfeil = (richtung, zeichen, beschriftung) => {
+    const b = el("button", "seitenpfeil", zeichen);
+    b.setAttribute("aria-label", beschriftung);
+    b.onclick = () => seiten.scrollBy(
+      { left: richtung * seiten.clientWidth, behavior: "smooth" });
+    return b;
+  };
+  const zurueck = pfeil(-1, "‹", "Vorherige Kacheln");
+  const vor = pfeil(1, "›", "Nächste Kacheln");
+  // Eigene Liste statt leiste.children: dort stehen jetzt auch die Pfeile.
+  const punkte = KACHEL_SEITEN.map(() => el("span", "punkt"));
+  leiste.append(zurueck, ...punkte, vor);
   const setzen = () => {
     const i = Math.round(seiten.scrollLeft / Math.max(1, seiten.clientWidth));
-    [...leiste.children].forEach((p, j) => p.classList.toggle("aktiv", j === i));
+    punkte.forEach((p, j) => p.classList.toggle("aktiv", j === i));
+    zurueck.disabled = i <= 0;
+    vor.disabled = i >= KACHEL_SEITEN.length - 1;
   };
   seiten.onscroll = setzen;
   setzen();
