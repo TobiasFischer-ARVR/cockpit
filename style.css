@@ -27,7 +27,7 @@ body {
 }
 
 header {
-  padding: 10px 12px;
+  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
   border-bottom: 1px solid var(--rand);
   display: flex;
   align-items: center;
@@ -571,8 +571,6 @@ main {
   z-index: 30;
 }
 
-}
-
 /* Filtergruppe im Filter-Sheet (v98): Titelzeile, die Chips klappen erst beim
    Antippen auf. <details> macht das Auf/Zu selbst - kein JS. */
 .fgruppe { border-bottom: 1px solid var(--rand); }
@@ -584,8 +582,31 @@ main {
   gap: 8px;
   font-size: 13px;
   cursor: pointer;
+  list-style: none;           /* Firefox: eigenes Dreieck weg */
 }
-.fgruppe[open] > summary { color: #90b3f0; font-weight: 600; }
+/* display:flex nimmt <summary> das native Dreieck - ohne Ersatz sieht die
+   Zeile aus wie toter Text (Tobias 09.09.: "Filter stehen in Plain Text da").
+   Der Pfeil ist die einzige Anzeige, dass sich hier etwas aufklappt. */
+.fgruppe > summary::-webkit-details-marker { display: none; }
+.fgruppe > summary::after {
+  content: "›";          /* > als Aufklapp-Pfeil */
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--text-leise);
+  font-size: 18px;
+  line-height: 1;
+  transition: transform .15s;
+}
+.fgruppe[open] > summary::after { transform: rotate(90deg); }
+/* Der aktive Wert braucht eine eigene Auszeichnung, sonst liest er sich wie
+   Teil der Ueberschrift ("Brand Fit  >= 4" statt "Brand Fit: >= 4"). */
+.fgruppe > summary .fwert { color: #90b3f0; font-weight: 600; }
+.fgruppe > summary .fwert:not(:empty)::before {
+  content: "·";            /* Mittelpunkt */
+  color: var(--text-leise);
+  font-weight: 400;
+  margin-right: 8px;
+}
 .fgruppe > .chips { margin-bottom: 0; }
 
 /* Leiste "Neue Version bereit" (v98). Der neue Service Worker wartet, bis

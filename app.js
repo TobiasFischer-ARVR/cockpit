@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v98"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v99"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2013,11 +2013,17 @@ function gesetzt(w) {
 function filterGruppe(titel, paare, holen, setzen, neuzeichnen, mehrfach) {
   const d = el("details", "fgruppe");
   const kopf = el("summary");
+  // Titel und aktiver Wert in EIGENEN Spans, nicht als ein Text (v99):
+  // sonst laesst sich der Wert nicht anders auszeichnen als die
+  // Ueberschrift und die Zeile liest sich als ein einziger langer Titel.
+  // Den Mittelpunkt setzt die CSS (.fwert:not(:empty)::before).
+  const wertText = el("span", "fwert");
+  kopf.append(el("span", null, titel), wertText);
   const label = (w) => (paare.find(([x]) => x === w) || [, w])[1];
   const beschriften = () => {
     const w = holen();
     const text = Array.isArray(w) ? w.map(label).join(", ") : label(w);
-    kopf.textContent = titel + (gesetzt(w) && text ? " · " + text : "");
+    wertText.textContent = gesetzt(w) && text ? text : "";
   };
   beschriften();
   d.open = gesetzt(holen());
