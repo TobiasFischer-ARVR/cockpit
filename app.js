@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v100"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v101"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2044,7 +2044,12 @@ function filterGruppe(titel, paare, holen, setzen, neuzeichnen, mehrfach) {
     wertText.textContent = gesetzt(w) && text ? text : "";
   };
   beschriften();
-  d.open = gesetzt(holen());
+  // Alle Gruppen offen (v101, Tobias 09.09.: "immer noch normaler Text
+  // in Zeilen"). v98 klappte sie zu, damit 7 Gruppen keine Wand aus
+  // Chips ergeben - aber zugeklappt sieht man gar nicht, DASS da Chips
+  // sind. Ueberschrift und Trennlinie ordnen sie auch offen zu; wer
+  // aufraeumen will, klappt einzeln zu. Das Sheet scrollt ohnehin.
+  d.open = true;
   d.append(kopf, chipFilter(paare, holen(),
     (w) => { setzen(w); beschriften(); }, neuzeichnen, mehrfach));
   return d;
