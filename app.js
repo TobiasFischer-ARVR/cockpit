@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v102"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v103"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -314,6 +314,16 @@ const REITER = {
   "Daten prüfen": "OneDrive",
   "Pfad Brand-Books": "OneDrive",
   "Pfad Datenbank": "OneDrive",
+  // Warteliste (v103). Im Einstellungs-Sheet ein eigener Reiter; das
+  // Warteliste-Sheet selbst wird NICHT geteilt - eine Liste braucht keine
+  // Reiter. Seine drei Abschnitte stehen hier trotzdem, weil der
+  // Invariantentest in test_bookpfad.js statisch JEDEN abschnitt()-Aufruf
+  // in app.js prueft und einen fehlenden Eintrag als vergessen wertet.
+  "Datenlogging": "OneDrive",
+  "Warteliste": "Warteliste",
+  "Nichts offen": "Warteliste",
+  "Braucht dich": "Warteliste",
+  "Wartet aufs Brand-Book": "Warteliste",
 };
 
 // Fertig gebautes Sheet in Reiter aufteilen. Bewusst HINTERHER statt in
@@ -639,6 +649,40 @@ function sheetEinstellungen() {
     el("div", "stand",
       "Backup laden: eine cockpit-datenstand-….json auswählen " +
       "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand.")));
+
+  // Datenlogging (v103). Werkzeug auf Zeit: einschalten, Fehler einfangen,
+  // wieder ausschalten. Der Pfad wird MIT angezeigt - steht der Datenbank-
+  // Ordner falsch, liefe auch das Log ins Leere (Vorfall 04.09.).
+  const lStatus = el("div", "stand", logStufe()
+    ? "Schreibt nach " + logBasis().split("root:").pop() +
+      " — heutige Datei: " + logDatei().split("/").pop()
+    : "Aus. Einschalten, wenn ein Fehler nachvollzogen werden soll.");
+  wrap.append(abschnitt("Datenlogging",
+    einstZeile("Umfang", LOG_STUFEN, "logStufe"),
+    lStatus,
+    el("div", "stand",
+      "einfach: jeder OneDrive-Zugriff mit Status und Graph-Fehlercode. " +
+      "erweitert: zusätzlich SOLL/IST und welche Schutzregel gegriffen hat. " +
+      "Eine Datei je Tag und Gerät.")));
+
+  // Warteliste (v103): fest erreichbar. Das Fenster geht von allein nur
+  // auf, wenn ein Eintrag Andreas Zutun braucht - alles andere traegt sich
+  // selbst nach. Trotzdem muss sie jederzeit nachsehen koennen, was noch
+  // unterwegs ist, ohne auf einen Banner zu warten.
+  const wOffen = ((datenstand && datenstand.ausstehend) || []);
+  const wDringend = wOffen.filter((e) => e.grund === "braucht-dich").length;
+  const wZeile = el("div", "chips");
+  const wKnopf = el("button", "chip",
+    "Warteliste öffnen" + (wOffen.length ? " (" + wOffen.length + ")" : ""));
+  wKnopf.onclick = sheetWarteliste;
+  wZeile.append(wKnopf);
+  wrap.append(abschnitt("Warteliste",
+    el("div", "stand", !wOffen.length
+      ? "Alles ist im Brand-Book angekommen."
+      : (wOffen.length === 1 ? "1 Eintrag wartet" : wOffen.length + " Einträge warten")
+        + " aufs Brand-Book"
+        + (wDringend ? " — davon " + wDringend + " mit deinem Zutun." : ".")),
+    wZeile));
 
   // Excel erzeugen (v80): frische Datei aus der Vorlage, direkt vom Geraet.
   // Bis dahin ging das nur am PC ueber excel_generator.py - Andrea hat
@@ -4429,78 +4473,456 @@ function historieXml(xml, datum, aktion, entfernen) {
   return xml.replace(tbl, () => tblNeu);
 }
 
-// Das Ganze am echten Book: laden, Zeile setzen, zurueckschreiben.
-// Rueckgabe: "ok" | "kein-book" (still - Book existiert nicht oder wir
-// sind offline, das ist ein normaler Zustand) | "fehler" (laut melden).
-// Was die Antwort auf den Book-Upload bedeutet (v102). Getrennt gehalten,
-// weil genau diese Unterscheidung den Fehler vom 09.09. verhindert - und
-// weil sie sich ohne OneDrive pruefen laesst.
+// ------------------------------------------------ Datenlogging (v103)
 //
-//   null            gar nicht angekommen: kein Netz, kein Token. Andrea HAT
-//                   ihr Follow-up gemacht, es waere falsch es wegzuwerfen.
-//   423 / 409       die Datei ist gerade in Word geoeffnet. Im Book steht
-//                   nichts - also darf auch im Datenstand nichts stehen.
-//   sonstiger Fehler wie null behandeln: lieber ein Eintrag zu viel als
-//                   eine verlorene Eingabe.
-function schreibStatus(put) {
-  if (!put) return "fehler";
-  if (put.ok) return "ok";
-  return (put.status === 423 || put.status === 409) ? "gesperrt" : "fehler";
+// Am 10.09. haben wir einen Abend damit verbracht, aus Andreas Saetzen zu
+// erraten, was die App getan hat ("ne der frisst es nicht"). Die Antwort
+// stand die ganze Zeit im Graph-Fehlercode - den hat der alte Code mit
+// catch(_) weggeworfen. Das hier stellt das ab.
+//
+// Drei Stufen, umschaltbar in den Einstellungen:
+//   aus        nichts. Standard.
+//   einfach    jeder OneDrive-Zugriff: Zeit, Marke, Aktion, Pfad, Methode,
+//              HTTP-Status, GRAPH-FEHLERCODE, Versuch, Dauer.
+//   erweitert  zusaetzlich SOLL/IST: was wollten wir schreiben, was stand
+//              schon da, welche Schutzregel hat gegriffen.
+//
+// Gedacht als Werkzeug auf Zeit: laufen lassen, bis die Fehler weg sind,
+// danach wieder auf "aus".
+const LOG_STUFEN = [["", "aus"], ["einfach", "einfach"],
+                    ["erweitert", "erweitert"]];
+
+function logStufe() { return einst.logStufe || ""; }
+
+// Geschwisterordner der Datenbank: /UGC/App/Datenbank -> /UGC/App/Logfiles
+function logBasis() {
+  return datenBasis().replace(/\/[^/]+$/, "/Logfiles");
 }
 
-// Ein "Erledigt" zuruecknehmen, weil das Book in Word offen war und der
-// Eintrag dort NICHT ankam (v102).
-//
-// Der Fehler, den das abstellt (gefunden 09.09. bei "Ponyhuetchen
-// Naturkosmetik"): erledigen() schreibt zuerst in den Datenstand und
-// meldet den Word-Upload erst danach. Schlug er fehl, blieb das Ereignis
-// stehen. Andrea las "konnte nicht nachgetragen werden", schloss Word und
-// drueckte noch einmal - der zweite Klick kam dazu. Datenstand zwei
-// Ereignisse, Word eines. Die Dublettensperre aus v88 greift dabei NICHT,
-// weil der zweite Klick einen anderen Aktionstext erzeugt ("Follow up 3").
-//
-// Dieselbe Regel wie rueckgaengig(): NUR wenn das Ereignis noch obenauf
-// liegt. Ist inzwischen ein neueres dazugekommen, wird nichts angefasst -
-// ein halbes Zuruecknehmen waere schlimmer als gar keines (v96).
-function erledigtZurueck(m, datum, aktion) {
-  const la = datenstand && datenstand.letzteAktion;
-  const ev = (m && m.events) || [];
-  const letzte = ev[ev.length - 1];
-  if (!letzte || letzte.datum !== datum || letzte.aktion !== aktion) return false;
-  if (!la || la.aktion !== aktion ||
-      schluessel(la.name) !== schluessel(m.name)) return false;
-  ev.pop();
-  m.pitchliste = { ...la.vorher, geaendert: lokalIso() };
-  delete datenstand.letzteAktion;
-  listeVeraltet = true;
-  datenstandPersistieren();
-  return true;
+// EINE Datei je Tag UND GERAET. Andrea arbeitet mit Handy und PC; teilten
+// sie sich eine Datei, muesste jeder Schreibvorgang lesen-aendern-schreiben
+// machen - und wir haetten im Diagnosewerkzeug genau das Sync-Problem, das
+// wir damit suchen. Getrennte Dateien brauchen keinen Abgleich.
+function logGeraet() {
+  if (!einst.geraetName) {
+    const ua = navigator.userAgent || "";
+    const art = /Android|iPhone|iPad/i.test(ua) ? "Handy"
+      : /Windows|Macintosh|Linux/i.test(ua) ? "PC" : "Geraet";
+    // Zufallsanhaengsel, damit zwei Handys sich nicht dieselbe Datei teilen.
+    einst.geraetName = art + "-" + Math.random().toString(36).slice(2, 6);
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  }
+  return einst.geraetName;
 }
 
-async function bookHistorie(m, datum, aktion, entfernen) {
-  if (!m.brandrating || !m.brandrating.brandbook ||
-      typeof OD === "undefined" || !OD.konto() ||
-      typeof JSZip === "undefined") return "kein-book";
+function logDatei() {
+  return logBasis() + "/" + lokalIso().slice(0, 10) + " " + logGeraet() + ".jsonl";
+}
+
+let logPuffer = [];
+let logGeladen = false;      // Tagesdatei in dieser Sitzung schon geholt?
+let logSchreibt = false;
+
+// Nur bei "erweitert" mitschreiben. Als Streuung gedacht:
+//   logZeile("book-schreiben", { ..., ...logMehr({ soll, ist }) })
+function logMehr(daten) {
+  return logStufe() === "erweitert" ? daten : {};
+}
+
+function logZeile(art, daten) {
+  if (!logStufe()) return;
   try {
-    const r = await OD.graphRoh(bookPfad(m) + ":/content");
-    if (!r || !r.ok) return "kein-book"; // z.B. Andreas handgepflegtes Book
+    logPuffer.push(JSON.stringify({ z: lokalIso(), art, ...daten }));
+  } catch (_) { return; }        // zirkulaere Daten o.ae. - nie werfen
+  if (logPuffer.length >= 40) logSichern();
+}
+
+// Graph legt seinen Grund in den Antwortkoerper - "resourceLocked",
+// "resourceModified", "activityLimitReached", "itemNotFound". Genau das
+// Feld, das uns heute gefehlt hat. clone() weil der Aufrufer den Koerper
+// noch braucht.
+async function logFehlerCode(antwort) {
+  // Bei ausgeschaltetem Logging gar nicht erst in den Koerper schauen -
+  // der Aufrufer baut sein Objekt trotzdem, das soll nichts kosten.
+  if (!logStufe()) return "";
+  if (!antwort) return "keine-antwort";
+  if (antwort.ok) return "";
+  try {
+    const j = JSON.parse(await antwort.clone().text());
+    return (j && j.error && j.error.code) || "";
+  } catch (_) { return ""; }
+}
+
+// Graph legt fehlende Ordner beim PUT NICHT an, ein 404 ist endgueltig
+// (dieselbe Falle wie beim Datenbank-Ordner, Vorfall 04.09.). Also einmal
+// anlegen und den Schreibvorgang wiederholen.
+async function logOrdnerAnlegen() {
+  const teile = logBasis().split("/");
+  const name = teile.pop();
+  const r = await OD.graphRoh(teile.join("/") + ":/children", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, folder: {},
+      "@microsoft.graph.conflictBehavior": "replace" }) });
+  return !!(r && r.ok);
+}
+
+// Die ganze Tagesdatei neu schreiben statt anzuhaengen. Klingt verschwender-
+// isch, ist aber der einfachste sichere Weg: die Datei gehoert genau EINEM
+// Geraet an EINEM Tag, es gibt also nichts zusammenzufuehren.
+// ponytail: bei sehr vielen Zeilen wird der PUT gross - dann auf eine Datei
+// je Stunde umstellen. Bei Andreas Klickzahl kein Thema.
+async function logSichern() {
+  if (!logStufe() || logSchreibt || !logPuffer.length) return;
+  if (typeof OD === "undefined" || !OD.konto()) return;
+  logSchreibt = true;
+  try {
+    const datei = logDatei();
+    // Beim ersten Sichern der Sitzung anhaengen statt ersetzen: sonst
+    // wuerde ein App-Neustart alles ueberschreiben, was heute schon
+    // dasteht - und ausgerechnet der Absturz waere nicht mehr belegt.
+    if (!logGeladen) {
+      logGeladen = true;
+      const r = await OD.graphRoh(datei + ":/content");
+      if (r && r.ok) {
+        const alt = (await r.text()).trim();
+        if (alt) logPuffer = alt.split("\n").concat(logPuffer);
+      }
+    }
+    const ziel = datei + ":/content?@microsoft.graph.conflictBehavior=replace";
+    const senden = () => OD.graphRoh(ziel, {
+      method: "PUT", body: logPuffer.join("\n") + "\n",
+      headers: { "Content-Type": "text/plain" } });
+    let put = await senden();
+    if (put && put.status === 404 && await logOrdnerAnlegen()) put = await senden();
+    if (put && put.ok) logPuffer = [];   // erst leeren, wenn es wirklich lag
+  } catch (_) {
+    // Logging darf die App NIE stoeren. Geht es nicht, bleibt der Puffer
+    // stehen und der naechste Versuch nimmt ihn mit.
+  } finally { logSchreibt = false; }
+}
+
+// Beim Verlassen der App sichern. Auf Android ist das oft das Letzte, was
+// noch laeuft, bevor der Browser die Seite einfriert.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") logSichern();
+});
+
+// ---------------------------------------------------------------- v103
+// Was die Antwort auf einen Book-Zugriff bedeutet.
+//
+// Ausgangslage 10.09. (Andrea): sie MUSS das Book in Word offen haben, um
+// den formatierten Pitch herauszukopieren - sonst ist die Formatierung in
+// der Mail unbrauchbar. Eine Sperre ist damit der NORMALFALL im Moment des
+// Abhakens, nicht der Unfall. Zwei Folgen:
+//
+//   1. "Word schliessen, dann noch einmal antippen" ist ein Rat, den ihr
+//      Arbeitsablauf verbietet. Er hat sie einen ganzen Abend gekostet.
+//   2. erledigtZurueck() aus v102 - das Zuruecknehmen bei Sperre - wirft
+//      echte Arbeit weg. Es war richtig, solange "gesperrt" ein seltener
+//      Unfall war. Ersetzt durch die Outbox weiter unten.
+//
+// Vier Ausgaenge statt drei:
+//   ok            steht im Book
+//   dublette      stand schon drin
+//   wartet        geht von allein weg - Sperre, Drosselung, Netz, 5xx
+//   braucht-dich  wird von allein nichts - Book weg oder Anker fehlt
+function schreibStatus(antwort) {
+  if (!antwort) return "wartet";                 // kein Netz, kein Token
+  if (antwort.ok) return "ok";
+  if (antwort.status === 404) return "braucht-dich";
+  // 423 Sperre - 429 Drosselung - 409 "zwischenzeitlich geaendert" - 5xx.
+  //
+  // 409 stand bis v102 zusammen mit 423 auf "gesperrt" und meldete "das
+  // Brand-Book ist gerade in Word geoeffnet". 409 hat mit Word aber nichts
+  // zu tun: bei conflictBehavior=replace heisst es, dass die Datei sich
+  // zwischen Lesen und Schreiben geaendert hat. Die Falschmeldung schickte
+  // Andrea auf die Suche nach einem Word, das nie offen war ("es ist keine
+  // fucking word instanz offen, das Cockpit spinnt gerade total", 10.09.).
+  if (antwort.status === 423 || antwort.status === 429 ||
+      antwort.status === 409 || antwort.status >= 500) return "wartet";
+  return "braucht-dich";
+}
+
+const pause = (ms) => new Promise((fertig) => setTimeout(fertig, ms));
+
+// Drei Wiederholungen mit festem Abstand. Deckt den OneDrive-Sync-Lock ab,
+// der noch ein paar Sekunden steht, nachdem Word geschlossen wurde. Eine
+// echte Word-Sitzung ueberlebt das nicht - dafuer ist die Outbox da.
+// ponytail: fester Abstand statt Exponential mit Jitter. Jitter schuetzt
+// vor dem gleichzeitigen Ansturm vieler Clients; hier tippt eine Person.
+const BOOK_WARTEN_MS = [2000, 5000, 15000];
+
+// EIN Durchgang: lesen, aendern, schreiben.
+async function bookHistorieEinmal(m, datum, aktion, entfernen, versuch) {
+  const pfad = bookPfad(m);
+  const t0 = Date.now();
+  const grund = { marke: m.name, aktion, datum, entfernen: !!entfernen,
+                  pfad, versuch: versuch || 1 };
+  try {
+    const r = await OD.graphRoh(pfad + ":/content");
+    logZeile("book-lesen", { ...grund, methode: "GET",
+      status: r ? r.status : 0, code: await logFehlerCode(r),
+      ms: Date.now() - t0 });
+    // Bis v102 lief JEDER Lesefehler hier als "kein-book" heraus - und
+    // "kein-book" hatte in bookHistorieMelden() keinen Zweig, also passierte
+    // GAR NICHTS: kein Banner, kein Nachtrag, nichts. Der Datenstand hatte
+    // das Ereignis, das Word nicht, und Andrea sah keinerlei Hinweis. Genau
+    // dieses stille Auseinanderlaufen steckte hinter den zehn Marken, die
+    // sie am 10.09. gemeldet hat. "kein-book" heisst jetzt nur noch: die
+    // Datei gibt es wirklich nicht. Alles andere ist "wartet".
+    if (!r) return "wartet";
+    if (!r.ok) return schreibStatus(r);
     const zip = await JSZip.loadAsync(await r.arrayBuffer());
     const d = zip.file("word/document.xml");
-    if (!d) return "fehler";
+    if (!d) { logZeile("book-abbruch", { ...grund, warum: "keine document.xml" });
+             return "braucht-dich"; }
     const xml = historieXml(await d.async("string"), datum, aktion, entfernen);
-    if (xml === "dublette") return "dublette";   // steht schon im Book
-    if (!xml) return "fehler";
+    if (xml === "dublette") {                     // steht schon im Book
+      // Der haeufigste gute Ausgang: Andrea hat es von Hand eingetragen.
+      logZeile("book-dublette", { ...grund,
+        ...logMehr({ soll: datum + " " + aktion, ist: "stand schon da" }) });
+      return "dublette";
+    }
+    if (!xml) {                                   // Anker/Tabelle fehlt
+      logZeile("book-abbruch", { ...grund, warum: entfernen
+        ? "Zeile nicht gefunden" : "Historien-Tabelle nicht gefunden" });
+      return "braucht-dich";
+    }
     zip.file("word/document.xml", xml);
     const put = await OD.graphRoh(
-      bookPfad(m) + ":/content?@microsoft.graph.conflictBehavior=replace",
+      pfad + ":/content?@microsoft.graph.conflictBehavior=replace",
       { method: "PUT",
         body: await zip.generateAsync(
           { type: "arraybuffer", compression: "DEFLATE" }),
         headers: { "Content-Type": DOCX_TYP } });
+    logZeile("book-schreiben", { ...grund, methode: "PUT",
+      status: put ? put.status : 0, code: await logFehlerCode(put),
+      ms: Date.now() - t0, ergebnis: schreibStatus(put),
+      ...logMehr({ soll: datum + " " + aktion, bytes: xml.length }) });
     return schreibStatus(put);
-  } catch (_) {
-    return "fehler";
+  } catch (fehler) {
+    logZeile("book-ausnahme", { ...grund, warum: String(fehler),
+      ms: Date.now() - t0 });
+    // Netzabbruch mitten im Rundlauf. NICHT wegwerfen - Andrea hat ihr
+    // Follow-up gemacht, der Eintrag gehoert in die Warteschlange.
+    return "wartet";
   }
+}
+
+// Mit Wiederholung. Wiederholt wird der GANZE Durchgang, nicht nur der
+// PUT: nach einer Sperre kann Andrea in Word gespeichert haben, und ein
+// zweiter Versuch mit dem alten Dokumentinhalt wuerde ihre Aenderung
+// ueberschreiben (conflictBehavior=replace fragt nicht nach).
+async function bookHistorie(m, datum, aktion, entfernen) {
+  if (!m.brandrating || !m.brandrating.brandbook ||
+      typeof OD === "undefined" || !OD.konto() ||
+      typeof JSZip === "undefined") return "kein-book";
+  for (let i = 0; ; i++) {
+    const s = await bookHistorieEinmal(m, datum, aktion, entfernen, i + 1);
+    if (s !== "wartet" || i >= BOOK_WARTEN_MS.length) { logSichern(); return s; }
+    await pause(BOOK_WARTEN_MS[i]);
+  }
+}
+
+// ------------------------------------------------------- Outbox (v103)
+//
+// Was nicht ins Book kam, wird gemerkt statt zurueckgerollt, und die App
+// traegt es spaeter von allein nach. Aus einem Fehler wird ein Termin.
+//
+// Sie liegt IM Datenstand, nicht im Speicher: sonst waere sie beim ersten
+// Schliessen der App weg - und Andrea schliesst die App, um Word zu oeffnen.
+function outbox() {
+  if (!datenstand.ausstehend) datenstand.ausstehend = [];
+  return datenstand.ausstehend;
+}
+
+function outboxSchluessel(m, datum, aktion, entfernen) {
+  return [schluessel(m.name), datum, aktion, entfernen ? "weg" : "hin"].join("|");
+}
+
+// grund: "wartet" (still weiterversuchen) | "braucht-dich" (Andrea muss ran)
+function outboxAufnehmen(m, datum, aktion, entfernen, grund) {
+  const k = outboxSchluessel(m, datum, aktion, entfernen);
+  const da = outbox().find((e) => e.k === k);
+  if (da) { da.versuche = (da.versuche || 1) + 1; da.grund = grund; }
+  else outbox().push({ k, marke: m.name, datum, aktion,
+                       entfernen: !!entfernen, seit: lokalIso(),
+                       versuche: 1, grund });
+  logZeile("warteliste-auf", { marke: m.name, aktion, datum,
+    entfernen: !!entfernen, grund, versuche: (da && da.versuche) || 1 });
+  datenstandPersistieren();
+}
+
+function outboxWeg(k) {
+  const i = outbox().findIndex((e) => e.k === k);
+  if (i >= 0) {
+    logZeile("warteliste-ab", { eintrag: outbox()[i] });
+    outbox().splice(i, 1);
+    datenstandPersistieren();
+  }
+}
+
+// Nacharbeiten. Laeuft bei der Rueckkehr in die App - also genau dann,
+// wenn Andrea aus Word zurueckkommt und die Sperre gefallen ist.
+// Nur "wartet"-Eintraege; "braucht-dich" wird nicht endlos wiederholt.
+let outboxLaeuft = false;
+// Einmal je App-Sitzung mahnen, nicht bei jeder Rueckkehr - sonst
+// wird aus der Meldung Rauschen und Andrea liest sie nicht mehr.
+let outboxGemahnt = false;
+async function outboxAbarbeiten(still) {
+  if (outboxLaeuft) return 0;
+  const offen = outbox().filter((e) => e.grund === "wartet");
+  if (!offen.length) return 0;
+  outboxLaeuft = true;
+  let fertig = 0;
+  try {
+    for (const e of offen) {
+      const m = markeZuName(e.marke);
+      if (!m) { outboxWeg(e.k); continue; }   // Marke inzwischen geloescht
+      const s = await bookHistorie(m, e.datum, e.aktion, e.entfernen);
+      if (s === "ok" || s === "dublette" || s === "kein-book") {
+        outboxWeg(e.k); fertig++;
+      } else {
+        e.versuche = (e.versuche || 1) + 1;
+        e.grund = s;                          // ggf. jetzt "braucht-dich"
+        datenstandPersistieren();
+      }
+    }
+  } finally { outboxLaeuft = false; }
+  if (fertig && !still) {
+    banner(fertig === 1
+      ? "Ein wartender Eintrag wurde ins Brand-Book nachgetragen."
+      : fertig + " wartende Einträge wurden ins Brand-Book nachgetragen.");
+    listeVeraltet = true;
+  }
+  // Eskalation: Wiederholen allein ist kein Fortschritt. Ein Eintrag,
+  // der einen Tag lang nicht durchkommt, hat meist einen Grund, den
+  // nur Andrea kennt (Book umbenannt, in Word offen gelassen, Ordner
+  // verschoben). Ohne diese Meldung liefe er still weiter im Kreis.
+  if (!outboxGemahnt) {
+    const lange = outbox().filter(
+      (e) => wartelisteAlterStd(e) >= OUTBOX_MAHNUNG_STD);
+    if (lange.length) {
+      outboxGemahnt = true;
+      if (!wartelisteZeigen())
+        banner(lange.length === 1
+          ? "Ein Eintrag wartet seit über einem Tag aufs Brand-Book."
+          : lange.length + " Einträge warten seit über einem Tag "
+            + "aufs Brand-Book.");
+    }
+  }
+  return fertig;
+}
+
+// ---------------------------------------------------- Warteliste (v103)
+//
+// Sichtbar machen, was noch nicht im Brand-Book steht. Banner sind nach
+// vier Sekunden weg - wenn ein Eintrag Andreas Zutun braucht, muss sie ihn
+// wiederfinden koennen.
+//
+// WANN sich das Fenster von allein oeffnet, ist die entscheidende Frage:
+// bei Andrea ist "Book belegt" der Normalfall, nicht die Ausnahme (sie MUSS
+// Word offen haben, um den Pitch zu kopieren). Ein Fenster bei jeder Sperre
+// spraenge bei JEDEM Klick auf. Deshalb:
+//
+//   wartet        nur ein Banner. Das erledigt sich von allein.
+//   braucht-dich  Fenster auf. Von allein wird das nichts.
+function wartelisteDatum(iso) {
+  const t = String(iso || "").slice(0, 10).split("-");
+  return t.length === 3 ? `${t[2]}.${t[1]}.${t[0]}` : "?";
+}
+
+// Wie lange ein Eintrag still warten darf, bevor er gemeldet wird.
+// Ohne diese Grenze koennte einer wochenlang im Kreis laufen, ohne dass es
+// jemandem auffaellt - die Wiederholung allein ist kein Fortschritt.
+const OUTBOX_MAHNUNG_STD = 24;
+
+function wartelisteAlterStd(e) {
+  const t = Date.parse(String(e.seit || ""));
+  return isNaN(t) ? 0 : (Date.now() - t) / 3600000;
+}
+
+// abhaken=true nur im Abschnitt "Braucht dich". Im Abschnitt "Wartet" waere
+// der Knopf gefaehrlich: dort wuerde Andrea einen Eintrag wegwerfen, der von
+// allein durchgegangen waere - genau das stille Auseinanderlaufen, das v103
+// abstellt.
+function wartelisteZeile(e, abhaken) {
+  const d = el("div", "block");
+  d.append(el("div", "abschnitt",
+    `${e.marke} — ${e.entfernen ? "entfernen: " : ""}${e.aktion}`));
+  const alt = wartelisteAlterStd(e);
+  d.append(el("div", "stand",
+    `${e.datum} · seit ${wartelisteDatum(e.seit)} · ` +
+    `${e.versuche} Versuch${e.versuche === 1 ? "" : "e"}` +
+    (alt >= OUTBOX_MAHNUNG_STD ? ` · ⚠ wartet seit über ${Math.floor(alt / 24)} Tag(en)` : "")));
+  if (abhaken) {
+    const knoepfe = el("div", "chips");
+    // Die einzige Aussage, die Andrea hier ehrlich treffen kann: nicht
+    // "ist erledigt", sondern "ich habe es selbst ins Word geschrieben".
+    // Die App kann das nicht sehen - ohne diesen Knopf bliebe der Eintrag
+    // fuer immer stehen.
+    const weg = el("button", "chip", "Hab ich im Word eingetragen");
+    weg.onclick = () => {
+      if (!confirm(`„${e.aktion}“ vom ${e.datum} bei „${e.marke}“` +
+          "\naus der Warteliste nehmen?\n\n" +
+          "Nur bestätigen, wenn die Zeile wirklich im Brand-Book steht. " +
+          "Die App kann das nicht nachprüfen.")) return;
+      outboxWeg(e.k);
+      sheetWarteliste();
+    };
+    knoepfe.append(weg);
+    d.append(knoepfe);
+  }
+  return d;
+}
+
+function sheetWarteliste() {
+  const alle = outbox();
+  const dringend = alle.filter((e) => e.grund === "braucht-dich");
+  const wartend = alle.filter((e) => e.grund !== "braucht-dich");
+  const wrap = el("div");
+
+  if (!alle.length) {
+    wrap.append(abschnitt("Nichts offen",
+      el("div", "stand",
+        "Alle Einträge stehen im Brand-Book. Hier taucht nur auf, was noch "
+        + "nicht angekommen ist.")));
+  }
+  if (dringend.length) {
+    wrap.append(abschnitt("Braucht dich",
+      el("div", "stand",
+        "Das trägt sich nicht von allein nach — meistens fehlt das "
+        + "Brand-Book oder die Pitch-Historie-Tabelle darin. Bitte im Word "
+        + "von Hand eintragen und hier abhaken."),
+      ...dringend.map((e) => wartelisteZeile(e, true))));
+  }
+  if (wartend.length) {
+    const nachtragen = el("button", "chip", "Jetzt nachtragen");
+    nachtragen.onclick = async () => {
+      nachtragen.disabled = true;
+      await outboxAbarbeiten(true);
+      sheetWarteliste();
+    };
+    const zeile = el("div", "chips");
+    zeile.append(nachtragen);
+    wrap.append(abschnitt("Wartet aufs Brand-Book",
+      el("div", "stand",
+        "Das Brand-Book ist gerade in Word geöffnet oder nicht erreichbar. "
+        + "Die App trägt es automatisch nach, sobald es frei ist — beim "
+        + "nächsten Wechsel zurück in die App. Nichts geht verloren."),
+      zeile, ...wartend.map((e) => wartelisteZeile(e, false))));
+  }
+  sheetOeffnen("Warteliste", wrap);
+}
+
+// Fenster nur aufmachen, wenn gerade kein anderes Sheet offen ist.
+// sheetOeffnen() raeumt das vorhandene weg - mitten in einem Formular waere
+// das genau der Griff, den v95 fuer render() schon unterbunden hat.
+function wartelisteZeigen() {
+  if (document.getElementById("schleier")) return false;
+  sheetWarteliste();
+  return true;
 }
 
 // Eine Warteschlange JE BOOK-DATEI (v96). bookHistorie() macht Lesen ->
@@ -4541,47 +4963,45 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
   const lauf = vorher.then(() => bookHistorie(m, datum, aktion, entfernen))
     .then((s) => {
     if (s === "ok") {
+      outboxWeg(outboxSchluessel(m, datum, aktion, entfernen));
       banner(entfernen
-        ? `„${aktion}“ auch im Brand-Book wieder entfernt.`
-        : `„${aktion}“ auch in die Pitch-Historie im Brand-Book eingetragen.`);
+        ? "„" + aktion + "“ auch im Brand-Book wieder entfernt."
+        : "„" + aktion + "“ auch in die Pitch-Historie im Brand-Book eingetragen.");
+      // Das Book war frei - guter Moment, den Rest der Warteschlange
+      // gleich mit abzuarbeiten.
+      outboxAbarbeiten();
     } else if (s === "dublette") {
       // Bewusst gemeldet statt still uebergangen: der Nutzer soll wissen,
       // dass sein Klick nichts geschrieben hat - und warum.
-      banner(`„${aktion}“ stand am ${datum} schon im Brand-Book — ` +
+      outboxWeg(outboxSchluessel(m, datum, aktion, entfernen));
+      banner("„" + aktion + "“ stand am " + datum + " schon im Brand-Book — " +
         "nicht doppelt eingetragen.");
-    } else if (s === "gesperrt") {
-      // Word haelt die Datei - im Book steht NICHTS. Also auch im
-      // Datenstand nichts stehen lassen: entweder beides oder keines.
-      // Derselbe Grundsatz wie bei rueckgaengig() (v96): "Ein
-      // Rueckgaengig, das nur die Haelfte zuruecknimmt, ist schlimmer als
-      // eines, das ehrlich sagt, dass es nicht mehr geht."
-      const weg = !entfernen && erledigtZurueck(m, datum, aktion);
-      banner(weg
-        ? `„${aktion}“ wurde NICHT eingetragen — das Brand-Book ist `
-          + "gerade in Word geöffnet. Word schließen, dann noch einmal "
-          + "antippen."
-        : entfernen
-          ? `„${aktion}“ steht im Brand-Book noch — es ist gerade in `
-            + "Word geöffnet. Dort bitte von Hand entfernen."
-          : `„${aktion}“ kam nicht ins Brand-Book (in Word geöffnet). `
-            + "In der App ist es eingetragen — bitte NICHT noch einmal "
-            + "antippen, sondern im Word von Hand ergänzen.");
-      // Neu zeichnen, damit die Kachel zurueckspringt. Nur wenn KEIN Sheet
-      // offen ist: render() wuerde es sonst wegreissen, waehrend Andrea
-      // hineinsieht. Mit offenem Sheet erledigt listeVeraltet das beim
-      // Schliessen (popstate).
-      if (weg && !document.getElementById("schleier")) render();
-    } else if (s === "fehler") {
-      // Richtungsabhaengig (v88): beim Entfernen "ergaenzen" zu sagen war
-      // genau verkehrt herum. Faellt vor allem auf, seit die
-      // Dublettensperre greift - dann steht im Book Andreas Zeile, die
-      // App findet ihre eigene nicht und meldete "ergaenzen".
+    } else if (s === "wartet") {
+      // Kern von v103: es wird NICHTS zurueckgenommen. Der Eintrag steht im
+      // Datenstand und wartet auf seinen Weg ins Book. Andrea muss nichts
+      // von Hand machen und nichts noch einmal antippen.
+      outboxAufnehmen(m, datum, aktion, entfernen, "wartet");
       banner(entfernen
-        ? `„${aktion}“ wurde im Brand-Book nicht gefunden — ` +
+        ? "„" + aktion + "“ wird aus dem Brand-Book entfernt, sobald es frei ist."
+        : "„" + aktion + "“ ist eingetragen. Das Brand-Book ist gerade belegt — "
+          + "wird automatisch nachgetragen.");
+    } else if (s === "braucht-dich") {
+      // Von allein wird das nichts: Book geloescht, umbenannt, oder die
+      // erwartete Tabelle fehlt (Andreas handgepflegte Books).
+      // Richtungsabhaengig (v88): beim Entfernen "ergaenzen" zu sagen war
+      // genau verkehrt herum.
+      outboxAufnehmen(m, datum, aktion, entfernen, "braucht-dich");
+      // Fenster auf, wenn moeglich - sonst haette sie genau einen
+      // Banner lang Zeit, das mitzubekommen.
+      if (wartelisteZeigen()) return;
+      banner(entfernen
+        ? "„" + aktion + "“ wurde im Brand-Book nicht gefunden — " +
           "dort bitte von Hand entfernen."
         : "Brand-Book konnte nicht nachgetragen werden — " +
           "die Pitch-Historie dort bitte von Hand ergänzen.");
     }
+    // "kein-book": die Marke hat gar kein Book. Weiter still - das ist
+    // ein normaler Zustand, kein Fehler.
   });
   // .catch: ein Fehlschlag darf die Kette nicht abreissen lassen, sonst
   // wuerde jeder weitere Schreibvorgang auf diese Datei still verschluckt.
@@ -5113,6 +5533,9 @@ async function abgleichBeiRueckkehr() {
   } finally {
     abgleichLaeuft = false;
   }
+  // Wartende Book-Eintraege nachtragen (v103). Der richtige Moment:
+  // Andrea kommt gerade aus Word zurueck, die Sperre ist gefallen.
+  outboxAbarbeiten();
   if (datenstand && datenstand.geaendert !== vorher) {
     listeVeraltet = true;
     banner("Neuerer Stand von einem anderen Gerät geladen.");
