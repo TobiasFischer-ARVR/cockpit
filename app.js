@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v104"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v105"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -309,6 +309,9 @@ const REITER = {
   "Datenstand-Sicherung": "Sicherung",
   "Excel erzeugen": "Sicherung",
   "Automatisches Backup": "Sicherung",
+  // v105: der Sicherungs-Ordner wohnt beim Sichern, nicht bei den anderen
+  // Pfaden - dort sucht man ihn, wenn eine Sicherung fehlt.
+  "Pfad Sicherungen": "Sicherung",
   // Die Pruefung vergleicht Book gegen Excel, also Daten gegen Daten -
   // sie gehoert zu den Pfaden, nicht zur Sicherung (v92).
   "Daten prüfen": "OneDrive",
@@ -611,6 +614,31 @@ async function pruefeCockpit() {
        : " · noch kein Arbeitsstand");
 }
 
+// Sicherungs-Ordner pruefen (v105). Der einzige Weg, einen falschen Pfad zu
+// finden, BEVOR eine Sicherung gebraucht wird - alle anderen Meldungen
+// kommen erst, wenn ein Schreibversuch scheitert.
+async function pruefeSicherungen() {
+  const r = await OD.graphRoh(sicherungBasis() +
+    ":/children?$select=name,lastModifiedDateTime&$top=200");
+  if (!r) return "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
+  if (!r.ok) return graphFehlerText(r.status,
+    "✗ Ordner nicht gefunden — hier wird NICHTS gesichert.");
+  const alle = ((await r.json()).value) || [];
+  const unsere = alle.filter((d) =>
+    /^cockpit-(datenstand-|vor-v)/.test(String(d.name || "")));
+  if (!unsere.length) {
+    return "✓ Ordner erreichbar · noch keine Sicherung darin";
+  }
+  const neuste = unsere.map((d) => String(d.lastModifiedDateTime || ""))
+    .sort().pop();
+  const version = unsere.some((d) =>
+    String(d.name).startsWith("cockpit-vor-" + APP_VERSION + "-"));
+  return `✓ Ordner erreichbar · ${unsere.length} Sicherung(en) · ` +
+    `neuste ${String(neuste).slice(0, 16).replace("T", " ")}` +
+    (version ? ` · Rückfahrkarte für ${APP_VERSION} da`
+             : ` · ⚠ keine Rückfahrkarte für ${APP_VERSION}`);
+}
+
 // Genau das pruefen, was die App dort braucht (Plan 01.09.): die vier
 // Rating-Unterordner und die zwei Templates. "D Brands" gehoert dazu
 // (Tobias 04.09.) - fehlt er, scheitert erst das Anlegen des ersten
@@ -728,26 +756,34 @@ function sheetEinstellungen() {
       pStatus.textContent = "Kein Datenstand geladen.";
       return;
     }
-    const treffer = ratingAbweichungen(datenstand.marken);
-    if (!treffer.length) {
+    const { fehler, hinweise } = bestandBefunde(datenstand.marken);
+    pStatus.textContent = "";
+    if (!fehler.length && !hinweise.length) {
       pStatus.textContent =
-        "✓ Keine Abweichungen — Book und Excel sind sich einig.";
+        "✓ Keine Abweichungen — Book, Brand Rating und Pitchliste sind sich einig.";
+      pStatus.append(el("div", "stand", spiegelHinweis()));
       return;
     }
-    pStatus.textContent = "";
-    // Die Anweisung MUSS der PC-Weg sein (Tobias 07.09., v93): "↻ Book
-    // aktualisieren" stand hier bis v92 - der Knopf ist fuer genau diese
-    // Marken aber nie erreichbar. Er wird nur zwischen Stufe 1 und 2
-    // angeboten, Book und Excel driften jedoch erst DANACH auseinander
-    // (D-Archiv oder laengst in der Pitchliste). Die beiden Bedingungen
-    // schliessen sich aus - der Hinweis lief also immer ins Leere.
-    pStatus.append(el("div", null,
-      `⚠ ${treffer.length} Marke(n) mit Abweichung — das Book hält meist ` +
-      "den älteren Stand. Im Word korrigieren, dann am PC neu einlesen:"));
-    for (const { marke, abw } of treffer) {
-      pStatus.append(el("div", null, "• " + marke.name + ": " +
-        abw.map((a) => `${a.feld} Book ${a.book} / Excel ${a.excel}`)
-          .join(" · ")));
+    if (fehler.length) {
+      pStatus.append(el("div", null, `⚠ ${fehler.length} Abweichung(en):`));
+      for (const f of fehler) {
+        pStatus.append(el("div", null, "• " + f.name + ": " + f.text));
+      }
+      // Die Anweisung MUSS der PC-Weg sein (Tobias 07.09., v93): "↻ Book
+      // aktualisieren" stand hier bis v92 - der Knopf ist fuer genau diese
+      // Marken aber nie erreichbar. Er wird nur zwischen Stufe 1 und 2
+      // angeboten, Book und App driften jedoch erst DANACH auseinander.
+      pStatus.append(el("div", "stand",
+        "Das Book hält meist den älteren Stand. Im Word korrigieren, dann " +
+        "am PC nachziehen (ziehe_books_nach.py)."));
+    }
+    if (hinweise.length) {
+      pStatus.append(el("div", null, `ℹ ${hinweise.length} Hinweis(e):`));
+      for (const h of hinweise) {
+        pStatus.append(el("div", null, "• " + h.name + ": " + h.text));
+      }
+      pStatus.append(el("div", "stand",
+        "Kein Fehler — nur Marken, die liegengeblieben sein könnten."));
     }
     pStatus.append(el("div", "stand", spiegelHinweis()));
   };
@@ -760,9 +796,10 @@ function sheetEinstellungen() {
   // waeren Unsinn, und der halbe Abschnitt war ohnehin schon doppelt.
   wrap.append(pfadAbschnitt("Pfad Datenbank",
     "datenPfad", DATEN_BASIS_STD, datenBasis, pruefeCockpit,
-    "Hier liegen die Daten fürs Dashboard (snapshot.json), der " +
-    "Arbeitsstand und die Backups. Der Ordner muss existieren — die " +
-    "App legt ihn nicht an. „Standard“ setzt zurück auf " +
+    "Hier liegen die Daten fürs Dashboard (snapshot.json) und der " +
+    "Arbeitsstand. Die Sicherungen wohnen seit v105 im eigenen Ordner " +
+    "darunter. Der Ordner muss existieren — die App legt ihn nicht an. " +
+    "„Standard“ setzt zurück auf " +
     DATEN_BASIS_STD + ". Gilt nur für dieses Gerät."));
   wrap.append(pfadAbschnitt("Pfad Brand-Books",
     "bookPfad", BOOK_BASIS_STD, bookBasis, pruefeBooks,
@@ -770,6 +807,17 @@ function sheetEinstellungen() {
     "Unterordnern — die hängt die App selbst an. In diesem Ordner " +
     "müssen auch die beiden Template-Dateien liegen. Gilt nur für " +
     "dieses Gerät."));
+
+  // Sicherungs-Ordner (v105, Tobias 11.09.). Dritter Aufruf derselben
+  // Funktion - Ordner wählen, Prüfen und Standard gibt es damit umsonst.
+  wrap.append(pfadAbschnitt("Pfad Sicherungen",
+    "sicherungsPfad", SICHERUNG_BASIS_STD, sicherungBasis, pruefeSicherungen,
+    "Hier landen die automatischen Backups und die Kopie vor jedem " +
+    "Versionswechsel. Es bleiben die " + SICHERUNGEN_MAX + " neuesten " +
+    "stehen, dazu die Rückfahrkarte der laufenden Version — ältere " +
+    "wandern in den OneDrive-Papierkorb. Angefasst wird dabei nur, was " +
+    "die App selbst geschrieben hat. Der Ordner muss existieren — die " +
+    "App legt ihn nicht an. Gilt nur für dieses Gerät."));
 
   // Automatisches Backup (Tobias 01.09.): datierte Kopie nach OneDrive
   const aStand = el("div", "stand", autoBackupText());
@@ -789,8 +837,8 @@ function sheetEinstellungen() {
   wrap.append(abschnitt("Automatisches Backup",
     el("div", "stand", "Alle wie viel Tage sichern? (0 = aus)"),
     aFeld, aStand, el("div", "stand",
-      "Legt beim Öffnen der App eine datierte Kopie in OneDrive an " +
-      "(cockpit-datenstand-JJJJ-MM-TT.json), die du oben mit „Backup " +
+      "Legt beim Öffnen der App eine datierte Kopie im Sicherungs-Ordner " +
+      "an (cockpit-datenstand-JJJJ-MM-TT.json), die du oben mit „Backup " +
       "laden“ zurückholst. Anders als „Jetzt sichern“, das immer " +
       "dieselbe Datei überschreibt. Gilt nur für dieses Gerät."),
     // Zweite, unabhaengige Sicherung (v97): eine je App-Version, egal ob
@@ -2351,6 +2399,79 @@ function ratingAbweichungen(marken) {
     .filter((x) => x.abw.length);
 }
 
+// Der Bestandswaechter (v105). Bis v104 verglich "Daten pruefen" genau EINE
+// Sache: den Book-Spiegel gegen das Brandrating. Am 11.09. kamen zwei echte
+// Fehler ans Licht, die er beide nicht sehen konnte:
+//
+//   Landpark   Word B · brandrating B · pitchliste A
+//   urbanjngl  Word A · brandrating A · pitchliste D
+//
+// Ein Rating wohnt an DREI Stellen, geprueft wurden zwei. urbanjngl war der
+// teure Fall: D heisst "raus aus der Pitchliste", die A-Marke war damit
+// wochenlang aus Andreas Arbeitsliste verschwunden. Gefunden habe ich das
+// nur, weil ich von Hand nachgerechnet habe (Tobias 11.09.: "brand rating
+// gegen pitchliste? brand book befuellt = geht in die pitchliste...").
+//
+// Getrennt nach Fehler und Hinweis, weil das zwei verschiedene Dinge sind:
+// ein Haken ohne Datei ist kaputt, ein vorbereitetes Book ohne Pitch ist
+// nur liegengeblieben. Wer beides gleich laut meldet, wird ignoriert.
+//
+// Pur gehalten (Marken rein, Befunde raus), damit test_v105.js das ohne
+// OneDrive und ohne DOM prueft.
+function bestandBefunde(marken) {
+  const fehler = [], hinweise = [];
+  const d = (x) => String(x || "").trim().toUpperCase() === "D";
+
+  for (const m of marken || []) {
+    const br = m.brandrating || {}, pl = m.pitchliste;
+    // Archiv: D am Brandrating ODER an der Pitchzeile - dieselbe Regel wie
+    // in pitchlisteAktuell(). Archivierte Marken haben zu Recht keine
+    // Pitchzeile mehr; wer sie meldet, meldet jede Archivierung.
+    const archiv = d(br.rating) || (pl && d(pl.rating));
+
+    // --- 1. Word-Book gegen App (gab es schon) ---
+    const abw = ratingAbweichung(m);
+    if (abw.length) {
+      fehler.push({ name: m.name, art: "word-app",
+        text: abw.map((a) => `${a.feld}: Word ${a.book} / App ${a.excel}`)
+          .join(" · ") });
+    }
+
+    // --- 2. Brandrating gegen Pitchzeile (NEU) ---
+    // Lauft BEWUSST auch bei D. Gerade der Widerspruch "hier D, dort A" ist
+    // der Fall, der eine Marke unsichtbar macht.
+    if (pl) {
+      const r = String(br.rating || "").trim().toUpperCase();
+      const p = String(pl.rating || "").trim().toUpperCase();
+      if (r && p && r !== p) {
+        fehler.push({ name: m.name, art: "rating-pitch",
+          text: `Rating ${r}, in der Pitchliste aber ${p}` +
+            (p === "D" ? " — die Marke fehlt dadurch in der Pitchliste" : "") });
+      }
+    }
+
+    if (archiv) continue;
+
+    // --- 3. Der Haken "Brand Book" gegen die Wirklichkeit (NEU) ---
+    const haken = String(br.brandbook || "").trim();
+    if (haken && !m.quelle) {
+      fehler.push({ name: m.name, art: "haken-ohne-book",
+        text: "Haken „Brand Book“ gesetzt, es gibt aber keine Datei" });
+    } else if (m.quelle && !pl) {
+      const ereignisse = (m.events || []).length;
+      if (ereignisse) {
+        fehler.push({ name: m.name, art: "book-ohne-pitchzeile",
+          text: `Book mit ${ereignisse} Ereignis(sen), aber keine Zeile in ` +
+                "der Pitchliste — die Marke taucht in der Wiedervorlage nie auf" });
+      } else {
+        hinweise.push({ name: m.name, art: "nie-gepitcht",
+          text: "Book liegt bereit, wurde aber nie gepitcht" });
+      }
+    }
+  }
+  return { fehler, hinweise };
+}
+
 // Spiegel an die eben geschriebene Datei angleichen (Tobias 07.09., v93).
 // Gegenstueck zu bookWerte(): DIESELBEN vier Felder, DIESELBE Quelle
 // (m.brandrating). Wird nur gerufen, nachdem bookErzeugen() "neu" gemeldet
@@ -3554,6 +3675,27 @@ function datenBasis() {
 }
 const OD_DATENSTAND = () => datenBasis() + "/datenstand.json:/content";
 const OD_SNAPSHOT = () => datenBasis() + "/snapshot.json:/content";
+
+// Sicherungs-Ordner (v105, Tobias 11.09.: "Ich will in Datenbank eigtl nur
+// snapshot und datenbestand sehen"). Am 11.09. lagen dort 21 Sicherungen
+// gegen 2 echte Dateien. Der Ordner /UGC/App/Backups existiert seit dem
+// 06.09. und war bis dahin leer - das ist der vorgesehene Platz.
+// Einstellbar wie die anderen beiden Pfade, aus demselben Grund: bei Andrea
+// sieht die Ordnerstruktur anders aus als bei Tobias.
+const SICHERUNG_BASIS_STD = "/UGC/App/Backups";
+
+// Wie viele Sicherungen im Ordner bleiben (Tobias 11.09.): "Alles was
+// aelter als 24 Stunden ist, ist eh veraltet, und alles was innerhalb von
+// 24 Stunden passiert, daran erinnert sich Andrea." Die Versionssicherung
+// der LAUFENDEN Version zaehlt nicht mit und wird nie geloescht - sie ist
+// der einzige Weg zurueck aus einem missratenen Update.
+const SICHERUNGEN_MAX = 4;
+
+function sicherungBasis() {
+  const roh = String(einst.sicherungsPfad || SICHERUNG_BASIS_STD).trim()
+    .replace(/^\/+|\/+$/g, "");
+  return "/me/drive/root:/" + (roh || SICHERUNG_BASIS_STD.replace(/^\//, ""));
+}
 
 // ------------------------------------------- Erledigt-Knopf (Phase 5)
 
@@ -5220,17 +5362,99 @@ async function datenstandLaden() {
 // eine Sicherung mit dem Zustand DANACH ist wertlos.
 //
 // Rueckgabewert nur fuer den Selbsttest; der Aufrufer wertet ihn nicht aus.
+// Sicherung schreiben und dabei SAGEN, was schiefging (v105).
+//
+// graphPutLeise() gibt nur true/false zurueck. Fuer eine Sicherung ist das
+// zu wenig: "Ordner fehlt" braucht eine andere Antwort als "offline".
+// Tobias 11.09.: "Wenn der Graph leise ist, dann machen wir ihn laut."
+//
+// Der Ordner wird BEWUSST NICHT angelegt - gleiche Regel wie beim
+// Datenbank-Pfad. Ein Ordner, den die App still erzeugt, versteckt einen
+// falsch eingestellten Pfad; dann liegen die Sicherungen irgendwo und
+// niemand merkt es. Stattdessen: klare Meldung und der Pruefen-Knopf in
+// den Einstellungen.
+async function sicherungSchreiben(pfad, daten) {
+  // conflictBehavior=replace ausdruecklich dazusagen. Eine Sicherung mit
+  // gleichem Namen (gleiche Version bzw. gleicher Tag) SOLL die alte
+  // ersetzen - sonst blieben zwei Staende mit demselben Datum stehen, und
+  // beim Zurueckholen waere nicht klar, welcher gilt. Ohne den Parameter
+  // antwortet Graph auf eine vorhandene Datei je nach Weg mit 409.
+  const r = await OD.graphRoh(pfad + "?@microsoft.graph.conflictBehavior=replace", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(daten),
+  });
+  if (!r) return { ok: false, text: "nicht angemeldet oder offline" };
+  if (r.ok) return { ok: true };
+  if (r.status === 404) {
+    return { ok: false, fehlt: true,
+      text: "Sicherungs-Ordner nicht gefunden — in den Einstellungen unter " +
+            "„Pfad Sicherungen“ prüfen. Es wurde NICHTS gesichert." };
+  }
+  return { ok: false, text: "Sichern fehlgeschlagen (Fehler " + r.status + ")" };
+}
+
+// Welche Sicherungen fliegen raus? Pur gehalten (Liste rein, Liste raus),
+// damit test_v105.js das ohne OneDrive prueft - wie backupFaellig().
+//
+// Zwei Regeln, die aus echten Daten kommen:
+//  - Geloescht wird NUR, was die App selbst schreibt. Der Ordner ist
+//    einstellbar; zeigt er versehentlich auf einen Dokumente-Ordner, darf
+//    dort nichts verschwinden.
+//  - Die Versionssicherung der laufenden Version bleibt immer. Sie ist die
+//    Rueckfahrkarte fuer genau die Version, die gerade laeuft.
+function sicherungenAussortieren(dateien, version, max = SICHERUNGEN_MAX) {
+  // Der Name muss GANZ passen, nicht nur vorne. Ein Praefix-Muster fing
+  // auch "cockpit-datenstand-alt.json.bak" - eine Datei, die die App nie
+  // geschrieben hat und trotzdem geloescht haette (test_v105 Fall 5).
+  const unsere = (dateien || []).filter((d) =>
+    /^cockpit-datenstand-\d{4}-\d{2}-\d{2}\.json$/.test(String(d.name || "")) ||
+    /^cockpit-vor-v\d+-\d{4}-\d{2}-\d{2}\.json$/.test(String(d.name || "")));
+  const geschuetzt = "cockpit-vor-" + version + "-";
+  const bleibt = [], rest = [];
+  for (const d of unsere) {
+    (String(d.name).startsWith(geschuetzt) ? bleibt : rest).push(d);
+  }
+  rest.sort((a, b) => String(b.lastModifiedDateTime || "")
+    .localeCompare(String(a.lastModifiedDateTime || "")));
+  return rest.slice(max);
+}
+
+// Aufraeumen nach dem Schreiben. Ein Fehlschlag hier ist kein Drama - die
+// Sicherung steht ja schon -, deshalb leise. Graph-DELETE landet im
+// OneDrive-Papierkorb, nichts ist endgueltig weg.
+async function sicherungenAufraeumen() {
+  const r = await OD.graphRoh(sicherungBasis() +
+    ":/children?$select=id,name,lastModifiedDateTime&$top=200");
+  if (!r || !r.ok) return 0;
+  const weg = sicherungenAussortieren(((await r.json()).value) || [],
+                                      APP_VERSION);
+  let n = 0;
+  for (const d of weg) {
+    const a = await OD.graphRoh("/me/drive/items/" + d.id, { method: "DELETE" });
+    if (a && a.ok) n++;
+  }
+  return n;
+}
+
 async function versionsSicherung() {
   if (!datenstand || einst.appStand === APP_VERSION) return "uebersprungen";
   if (typeof OD === "undefined" || !OD.konto()) return "kein-konto";
   const stand = JSON.parse(JSON.stringify(datenstand));
-  const ziel = `${datenBasis()}/cockpit-vor-${APP_VERSION}-` +
+  const ziel = `${sicherungBasis()}/cockpit-vor-${APP_VERSION}-` +
                `${lokalIso().slice(0, 10)}.json:/content`;
   // Fehlschlag (offline): Merker NICHT setzen, dann versucht es der
   // naechste Start erneut. Lieber eine Sicherung zu spaet als keine.
-  if (!await OD.graphPutLeise(ziel, stand)) return "fehler";
+  const erg = await sicherungSchreiben(ziel, stand);
+  if (!erg.ok) {
+    // Laut werden (v105): ein fehlender Ordner ist ein Einrichtungsfehler
+    // und bleibt sonst unsichtbar, bis jemand die Sicherung braucht.
+    if (erg.fehlt) banner(erg.text);
+    return "fehler";
+  }
   einst.appStand = APP_VERSION;
   localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  sicherungenAufraeumen();   // ohne await: der Start wartet nicht aufs Aufraeumen
   return "gesichert";
 }
 
@@ -5255,7 +5479,7 @@ function versionsSicherungText() {
 // - spart das Anlegen des Ordners per Graph. Unterordner, wenn es dort
 // unuebersichtlich wird.
 const OD_BACKUP = (datum) =>
-  `${datenBasis()}/cockpit-datenstand-${datum}.json:/content`;
+  `${sicherungBasis()}/cockpit-datenstand-${datum}.json:/content`;
 
 // Pur gehalten (Datum wird hereingereicht), damit test_kadenz.js das
 // Faelligkeits-Rechnen ohne Uhr und ohne OneDrive pruefen kann.
@@ -5282,10 +5506,20 @@ async function autoBackupPruefen() {
   if (!datenstand || typeof OD === "undefined" || !OD.konto()) return;
   const heute = lokalIso().slice(0, 10);
   if (!backupFaellig(einst, heute)) return;
-  if (!await OD.graphPutLeise(OD_BACKUP(heute), datenstand)) return;
+  const erg = await sicherungSchreiben(OD_BACKUP(heute), datenstand);
+  if (!erg.ok) {
+    // v105: frueher endete der Versuch hier still. Ein Backup, das
+    // stillschweigend ausbleibt, ist nicht von einem erfolgreichen zu
+    // unterscheiden - genau das Muster, das dieses Projekt fuenfmal
+    // gekostet hat (v70, v71, v90, v93, Word-Rueckweg am 08.09.).
+    if (erg.fehlt) banner(erg.text);
+    return;
+  }
   einst.autoStand = heute;
   localStorage.setItem(EINST_KEY, JSON.stringify(einst));
-  banner("Automatisches Backup in OneDrive angelegt.");
+  const weg = await sicherungenAufraeumen();
+  banner("Automatisches Backup in OneDrive angelegt." +
+         (weg ? ` ${weg} alte in den Papierkorb.` : ""));
 }
 
 // "Jetzt sichern" (Phase 4): Datenstand aktiv nach OneDrive schreiben,
