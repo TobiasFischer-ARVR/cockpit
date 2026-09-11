@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v108"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v109"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -5402,6 +5402,44 @@ function idbSchreib(schluessel, wert) {
 // (abgleichBeiRueckkehr, update/↻, Start). Test: tests/test_v108.js
 function datenstandUebernehmen(paar) {
   const alt = datenstand && datenstand.geaendert;
+  // Zweite Frage, gefunden vom Lasttest am 11.09. (Seed 31337, v109):
+  // Ist das, was hier eingesetzt werden soll, ueberhaupt NEUER?
+  //
+  // datenstandLaden() vergleicht Heimnetz, OneDrive und Geraet miteinander -
+  // aber nie gegen den Stand, der GERADE IM SPEICHER liegt. Alle drei
+  // Kandidaten werden vor dem Vergleich geholt. Wird waehrenddessen etwas
+  // eingetragen, sind hinterher alle drei veraltet, und der aelteste
+  // Gewinner ueberschreibt den frischen Eintrag.
+  //
+  // Die Sheet-Sperre allein deckt das nicht ab: sie greift, solange das
+  // Sheet offen ist. Wird es vor dem Ende des Ladevorgangs geschlossen,
+  // laeuft der veraltete Stand ungehindert durch. Genau diese Reihenfolge
+  // hat der Lasttest getroffen - Eintrag sauber geschrieben, kein
+  // verwaistes Objekt, und trotzdem am Ende weg.
+  //
+  // "<=" und nicht "<" (v109, Codex-Gegenpruefung 11.09.): lokalIso() loest
+  // nur auf SEKUNDEN auf. Holt der Ladevorgang einen Stand mit 16:00:01 und
+  // wird in derselben Sekunde etwas eingetragen - ebenfalls 16:00:01 -, dann
+  // ist der Kandidat nicht aelter, aber eben auch nicht neuer. Mit "<" liefe
+  // er durch und naehme den frischen Eintrag mit.
+  //
+  // Gleichstand wird deshalb abgelehnt. Die Richtung ist die sichere: was im
+  // Speicher steht, hat die Nutzerin gerade getippt; ein gleich alter Stand
+  // von aussen bringt im besten Fall dasselbe mit. Aendert ein zweites Geraet
+  // in derselben Sekunde etwas, wird es nicht verworfen, sondern vertagt -
+  // der naechste Abgleich hat einen spaeteren Stempel und kommt durch.
+  //
+  // ponytail: die Sekunden-Aufloesung ist die eigentliche Schwaeche. Sauber
+  // waere ein Stempel mit Millisekunden - der steckt aber in datenstand.json,
+  // im Snapshot-Vergleich und in den Python-Werkzeugen. Erst umstellen, wenn
+  // der Gleichstand real weh tut; bis dahin kostet die Ablehnung nur eine
+  // verzoegerte Uebernahme.
+  if (alt && String(paar[0] && paar[0].geaendert || "") <= String(alt)) {
+    logZeile("stand-verworfen", { grund: "nicht neuer als der laufende Stand",
+      quelle: paar[1], ...logMehr({ soll: paar[0] && paar[0].geaendert,
+                                    ist: alt }) });
+    return false;
+  }
   if (document.getElementById("schleier")) {
     logZeile("stand-verworfen", { grund: "Sheet offen", quelle: paar[1],
       ...logMehr({ soll: paar[0] && paar[0].geaendert, ist: alt }) });
@@ -5433,7 +5471,15 @@ async function datenstandLaden() {
   // Ab hier wird das globale Objekt angefasst - erst fragen, ob das gerade
   // erlaubt ist (v108). Wird abgelehnt, NICHTS weiter tun: ein idbSchreib()
   // wuerde sonst den alten Stand als den neuen wegschreiben.
-  if (!datenstandUebernehmen(kandidaten[0])) return;
+  if (!datenstandUebernehmen(kandidaten[0])) {
+    // Abgelehnt heisst: der Kandidat wird nicht eingesetzt. Die Sicherungen
+    // haengen aber am VORHANDENEN Stand, nicht am abgelehnten - sie duerfen
+    // nicht mit ausfallen (Codex-Gegenpruefung 11.09.). Sonst liefe bei
+    // wiederholter Ablehnung wiederholt keine Rueckfahrkarte und kein
+    // Tagesbackup, und genau die braucht man, wenn etwas klemmt.
+    if (datenstand) { versionsSicherung(); autoBackupPruefen(); }
+    return;
+  }
   if (datenstandQuelle !== "Gerät") {
     try { await idbSchreib("datenstand", datenstand); } catch (_) {}
   } else if (cloud &&
