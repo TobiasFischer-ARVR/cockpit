@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v109"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v110"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3960,9 +3960,29 @@ function brandLoeschen(m) {
   // App-erzeugtes Book mit in den OneDrive-Papierkorb (Tobias 01.09.:
   // "löschen aus allen Listen + dem Brand-Book") - nur bei App-angelegten
   // Brands, und DELETE landet im Papierkorb, nichts ist hart weg.
-  if (m.erstellt && m.brandrating && m.brandrating.brandbook &&
-      typeof OD !== "undefined" && OD.konto()) {
-    OD.graphRoh(bookPfad(m), { method: "DELETE" });
+  //
+  // m.erstellt ist die EINZIGE inhaltliche Bedingung und bleibt unangetastet:
+  // importierte Books gehören Andrea, die fasst ein Klick in der App nie an.
+  // m.brandrating ist nur eine Absturzsicherung - bookPfad() liest
+  // m.brandrating.rating.
+  //
+  // Der Haken brandrating.brandbook ist als Bedingung RAUS (v110, Tobias
+  // 11.09.): Er war nur eine ANNAHME darüber, ob eine Datei existiert - die
+  // Datei selbst ist die Wahrheit. Am 11.09. ging der Haken beim
+  // Datenverlust verloren; die Marke wurde gelöscht, das Book blieb als
+  // Waise liegen ("Brand-Book 54321.docx"). Ein DELETE auf etwas, das es
+  // nicht gibt, beantwortet Graph mit 404 - harmlos. Rät bookPfad() den
+  // Ordner falsch, zeigt der Pfad ins Leere, also ebenfalls 404; der
+  // Dateiname kommt aus dem Markennamen und ist markenspezifisch.
+  if (m.erstellt && m.brandrating) {
+    if (typeof OD !== "undefined" && OD.konto()) {
+      OD.graphRoh(bookPfad(m), { method: "DELETE" });
+    } else if (m.brandrating.brandbook) {
+      // Ohne OneDrive verschwindet die Marke, die Datei bleibt liegen. Das
+      // still zu tun erzeugt genau die Waise, die wir gerade abschaffen.
+      banner("Brand gelöscht — das Brand-Book blieb liegen (kein OneDrive). "
+        + "Datei bei Gelegenheit von Hand entfernen.");
+    }
   }
   datenstand.marken = datenstand.marken.filter((x) => x !== m);
   if (datenstand.letzteAktion &&
