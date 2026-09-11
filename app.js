@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v113"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v114"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1888,23 +1888,35 @@ function sheetPitch(p) {
     const tKnopf = el("button", "chip", "✎ Termin ändern");
     const tForm = el("div", "fgruppe");
     tForm.style.display = "none";
-    const tAktion = el("select", "feld");
-    for (const [w, txt] of [["", "unverändert"], ["Pitch", "Pitch"],
-                            ["Follow up", "Follow up"],
-                            ["Neuer Pitch", "Neuer Pitch"]]) {
-      const o = el("option", null, txt);
-      o.value = w;
-      tAktion.append(o);
+    // Freitext mit Vorschlagsliste statt fester Auswahl (Tobias 12.09.):
+    // Andrea soll auch etwas eintragen koennen, das die Kadenz nicht kennt -
+    // "Angebot nachfassen", "Muster verschickt". Gleicher Bauplan wie das
+    // Herkunftsfeld beim Pitch: datalist schlaegt vor, verbietet aber nichts.
+    const tAktion = el("input", "feld");
+    tAktion.type = "text";
+    tAktion.value = p.naechste_aktion || "";
+    tAktion.placeholder = "z. B. Follow up, Neuer Pitch, Angebot nachfassen";
+    const tListe = el("datalist");
+    tListe.id = "vs-naechsterschritt";
+    for (const v of ["Pitch", "Follow up", "Neuer Pitch"]) {
+      const o = el("option");
+      o.value = v;
+      tListe.append(o);
     }
+    tAktion.setAttribute("list", tListe.id);
     const tDatum = el("input", "datum");
     tDatum.type = "date";
     tDatum.value = p.datum_naechste_aktion || "";
     const tSpeichern = el("button", "chip aktiv", "Speichern");
     tSpeichern.onclick = () => {
-      const a = tAktion.value;
+      const a = tAktion.value.trim();
       const d = tDatum.value;
-      if (!a && !d) { banner("Nichts geändert."); return; }
-      if (!terminSetzenDaten(m, a, d, lokalIso())) {
+      // Nur weitergeben, was sich wirklich unterscheidet - sonst stempelt
+      // jedes Oeffnen des Dialogs den Eintrag neu.
+      const aNeu = a && a !== (p.naechste_aktion || "") ? a : "";
+      const dNeu = d && d !== (p.datum_naechste_aktion || "") ? d : "";
+      if (!aNeu && !dNeu) { banner("Nichts geändert."); return; }
+      if (!terminSetzenDaten(m, aNeu, dNeu, lokalIso())) {
         banner("Diese Marke steht nicht in der Pitchliste."); return;
       }
       datenstandPersistieren();
@@ -1914,10 +1926,15 @@ function sheetPitch(p) {
     tKnopf.onclick = () => {
       tForm.style.display = tForm.style.display === "none" ? "" : "none";
     };
+    // el(tag, klasse, TEXT) - das dritte Argument wird als textContent
+    // gesetzt. Ein Element dort landet als "[object HTMLButtonElement]" in
+    // der Anzeige (12.09. genau so passiert). Kinder gehoeren an append().
+    const tZeile = el("div", "chips");
+    tZeile.append(tSpeichern);
     tForm.append(
-      el("div", "stand", "Nächster Schritt:"), tAktion,
+      el("div", "stand", "Nächster Schritt:"), tAktion, tListe,
       el("div", "stand", "Termin:"), tDatum,
-      el("div", "chips", tSpeichern),
+      tZeile,
       el("div", "stand",
         "Gilt einmalig. Der Abstand für die folgenden Termine bleibt, wie " +
         "er ist — und dieser Termin wird als „von Hand gesetzt“ vermerkt, " +
