@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v106"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v107"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4919,6 +4919,31 @@ function outboxSchluessel(m, datum, aktion, entfernen) {
 // grund: "wartet" (still weiterversuchen) | "braucht-dich" (Andrea muss ran)
 function outboxAufnehmen(m, datum, aktion, entfernen, grund) {
   const k = outboxSchluessel(m, datum, aktion, entfernen);
+  // Schreiben-dann-Entfernen ist zusammen ein Nichts (v107).
+  //
+  // Die Warteschlange kennt keine Reihenfolge zwischen einem Eintrag und
+  // seiner Ruecknahme: beide standen drin und wurden unabhaengig
+  // abgearbeitet. Lief das Entfernen zuerst, fand es die nie geschriebene
+  // Zeile nicht (-> "braucht-dich"), und DANACH trug der urspruengliche
+  // Schreibvorgang sie doch noch ins Word ein. Andrea hatte
+  // zurueckgenommen, im Book stand es trotzdem - und die Kennzahlen
+  // kommen aus den Books.
+  //
+  // Gefunden 11.09., Athena --seed 42 --sperrquote 75: Athena_08
+  // ("Follow up 2", 08.09.) und Athena_11 ("Follow up 1", 31.08.).
+  //
+  // Verglichen wird EXAKT (Marke, Datum, Aktion) - ein groeberes Muster
+  // naehme Andrea Auftraege weg, die sie erledigt haben will. Dieselbe
+  // Falle wie bei der Aufraeumregel in v105.
+  if (entfernen) {
+    const hin = outboxSchluessel(m, datum, aktion, false);
+    if (outbox().some((e) => e.k === hin)) {
+      logZeile("warteliste-aufgehoben", { marke: m.name, aktion, datum,
+        warum: "Ruecknahme traf den noch offenen Schreibvorgang" });
+      outboxWeg(hin);          // persistiert bereits
+      return;                  // ... und das Entfernen kommt gar nicht rein
+    }
+  }
   const da = outbox().find((e) => e.k === k);
   if (da) { da.versuche = (da.versuche || 1) + 1; da.grund = grund; }
   else outbox().push({ k, marke: m.name, datum, aktion,
@@ -4955,7 +4980,12 @@ async function outboxAbarbeiten(still) {
     for (const e of offen) {
       const m = markeZuName(e.marke);
       if (!m) { outboxWeg(e.k); continue; }   // Marke inzwischen geloescht
-      const s = await bookHistorie(m, e.datum, e.aktion, e.entfernen);
+      // Durch DIESELBE Kette wie ein Klick (v107): lief die Nacharbeit
+      // daneben, konnte ein Retry genau dann ins Book schreiben, wenn
+      // outboxAufnehmen() das Paar gerade strich - Zeile im Word,
+      // Warteliste leer. Gleicher Schaden, nur seltener.
+      const s = await bookKettig(m, () =>
+        bookHistorie(m, e.datum, e.aktion, e.entfernen));
       if (s === "ok" || s === "dublette" || s === "kein-book") {
         outboxWeg(e.k); fertig++;
       } else {
@@ -5120,23 +5150,35 @@ function wartelisteZeigen() {
 // sich nicht gegenseitig ausbremsen.
 const bookKette = new Map();
 
+// Der EINZIGE Weg, an einer Marke am Book zu schreiben. Klicks
+// (bookHistorieMelden) und Nacharbeit (outboxAbarbeiten) laufen beide
+// hier durch, sonst haelt die Kette nur die Haelfte zusammen.
+//
+// Geschluesselt auf den MARKENNAMEN, nicht auf bookPfad(). Zwei Gruende:
+//   1. bookPfad() liest m.brandrating.rating und knallt bei einer Marke,
+//      die nur in der Pitchliste steht und kein Brandrating hat - Andreas
+//      "Onelife" ist genau so eine. Die Schutzpruefung dagegen sitzt in
+//      bookHistorie(); ein bookPfad() DAVOR springt ueber sie hinweg.
+//      (Gefunden 08.09. beim Gegenlesen von v96, vor dem Ausliefern.)
+//   2. Der Pfad aendert sich beim Rating-Wechsel, die Marke nicht. Auf den
+//      Pfad geschluesselt wuerde die Kette dabei aufreissen und genau die
+//      zwei Schreibvorgaenge entkoppeln, die sie zusammenhalten soll.
+//
+// .catch: ein Fehlschlag darf die Kette nicht abreissen lassen, sonst
+// wuerde jeder weitere Schreibvorgang auf diese Marke still verschluckt.
+function bookKettig(m, tun) {
+  const kette = schluessel(m.name);
+  const lauf = (bookKette.get(kette) || Promise.resolve()).then(tun);
+  bookKette.set(kette, lauf.catch(() => {}));
+  return lauf;
+}
+
 // Ereignis nachtragen und nur dann etwas sagen, wenn es etwas zu sagen
 // gibt. Laeuft absichtlich NEBEN dem Speichern (kein await): der Erledigt-
 // Knopf soll nicht auf den Word-Upload warten.
 function bookHistorieMelden(m, datum, aktion, entfernen) {
-  // Geschluesselt auf den MARKENNAMEN, nicht auf bookPfad(). Zwei Gruende:
-  //   1. bookPfad() liest m.brandrating.rating und knallt bei einer Marke,
-  //      die nur in der Pitchliste steht und kein Brandrating hat - Andreas
-  //      "Onelife" ist genau so eine. Die Schutzpruefung dagegen sitzt in
-  //      bookHistorie(); ein bookPfad() DAVOR springt ueber sie hinweg.
-  //      (Gefunden 08.09. beim Gegenlesen von v96, vor dem Ausliefern.)
-  //   2. Der Pfad aendert sich beim Rating-Wechsel, die Marke nicht. Auf den
-  //      Pfad geschluesselt wuerde die Kette dabei aufreissen und genau die
-  //      zwei Schreibvorgaenge entkoppeln, die sie zusammenhalten soll.
-  const kette = schluessel(m.name);
-  const vorher = bookKette.get(kette) || Promise.resolve();
-  const lauf = vorher.then(() => bookHistorie(m, datum, aktion, entfernen))
-    .then((s) => {
+  bookKettig(m, async () => {
+    const s = await bookHistorie(m, datum, aktion, entfernen);
     if (s === "ok") {
       outboxWeg(outboxSchluessel(m, datum, aktion, entfernen));
       banner(entfernen
@@ -5178,9 +5220,6 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
     // "kein-book": die Marke hat gar kein Book. Weiter still - das ist
     // ein normaler Zustand, kein Fehler.
   });
-  // .catch: ein Fehlschlag darf die Kette nicht abreissen lassen, sonst
-  // wuerde jeder weitere Schreibvorgang auf diese Datei still verschluckt.
-  bookKette.set(kette, lauf.catch(() => {}));
 }
 
 // Template nach Rating kopieren (A bzw. B-C; D = Archiv, kein Template).
