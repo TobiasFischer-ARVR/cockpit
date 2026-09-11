@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v112"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v113"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1881,7 +1881,49 @@ function sheetPitch(p) {
       bau();
     };
     zeile.append(ok);
-    frag.append(zeile, abstand, danach);
+
+    // Zweiter Knopf DIREKT darunter (v113): Termin und naechsten Schritt
+    // aendern, OHNE etwas abzuhaken. Andrea am 09.09.: "der Kunde meldet
+    // sich erst nach seinem Urlaub".
+    const tKnopf = el("button", "chip", "✎ Termin ändern");
+    const tForm = el("div", "fgruppe");
+    tForm.style.display = "none";
+    const tAktion = el("select", "feld");
+    for (const [w, txt] of [["", "unverändert"], ["Pitch", "Pitch"],
+                            ["Follow up", "Follow up"],
+                            ["Neuer Pitch", "Neuer Pitch"]]) {
+      const o = el("option", null, txt);
+      o.value = w;
+      tAktion.append(o);
+    }
+    const tDatum = el("input", "datum");
+    tDatum.type = "date";
+    tDatum.value = p.datum_naechste_aktion || "";
+    const tSpeichern = el("button", "chip aktiv", "Speichern");
+    tSpeichern.onclick = () => {
+      const a = tAktion.value;
+      const d = tDatum.value;
+      if (!a && !d) { banner("Nichts geändert."); return; }
+      if (!terminSetzenDaten(m, a, d, lokalIso())) {
+        banner("Diese Marke steht nicht in der Pitchliste."); return;
+      }
+      datenstandPersistieren();
+      banner("Termin übernommen — die Kadenz bleibt unverändert.");
+      bau();
+    };
+    tKnopf.onclick = () => {
+      tForm.style.display = tForm.style.display === "none" ? "" : "none";
+    };
+    tForm.append(
+      el("div", "stand", "Nächster Schritt:"), tAktion,
+      el("div", "stand", "Termin:"), tDatum,
+      el("div", "chips", tSpeichern),
+      el("div", "stand",
+        "Gilt einmalig. Der Abstand für die folgenden Termine bleibt, wie " +
+        "er ist — und dieser Termin wird als „von Hand gesetzt“ vermerkt, " +
+        "damit ihn keine Nachrechnung überschreibt."));
+    zeile.append(tKnopf);
+    frag.append(zeile, tForm, abstand, danach);
     // Rückgängig nur für die letzte Aktion (Regel: keine Erstellen-
     // Funktion ohne Löschen-Funktion) — genau diese eine, sonst nichts
     const la = datenstand.letzteAktion;
@@ -3780,6 +3822,34 @@ function fuSeitPitch(m) {
 // z. B. "erst nach dem Urlaub wieder". Ueberschreibt NUR das Faelligkeits-
 // datum - die Kadenz unten (m.intervalle) bleibt unberuehrt, sonst wuerde
 // aus einer einmaligen Pause still eine neue Dauerkadenz.
+// Datenteil "Termin-Dialog" (v113, Andrea 09.09.: "Naechster Schritt und
+// Termin von Hand ueberschreiben"). Aendert die PENDING naechste Aktion,
+// ohne etwas als erledigt einzutragen.
+//
+// Die Kadenz (m.intervalle) bleibt unangetastet - dieselbe Regel wie beim
+// Datumsfeld aus v95: wer einmal bis nach dem Urlaub schiebt, soll sich
+// damit keine neue Dauerkadenz setzen.
+//
+// termin_hand kennzeichnet den Termin als VON ANDREA gesetzt. Das ist der
+// Unterschied zu einem Termin aus dem alten Excel-Import, und nur deshalb
+// kann pitchNachrechnen() spaeter gefahrlos laufen: es laesst gekennzeichnete
+// Zeilen in Ruhe. Vorher waere die Unterscheidung nur aus dem Zeitstempel
+// ABLEITBAR gewesen - und Ableitungen aus Zeitstempeln haben am 11./12.09.
+// dreimal danebengelegen.
+function terminSetzenDaten(m, aktion, datum, jetzt) {
+  const p = m && m.pitchliste;
+  if (!p) return false;
+  if (!aktion && !datum) return false;
+  if (aktion) p.naechste_aktion = aktion;
+  if (datum) {
+    p.datum_naechste_aktion = datum;
+    p.termin_hand = true;
+  }
+  p.geaendert = jetzt;
+  listeVeraltet = true;
+  return true;
+}
+
 function erledigen(m, s, tage, standard, zielDatum) {
   const jetzt = lokalIso();
   const heute = deDatum(isoInTagen(0));
