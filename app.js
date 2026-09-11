@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v111"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v112"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2288,9 +2288,10 @@ function renderPitchliste() {
     }
     // Zwei Gruppen statt einer (v111). "Ad-Aktivität" sagte nicht, worueber
     // gefiltert wird - ausgewertet wird die ANZAHL laufender Anzeigen in der
-    // Werbebibliothek. Das Budget ist eine eigene Frage und hat jetzt eine
+    // Werbebibliothek. Beschriftung "Werbeanzeigen" (Tobias 12.09.), damit
+    // sie mit "Werbebudget" ein Paar bildet. Das Budget ist eine eigene Frage und hat jetzt eine
     // eigene Gruppe; vorher war dafuer nur die Sortierung zustaendig.
-    wrap.append(filterGruppe("Anzahl Anzeigen",
+    wrap.append(filterGruppe("Werbeanzeigen",
       [["mit", "Mit laufenden Anzeigen"], ["ohne", "Ohne Anzeigen"]],
       () => pf.ad, (w) => { pf.ad = w; }, zeichnen));
     wrap.append(filterGruppe("Werbebudget",
