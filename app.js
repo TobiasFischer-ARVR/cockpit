@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v107"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v108"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -5285,6 +5285,7 @@ function bookErstelltDaten(m, bookNeu, jetzt) {
   datenstand.letztesBook = { name: m.name, zeit: jetzt, stufe: 1, bookNeu,
     vorher: m.brandrating.brandbook || "" };
   m.brandrating.brandbook = "✔️";
+  logZeile("book-stufe1", { marke: m.name, ...logMehr({ bookNeu }) });
   // Ordner festhalten, in dem die Datei jetzt liegt - ein spaeteres
   // Rating-Update darf den Zugriff darauf nicht verlieren (siehe bookPfad)
   m.bookordner = String(m.brandrating.rating).trim();
@@ -5297,6 +5298,10 @@ function bookErstelltDaten(m, bookNeu, jetzt) {
 function bookBefuelltDaten(m, jetzt) {
   datenstand.letztesBook = { name: m.name, zeit: jetzt, stufe: 2,
     pitchNeu: !m.pitchliste };
+  // Verwaiste Marke? Dann steht hier "haengt: false" - und genau das war
+  // der Verlust vom 11.09. (v108). Ohne diese Zeile blieb er unbelegbar.
+  logZeile("book-stufe2", { marke: m.name,
+    ...logMehr({ haengt: (datenstand.marken || []).includes(m) }) });
   if (!m.pitchliste) {
     m.pitchliste = { rating: m.brandrating.rating,
       kategorie: m.brandrating.kategorie || "", status: "",
@@ -5311,6 +5316,8 @@ function bookBefuelltDaten(m, jetzt) {
 // Stufe 1 den Haken + das frisch kopierte Book. Graph-DELETE landet im
 // OneDrive-Papierkorb - Books mit Inhalt werden nie hart geloescht.
 function bookRueckgaengig(m, lb) {
+  logZeile("book-rueckgaengig", { marke: m.name, stufe: lb.stufe,
+    ...logMehr({ haengt: (datenstand.marken || []).includes(m) }) });
   if (lb.stufe === 2) {
     if (lb.pitchNeu) m.pitchliste = null;
   } else {
@@ -5332,6 +5339,12 @@ function bookRueckgaengig(m, lb) {
 async function datenstandPersistieren() {
   datenstand.geaendert = lokalIso();
   datenstand.geaendert_von = "Cockpit-App";
+  // Was tatsächlich rausgeht (v108). Die Markenzahl ist der billigste
+  // Hinweis auf einen Objekttausch: sie ändert sich, wenn ein anderer
+  // Stand untergeschoben wurde.
+  logZeile("stand-gespeichert", { marken: (datenstand.marken || []).length,
+    ...logMehr({ geaendert: datenstand.geaendert,
+                 sheet: Boolean(document.getElementById("schleier")) }) });
   try { await idbSchreib("datenstand", datenstand); } catch (_) {}
   const ok = typeof OD !== "undefined" &&
     await OD.graphPutLeise(OD_DATENSTAND(), datenstand);
@@ -5374,6 +5387,33 @@ function idbSchreib(schluessel, wert) {
 // Heimnetz (daten/datenstand.json), OneDrive (Graph), Geraet (IndexedDB).
 // Frisches von aussen wird aufs Geraet gesichert - so uebersteht der
 // Stand Funkloecher und (mit persistentem Speicher) auch Neustarts.
+// Der Tausch des globalen datenstand-Objekts - die gefährlichste Zuweisung
+// der App. Ein offenes Sheet hält seine Marke per Closure aus dem ALTEN
+// Objekt; wird hier getauscht, verändert der nächste Klick eine verwaiste
+// Marke, und datenstandPersistieren() schreibt sie nicht mit.
+//
+// v95 (07.09.) hatte die Prüfung am ANFANG von abgleichBeiRueckkehr().
+// Das deckt den Fall nicht ab, dass das Sheet ERST WÄHREND des Ladens
+// aufgeht - laden() hängt am Netz, das Fenster ist sekundenlang offen.
+// Am 11.09. um 16:25 (Brand "54321") genau so passiert: Erfolgsmeldung aus
+// dem neuen Objekt, Pitchlisten-Eintrag in der verwaisten Marke, beim
+// Speichern verloren. Deshalb steht die Prüfung jetzt UNMITTELBAR vor der
+// Zuweisung - hinter jedem await und damit für ALLE Aufrufer zugleich
+// (abgleichBeiRueckkehr, update/↻, Start). Test: tests/test_v108.js
+function datenstandUebernehmen(paar) {
+  const alt = datenstand && datenstand.geaendert;
+  if (document.getElementById("schleier")) {
+    logZeile("stand-verworfen", { grund: "Sheet offen", quelle: paar[1],
+      ...logMehr({ soll: paar[0] && paar[0].geaendert, ist: alt }) });
+    abgleichNachholen = true;   // popstate holt es nach, sobald das Sheet zu ist
+    return false;
+  }
+  logZeile("stand-uebernommen", { quelle: paar[1],
+    ...logMehr({ soll: paar[0] && paar[0].geaendert, ist: alt }) });
+  [datenstand, datenstandQuelle] = paar;
+  return true;
+}
+
 async function datenstandLaden() {
   let lokal = null;
   try {
@@ -5390,7 +5430,10 @@ async function datenstandLaden() {
   if (!kandidaten.length) return;
   kandidaten.sort((a, b) =>
     String(b[0].geaendert || "").localeCompare(String(a[0].geaendert || "")));
-  [datenstand, datenstandQuelle] = kandidaten[0];
+  // Ab hier wird das globale Objekt angefasst - erst fragen, ob das gerade
+  // erlaubt ist (v108). Wird abgelehnt, NICHTS weiter tun: ein idbSchreib()
+  // wuerde sonst den alten Stand als den neuen wegschreiben.
+  if (!datenstandUebernehmen(kandidaten[0])) return;
   if (datenstandQuelle !== "Gerät") {
     try { await idbSchreib("datenstand", datenstand); } catch (_) {}
   } else if (cloud &&
