@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v103"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v104"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1649,7 +1649,11 @@ function sheetPitch(p) {
     wrap.innerHTML = "";
     const formular = formularAnsicht(z, mv);
     if (formular) { wrap.append(formular); return; }
-    const q = pitchMitDatenstand(p);
+    // Frisch aus dem Bestand lesen, nicht aus dem p von der Liste: nach
+    // einem "Erledigt" steht der neue Termin am Datenstand, waehrend p
+    // noch den Stand von vor dem Klick traegt (bis v103 tat das
+    // pitchMitDatenstand).
+    const q = mv && mv.pitchliste ? { ...p, ...mv.pitchliste } : p;
     wrap.append(el("div", "kontext",
       ampel(q.datum_naechste_aktion, heuteNull()).text));
 
@@ -1905,32 +1909,32 @@ function markeZuName(name) {
   return (datenstand.marken || []).find((m) => schluessel(m.name) === s) || null;
 }
 
-// Wo die App selbst etwas geändert hat (Erledigt-Knopf), gewinnt der
-// Datenstand über die Snapshot-Zeile — bis der nächste PC-Export die
-// Änderung regulär enthält (dann ist snap.erzeugt neuer).
-function pitchMitDatenstand(p) {
-  const m = datenstand && markeZuName(p.name);
-  const pl = m && m.pitchliste;
-  return pl && pl.geaendert && pl.geaendert > String(snap.erzeugt || "")
-    ? { ...p, ...pl } : p;
-}
-
+// Die Pitchliste kommt seit v104 ausschliesslich aus dem Datenbestand.
+//
+// Bis v103 war der Snapshot die Grundlage, und der Datenstand legte sich
+// nur dort darüber, wo die App selbst etwas geändert hatte. Die
+// Snapshot-Zeilen stammen aber aus dem Blatt "Pitchliste" der
+// Brand-Übersicht — einer Excel, die Andrea seit Monaten nicht mehr
+// pflegt. Am 10.09. setzte ein Snapshot-Neubau `snap.erzeugt` neuer als
+// jedes `geaendert` im Datenstand und verdeckte damit auf einen Schlag
+// 48 Einträge: zehn Marken standen als "überfällig" da, obwohl ihr
+// Word-Dokument stimmte (Calibar 07.09./Pitch statt 13.09./Follow up).
+//
+// Nachgemessen am echten Bestand vom 11.09., bevor der Schnitt kam:
+// 52 Pitchzeilen im Datenstand gegen 47 in der Excel, und **keine
+// einzige**, die es nur in der Excel gab. Der Datenstand ist eine echte
+// Obermenge — beim Kappen geht keine Marke verloren.
+//
+// export_snapshot.py liest das Blatt seit v104 nicht mehr; die Excel ist
+// damit reine Ausgabe (Tobias 10.09.: "Die Excel soll komplett raus. Das
+// einzige was wir machen ist ein Export, aber die Daten kommen aus dem
+// Datenbestand.").
 function pitchlisteAktuell() {
-  const liste = (snap.pitchliste || []).map(pitchMitDatenstand);
-  // In der App angelegte Brands bzw. Pitchlisten-Einträge ergänzen (Neue
-  // Brand ODER "Rating abgeschlossen"), bis der PC-Export sie kennt
-  // (dann greift die Dublettenprüfung über den Namens-Schlüssel)
-  if (datenstand) {
-    const da = new Set(liste.map((p) => schluessel(p.name)));
-    for (const m of datenstand.marken || []) {
-      if (m.pitchliste && (m.erstellt || m.pitchliste.erstellt) &&
-          !da.has(schluessel(m.name))) {
-        liste.push({ name: m.name, ...m.pitchliste });
-      }
-    }
-  }
+  const liste = (datenstand ? datenstand.marken || [] : [])
+    .filter((m) => m.pitchliste)
+    .map((m) => ({ name: m.name, ...m.pitchliste }));
   // D-Brands = inaktiv/Archiv bei Andrea (Tobias 01.09.): erscheinen nie
-  // in der Pitchliste - egal ob das D aus der Excel-Pitchliste kommt oder
+  // in der Pitchliste - egal ob das D aus Andreas Altbestand stammt oder
   // per Rating-Edit in der App gesetzt wurde.
   const istD = (p) => {
     if (String(p.rating || "").trim().toUpperCase() === "D") return true;
@@ -2193,7 +2197,8 @@ function renderPitchliste() {
                    ad: adWerte(p.name) }));
   if (!alle.length) {
     c.append(el("div", "leerzustand",
-      "Keine Pitchliste im Snapshot — einmal Update (↻) drücken."));
+      "Noch keine Pitchlisten-Einträge im Datenbestand — "
+      + "einmal Update (↻) drücken."));
     return;
   }
 
@@ -2404,11 +2409,11 @@ function ratingWechselEintragen(m, alt, neu, datum) {
   return true;
 }
 
-// Stufe 2 erledigt = Brand steht in der Pitchliste (App-Eintrag oder
-// schon im Excel-Snapshot) - eine Bedingung fuer Statuszeile und Knopf.
+// Stufe 2 erledigt = Brand hat eine Pitchzeile - eine Bedingung fuer
+// Statuszeile und Knopf. Seit v104 reicht der Datenstand: der Snapshot
+// fuehrt keine Pitchliste mehr.
 function inPitchliste(m) {
-  return Boolean(m.pitchliste || (snap && (snap.pitchliste || []).some(
-    (p) => schluessel(p.name) === schluessel(m.name))));
+  return Boolean(m.pitchliste);
 }
 
 // Ratings bearbeiten (Tobias 01.09.): Fit/Begeisterung/Erfolgschance und
@@ -3359,9 +3364,9 @@ function renderUgc() {
 
   // Zugang zur Pitchliste, Faellig-Zaehler aus derselben ampel()-Bedingung
   // wie die Listen-Ansicht (Briefing 4.9: ein Zaehler, eine Bedingung)
-  if (snap.pitchliste && snap.pitchliste.length) {
+  const aktuell = pitchlisteAktuell(); // gleiche Liste wie die Ansicht (ohne D-Brands)
+  if (aktuell.length) {
     const heute = heuteNull();
-    const aktuell = pitchlisteAktuell(); // gleiche Liste wie die Ansicht (ohne D-Brands)
     const faellig = aktuell.filter(
       (p) => ampel(p.datum_naechste_aktion, heute).klasse === "rot").length;
     const zugang = el("div", "karte block zugang");
@@ -3665,12 +3670,11 @@ function rueckgaengig(m, la) {
     return;
   }
   // geaendert NEU stempeln (v95). Ein Rueckgaengig ist selbst eine
-  // Aenderung - la.vorher traegt aber den Zeitstempel von DAVOR, und aus
-  // der Excel kommen die Zeilen ganz ohne (alle 48 bei Andrea). Damit war
-  // die Bedingung in pitchMitDatenstand() falsch, die Ueberlagerung ging
-  // aus, und die Anzeige fiel auf die Snapshot-Zeile zurueck: das
-  // Rueckgaengig blieb unsichtbar, obwohl es im Datenstand stand. Im Word
-  // war es korrekt entfernt - daher der Widerspruch (Tobias 07.09.).
+  // Aenderung - la.vorher traegt aber den Zeitstempel von DAVOR.
+  // Der urspruengliche Grund ist mit v104 entfallen (die Anzeige fiel
+  // sonst auf die Snapshot-Zeile zurueck, das Rueckgaengig blieb
+  // unsichtbar - Tobias 07.09.). Der Stempel bleibt trotzdem: er sagt
+  // ehrlich, wann diese Zeile zuletzt angefasst wurde.
   m.pitchliste = { ...la.vorher, geaendert: lokalIso() };
   delete datenstand.letzteAktion;
   listeVeraltet = true;
@@ -3693,8 +3697,13 @@ function sheetNeueBrand() {
   kategorie.setAttribute("list", "kategorien-liste");
   const dl = el("datalist"); // native Vorschläge aus den vorhandenen Kategorien
   dl.id = "kategorien-liste";
-  for (const k of [...new Set((snap.pitchliste || [])
-      .map((p) => p.kategorie).filter(Boolean))].sort()) {
+  // Vorschlaege aus dem Datenbestand (v104) - vorher aus den Excel-Zeilen.
+  // Beide Abschnitte, damit auch eine frisch angelegte Brand ohne
+  // Pitchzeile ihre Kategorie beisteuert.
+  for (const k of [...new Set((datenstand ? datenstand.marken || [] : [])
+      .flatMap((m) => [(m.pitchliste || {}).kategorie,
+                       (m.brandrating || {}).kategorie])
+      .filter(Boolean))].sort()) {
     const o = el("option");
     o.value = k;
     dl.append(o);
