@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v105"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v106"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4673,6 +4673,17 @@ function logDatei() {
 let logPuffer = [];
 let logGeladen = false;      // Tagesdatei in dieser Sitzung schon geholt?
 let logSchreibt = false;
+// Wie viele Zeilen aus dem Puffer schon IN der Datei stehen (v106).
+// Bis v105 wurde der Puffer nach dem Sichern geleert - und weil jeder
+// Schreibvorgang die Datei mit conflictBehavior=replace ersetzt, loeschte
+// die ZWEITE Sicherung einer Sitzung alles, was die erste geschrieben
+// hatte. Nachgemessen am 11.09.: von 45 Zeilen ueberlebten 25, die ersten
+// 20 waren weg - ausgerechnet im Werkzeug, mit dem wir Fehler suchen.
+// ponytail: der Puffer haelt jetzt die ganze Sitzung im Speicher und jede
+// Sicherung schreibt die Datei neu. Bei ~300 Byte je Zeile sind das auch
+// nach 10.000 Ereignissen erst 3 MB - fuer ein Werkzeug auf Zeit in
+// Ordnung. Wird es je zu viel: Dateien je Stunde statt je Tag.
+let logGesichert = 0;
 
 // Nur bei "erweitert" mitschreiben. Als Streuung gedacht:
 //   logZeile("book-schreiben", { ..., ...logMehr({ soll, ist }) })
@@ -4685,7 +4696,10 @@ function logZeile(art, daten) {
   try {
     logPuffer.push(JSON.stringify({ z: lokalIso(), art, ...daten }));
   } catch (_) { return; }        // zirkulaere Daten o.ae. - nie werfen
-  if (logPuffer.length >= 40) logSichern();
+  // Nach 40 NEUEN Zeilen sichern, nicht nach 40 im Puffer. Seit v106
+  // bleibt der Puffer stehen; ein Vergleich gegen die Gesamtlaenge wuerde
+  // ab der ersten Sicherung bei JEDER weiteren Zeile erneut ausloesen.
+  if (logPuffer.length - logGesichert >= 40) logSichern();
 }
 
 // Graph legt seinen Grund in den Antwortkoerper - "resourceLocked",
@@ -4724,7 +4738,10 @@ async function logOrdnerAnlegen() {
 // ponytail: bei sehr vielen Zeilen wird der PUT gross - dann auf eine Datei
 // je Stunde umstellen. Bei Andreas Klickzahl kein Thema.
 async function logSichern() {
-  if (!logStufe() || logSchreibt || !logPuffer.length) return;
+  // Nichts Neues seit der letzten Sicherung? Dann auch nicht schreiben.
+  // Seit v106 bleibt der Puffer stehen, ein Test auf "leer" traefe nie mehr
+  // zu - die App wuerde bei jedem Anlass dieselbe Datei erneut hochladen.
+  if (!logStufe() || logSchreibt || logPuffer.length <= logGesichert) return;
   if (typeof OD === "undefined" || !OD.konto()) return;
   logSchreibt = true;
   try {
@@ -4737,7 +4754,11 @@ async function logSichern() {
       const r = await OD.graphRoh(datei + ":/content");
       if (r && r.ok) {
         const alt = (await r.text()).trim();
-        if (alt) logPuffer = alt.split("\n").concat(logPuffer);
+        if (alt) {
+          const zeilen = alt.split("\n");
+          logPuffer = zeilen.concat(logPuffer);
+          logGesichert = zeilen.length;   // die stehen schon in der Datei
+        }
       }
     }
     const ziel = datei + ":/content?@microsoft.graph.conflictBehavior=replace";
@@ -4746,7 +4767,10 @@ async function logSichern() {
       headers: { "Content-Type": "text/plain" } });
     let put = await senden();
     if (put && put.status === 404 && await logOrdnerAnlegen()) put = await senden();
-    if (put && put.ok) logPuffer = [];   // erst leeren, wenn es wirklich lag
+    // NICHT leeren (v106): die naechste Sicherung ersetzt die Datei und
+    // naehme sonst alles frueher Geschriebene mit. Gemerkt wird
+    // stattdessen, wie weit die Datei reicht.
+    if (put && put.ok) logGesichert = logPuffer.length;
   } catch (_) {
     // Logging darf die App NIE stoeren. Geht es nicht, bleibt der Puffer
     // stehen und der naechste Versuch nimmt ihn mit.
