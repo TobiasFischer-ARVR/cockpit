@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v110"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v111"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2046,8 +2046,8 @@ function adWerte(name) {
 
 // Filterzustand der Pitchliste - bleibt beim Navigieren erhalten (wie zi).
 // faellig: "" = alle, sonst max. Rest-Tage (ueberfaellig zaehlt immer mit).
-const pf = { faellig: "", rating: [], kategorie: "", ad: "", suche: "",
-             sortierung: "" };
+const pf = { faellig: "", rating: [], kategorie: "", ad: "", budget: "",
+             suche: "", sortierung: "" };
 
 // Passt ein Pitchlisten-Eintrag zu den gerade gesetzten Filtern? `s` ist
 // der kleingeschriebene Suchtext. Steht bewusst AUSSERHALB von
@@ -2058,9 +2058,14 @@ function pitchPasst(p, s) {
   return (pf.faellig === "" || (p.tage !== null && p.tage <= pf.faellig)) &&
     (!pf.rating.length || pf.rating.includes(p.rating)) &&
     (!pf.kategorie || p.kategorie === pf.kategorie) &&
-    // "mit" = laufende Anzeigen. Budget ohne Anzeige ("0 (830)") zaehlt
-    // als OHNE - fuer die Budget-Frage ist die Sortierung zustaendig.
+    // ZWEI getrennte Fragen (v111, Tobias 11.09.), vorher eine:
+    //   pf.ad     - laufen gerade Anzeigen?  (Anzahl > 0)
+    //   pf.budget - ist ueberhaupt Budget hinterlegt?
+    // Eine Marke kann "0 (830)" haben: Budget da, gerade nichts am Laufen.
+    // Bis v110 fielen diese 19 Marken unter "Ohne Anzeigen" und sahen aus
+    // wie tot; fuer die Budget-Frage war nur die Sortierung zustaendig.
     (!pf.ad || (pf.ad === "mit") === (p.ad.anzeigen > 0)) &&
+    (!pf.budget || (pf.budget === "mit") === (p.ad.budget > 0)) &&
     (!s || [p.name, p.status, p.naechste_aktion, p.kooperation, p.kategorie]
       .join(" ").toLowerCase().includes(s));
 }
@@ -2281,12 +2286,16 @@ function renderPitchliste() {
       wrap.append(filterGruppe("Kategorie", kategorien.map((k) => [k, k]),
         () => pf.kategorie, (w) => { pf.kategorie = w; }, zeichnen));
     }
-    // "Anzeigen" = laufende Anzeigen in der Werbebibliothek, NICHT das
-    // Budget. Eine Marke kann "0 (830)" haben: Budget da, gerade nichts am
-    // Laufen. Fuer die Budget-Frage ist die Sortierung zustaendig.
-    wrap.append(filterGruppe("Ad-Aktivität",
+    // Zwei Gruppen statt einer (v111). "Ad-Aktivität" sagte nicht, worueber
+    // gefiltert wird - ausgewertet wird die ANZAHL laufender Anzeigen in der
+    // Werbebibliothek. Das Budget ist eine eigene Frage und hat jetzt eine
+    // eigene Gruppe; vorher war dafuer nur die Sortierung zustaendig.
+    wrap.append(filterGruppe("Anzahl Anzeigen",
       [["mit", "Mit laufenden Anzeigen"], ["ohne", "Ohne Anzeigen"]],
       () => pf.ad, (w) => { pf.ad = w; }, zeichnen));
+    wrap.append(filterGruppe("Werbebudget",
+      [["mit", "Mit Budget"], ["ohne", "Ohne Budget"]],
+      () => pf.budget, (w) => { pf.budget = w; }, zeichnen));
     sheetOeffnen("Filter", wrap);
   };
   const sortBtn = sortierKnopf(SORT_PITCH, () => pf.sortierung,
@@ -2301,7 +2310,7 @@ function renderPitchliste() {
   zeichnen();
 
   function zeichnen() {
-    const n = [pf.faellig, pf.rating, pf.kategorie, pf.ad]
+    const n = [pf.faellig, pf.rating, pf.kategorie, pf.ad, pf.budget]
       .filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
