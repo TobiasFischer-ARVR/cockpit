@@ -301,6 +301,14 @@ main {
   margin-bottom: 6px;
   -webkit-overflow-scrolling: touch;
 }
+/* Knopfzeile direkt unter einem Eingabefeld (v120, Tobias 12.09.):
+   .datum hat keinen vertikalen Aussenabstand, .chips keinen oberen - die
+   Chip-Umrandung stiess dadurch direkt an das Feld darueber. Der Text sass
+   optisch richtig, nur der Rahmen klebte. 12px fuegt sich in den Rhythmus
+   der anderen Felder ein (.stand 14px unten, .feld 10px unten).
+   Bewusst eine eigene Klasse statt .datum oder .chips global zu aendern -
+   beide stehen an vielen weiteren Stellen. */
+.chips.unter-feld { margin-top: 12px; }
 .chip {
   flex: 0 0 auto;
   min-height: 44px;

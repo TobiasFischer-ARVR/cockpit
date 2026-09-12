@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v119"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v120"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1940,7 +1940,7 @@ function sheetPitch(p) {
     // el(tag, klasse, TEXT) - das dritte Argument wird als textContent
     // gesetzt. Ein Element dort landet als "[object HTMLButtonElement]" in
     // der Anzeige (12.09. genau so passiert). Kinder gehoeren an append().
-    const tZeile = el("div", "chips");
+    const tZeile = el("div", "chips unter-feld");
     tZeile.append(tSpeichern);
     tForm.append(
       el("div", "stand", "Nächster Schritt:"), tAktion, tListe,
