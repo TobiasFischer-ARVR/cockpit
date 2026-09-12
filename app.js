@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v117"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v118"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4525,9 +4525,16 @@ function xlsxSortiertRating(marken) {
 // Rating kommt aus der PITCHLISTE, nicht aus dem Brandrating - sonst
 // weicht die Reihenfolge vom PC-Generator ab. Leeres Rating ganz nach
 // hinten ("~" liegt hinter allen Buchstaben).
+// Trenner MUSS die Escape-Sequenz "\x00" bleiben und darf nie wieder als
+// rohes NUL-Byte im Quelltext stehen (v118, 12.09.): ein einziges NUL macht
+// app.js fuer Git zu einer BINAERDATEI. Dann greift "* text=auto eol=lf" aus
+// .gitattributes nicht mehr - der Datei-Inhalt pendelte monatelang
+// unbemerkt zwischen CRLF und LF, obwohl CRLF laut Projektregel die
+// JS-Selbsttests lahmlegt (04.09. genau so passiert). Zur Laufzeit ist die
+// Escape-Sequenz identisch, geprueft: charCodeAt === 0.
 function xlsxSortiertPitch(marken) {
   const key = (m) => [String(m.pitchliste.rating || "~").trim(),
-                      xlsxSortSchluessel(m.name)].join(" ");
+                      xlsxSortSchluessel(m.name)].join("\x00");
   return marken.filter((m) => m.pitchliste)
     .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
