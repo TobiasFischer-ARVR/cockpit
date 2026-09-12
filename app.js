@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v115"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v116"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3874,11 +3874,25 @@ function erledigen(m, s, tage, standard, zielDatum) {
     { name: m.name, aktion: s.aktion, zeit: jetzt, vorher: { ...m.pitchliste } };
   (m.events = m.events || []).push(
     { typ: s.typ, datum: heute, aktion: s.aktion, positiv: "" });
+  // termin_hand muss BEIDE Richtungen koennen (v116, 12.09.), sonst
+  // zerstoert pitchNachrechnen() spaeter Daten:
+  //   zielDatum gesetzt -> Andrea hat das Datum selbst gewaehlt ("erst nach
+  //                        dem Urlaub") -> schuetzen
+  //   zielDatum leer    -> Datum kommt aus der Kadenz -> darf nachgerechnet
+  //                        werden. Ohne das false blieb ein einmal gesetzter
+  //                        Merker EWIG stehen (v113 setzt ihn, niemand
+  //                        loescht ihn) - die Zeile waere dauerhaft vom
+  //                        Nachrechnen ausgenommen, auch nach zwanzig
+  //                        normalen Follow-ups.
+  // Kommentar steht ABSICHTLICH hier und nicht im Objekt: der
+  // Stempel-Waechter in test_invarianten.js prueft "geaendert:" nur in den
+  // 8 Zeilen nach dem Schreibzugriff.
   Object.assign(m.pitchliste, {
     status: s.status,
     letzter_kontakt: heute,
     naechste_aktion: s.naechste,
     datum_naechste_aktion: zielDatum || isoInTagen(tage),
+    termin_hand: !!zielDatum,
     geaendert: jetzt,
   });
   if (s.zaehlt) {
