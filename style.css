@@ -549,16 +549,13 @@ main {
 
 /* Reiter im Detail-Sheet (v58): drei gleich breite Chips statt einer
    scrollenden Leiste - bei drei Reitern passt das auf jedes Handy, und
-   der Daumen trifft breite Ziele. Klebt oben, damit man beim Scrollen
-   in einer langen Historie nicht zum Umschalten hochwischen muss. */
+   der Daumen trifft breite Ziele. Scrollen bewusst NICHT sticky
+   (Tobias, 12.09.) - Reiter sollen mit dem Inhalt wegscrollen. */
 .chips.reiter {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  position: static;
   gap: 6px;
   padding-top: 4px;
   margin-bottom: 12px;
-  background: var(--panel);   /* wie .sheet - der Rest scrollt darunter durch */
   overflow-x: visible;
 }
 .chips.reiter .chip {
