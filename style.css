@@ -573,11 +573,30 @@ main {
 .punkt-rating { background: var(--gelb); }
 .punkt-positiv { background: var(--gruen); }
 
-/* Meldungs-Banner (Briefing Abschnitt 3): unten, coral umrandet, kurzlebig */
-.banner {
+/* Meldungs-Banner (Briefing Abschnitt 3): coral umrandet, kurzlebig.
+   Seit v119 MITTIG und UNTEREINANDER (Tobias 12.09.): vorher trug jedes
+   Banner selbst "position: fixed; right/bottom" - mehrere Meldungen landeten
+   damit auf identischen Koordinaten und lagen uebereinander. Jetzt positioniert
+   der Container, die Banner reihen sich als Flex-Spalte darin ein. */
+.banner-stapel {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  /* UEBER dem Sheet-Schleier (20) - sonst verdeckt ein offenes Sheet
+     jede Meldung (Tobias 01.09., Book-befuellt-Banner unsichtbar).
+     Der z-index sitzt seit v119 HIER, nicht mehr am einzelnen Banner. */
+  z-index: 30;
+  /* Klicks durchlassen: der Stapel liegt mitten auf der Oberflaeche, ein
+     Banner darf keinen Knopf dahinter blockieren (Tobias' Einwand zur
+     mittigen Lage). Die Banner selbst brauchen keine Klicks. */
+  pointer-events: none;
+}
+.banner {
   max-width: min(360px, calc(100vw - 32px));
   background: var(--panel);
   border: 1px solid var(--coral);
@@ -585,9 +604,6 @@ main {
   padding: 10px 14px;
   font-size: 12.5px;
   box-shadow: 0 24px 70px rgba(0,0,0,.6);
-  /* UEBER dem Sheet-Schleier (20) - sonst verdeckt ein offenes Sheet
-     jede Meldung (Tobias 01.09., Book-befuellt-Banner unsichtbar) */
-  z-index: 30;
 }
 
 /* Filtergruppe im Filter-Sheet (v98): Titelzeile, die Chips klappen erst beim

@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v118"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v119"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -938,9 +938,25 @@ function sheetInfo() {
   }
 }
 
+// Meldungen sammeln sich seit v119 in EINEM Container (Tobias 12.09.):
+// vorher hing jedes Banner einzeln an body und trug seine Position selbst -
+// zwei gleichzeitige Meldungen lagen damit exakt uebereinander, die untere
+// war unlesbar. Der Stapel ist eine Flex-Spalte in der Bildschirmmitte.
+// Der Container wird einmal angelegt und bleibt; leer ist er unsichtbar
+// (kein Rahmen, kein Hintergrund, pointer-events: none).
+function bannerStapel() {
+  let s = document.getElementById("banner-stapel");
+  if (!s) {
+    s = el("div", "banner-stapel");
+    s.id = "banner-stapel";
+    document.body.append(s);
+  }
+  return s;
+}
+
 function banner(text) {
   const b = el("div", "banner", text);
-  document.body.append(b);
+  bannerStapel().append(b);
   setTimeout(() => b.remove(), 4000);
 }
 
@@ -1851,7 +1867,23 @@ function sheetPitch(p) {
         return;
       }
       const text = aktionText();
-      if (!confirm(`${text} als erledigt eintragen?\n` +
+      // Warnung bei fehlendem Startdatum (v119, Tobias 12.09.): Kommt eine
+      // Brand frisch aus dem Brand Rating, steht sie OHNE Termin in der
+      // Pitchliste - der Erledigt-Knopf ist trotzdem schon sichtbar.
+      // Die Daten bleiben stimmig (der Pitch wird auf HEUTE datiert, was
+      // richtig ist, wenn die Mail heute rausging). Der Schaden bei einem
+      // Fehlklick ist eine VERFRUEHTE WAHRHEIT: "Pitch am ... versendet"
+      // steht dann in den Daten UND im Word-Book, ohne dass eine Mail
+      // rausging. Deshalb hier nennen statt den Knopf auszublenden -
+      // Ausblenden haette Andrea gezwungen, vor einem Pitch am selben Tag
+      // erst ein Startdatum "heute" zu setzen (Pflichtklick ohne Nutzen).
+      const ohneStart = !q.datum_naechste_aktion && !q.letzter_kontakt;
+      if (!confirm((ohneStart
+            ? "Für diese Brand ist noch KEIN Startdatum gesetzt.\n" +
+              `„${text}“ wird auf HEUTE (${deDatum(isoInTagen(0))}) datiert ` +
+              "und auch so ins Brand-Book geschrieben.\n\n"
+            : "") +
+          `${text} als erledigt eintragen?\n` +
           `Nächster Schritt: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`)) return;
       // s bleibt unangetastet - nur die Aktions-Beschriftung wird ersetzt.
       // typ/status/naechste/zaehlt kommen weiter aus naechsterSchritt(),
