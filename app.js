@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v116"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v117"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1799,43 +1799,22 @@ function sheetPitch(p) {
     tage.value = String(standard);
     const dTage = () => parseInt(tage.value, 10) || standard;
     const danach = el("div", "stand");
-    // Datumsfeld neben den Tagen (v95, Tobias 07.09.): "pausieren bis
-    // Datum x" ging vorher nur ueber Kopfrechnen im Tage-Feld. Beide
-    // Felder halten denselben Wert, nur anders ausgedrueckt - das
-    // Tage-Feld bleibt fuehrend, weil daraus das gemerkte Intervall der
-    // Marke wird (m.intervalle). Nativer Android-Kalender wie beim
-    // Startdatum, kein eigener Picker.
-    const datum = el("input", "datum");
-    datum.type = "date";
-    datum.min = isoInTagen(0); // rueckwaerts terminieren ergibt keinen Sinn
-    // WICHTIG: Datum und Tage sind NICHT dasselbe.
-    //   tage  = Kadenz, wird als m.intervalle[key] dauerhaft gemerkt
-    //   datum = einmaliger Termin, aendert die Kadenz NICHT
-    // Beides zu koppeln waere die Falle: wer einmal bis nach dem Urlaub
-    // pausiert, haette sich damit still eine neue Dauerkadenz gesetzt.
-    let einmalDatum = null;
+    // Das Datumsfeld "Einmalig auf ein Datum legen" (v95) ist mit v117 weg
+    // (Tobias 12.09., Andrea benutzte es nicht). Es war KEIN Datums-Setzer,
+    // sondern ein Zusatz zum Erledigt-Klick: allein geaendert passierte
+    // nichts, es gab keinen Speichern-Knopf und keine Rueckmeldung. Genau
+    // so hat Tobias es missverstanden - ein stiller Nicht-Effekt.
+    // Denselben Zweck erfuellt "✎ Termin ändern" (v113) vollstaendig, mit
+    // eigenem Speichern-Knopf UND termin_hand-Kennzeichen.
     const dText = () => {
-      danach.textContent = einmalDatum
-        ? `Danach: ${s.naechste} am ${deDatum(einmalDatum)} — einmalig, ` +
-          `der Abstand bleibt bei ${dTage()} Tagen`
-        : `Danach: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`;
+      danach.textContent =
+        `Danach: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`;
     };
-    const ausTagen = () => {
-      einmalDatum = null;
-      datum.value = isoInTagen(dTage());
-      dText();
-    };
-    tage.oninput = ausTagen;
-    datum.onchange = () => {
-      const t = tageBis(datum.value);
-      if (t === null) { ausTagen(); return; }   // Feld geleert -> zurueck
-      einmalDatum = datum.value;
-      dText();
-    };
-    ausTagen();
+    tage.oninput = dText;
+    dText();
     const abstand = el("div", "stand");
     abstand.append("Abstand: ", tage, " Tage — änderbar, gilt dann künftig ",
-      "für diese Marke. Einmalig auf ein Datum legen: ", datum);
+      "für diese Marke.");
     // Herkunft nur beim Pitch (v90): bei einem Follow-up ist die Aktion
     // durchnummeriert, da gibt es nichts zu erklaeren.
     let herkunft = null;
@@ -1877,7 +1856,7 @@ function sheetPitch(p) {
       // s bleibt unangetastet - nur die Aktions-Beschriftung wird ersetzt.
       // typ/status/naechste/zaehlt kommen weiter aus naechsterSchritt(),
       // damit die Herkunft NUR Text ist und keine Logik verschiebt.
-      erledigen(m, { ...s, aktion: text }, dTage(), standard, einmalDatum);
+      erledigen(m, { ...s, aktion: text }, dTage(), standard);
       bau();
     };
     zeile.append(ok);
@@ -1990,6 +1969,12 @@ function isoInTagen(t) {
 // naechste Jahr weiter. Ohne die Rundlauf-Pruefung unten haette ein
 // unsinniges Datum klaglos einen Termin ergeben - ein stiller Fehlschlag,
 // der wie Erfolg aussieht. Deshalb: zurueckrechnen und vergleichen.
+// ponytail: seit v117 ohne Aufrufer - der einzige war datum.onchange im
+// ausgebauten Feld "Einmalig auf ein Datum legen". Bleibt stehen, weil zwei
+// Tests darauf zeigen (test_kadenz + Invariante 5 im Waechter) und ein
+// Ausbau hiesse, den Waechter zu beschneiden. Loeschen, sobald jemand den
+// Waechter sowieso anfasst - oder wiederverwenden: pitchNachrechnen()
+// braucht genau diese Datumsarithmetik.
 function tageBis(iso) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return null;
   const [j, mo, t] = String(iso).split("-").map(Number);
@@ -3835,10 +3820,10 @@ function fuSeitPitch(m) {
 // Erledigt eintragen: Event anhängen + Pitchlisten-Felder fortschreiben,
 // exakt wie Andrea es von Hand macht (Ablauf 8). Der Stand davor wandert
 // nach letzteAktion, damit Rückgängig ihn 1:1 wiederherstellen kann.
-// zielDatum (v95, optional): einmaliger Termin fuer die naechste Aktion,
-// z. B. "erst nach dem Urlaub wieder". Ueberschreibt NUR das Faelligkeits-
-// datum - die Kadenz unten (m.intervalle) bleibt unberuehrt, sonst wuerde
-// aus einer einmaligen Pause still eine neue Dauerkadenz.
+// Der Parameter zielDatum (v95) ist mit v117 entfallen - das Feld "Einmalig
+// auf ein Datum legen" ist ausgebaut. Wer einen eigenen Termin will, nimmt
+// "✎ Termin ändern" (terminSetzenDaten), das denselben Zweck erfuellt und
+// dabei termin_hand setzt.
 // Datenteil "Termin-Dialog" (v113, Andrea 09.09.: "Naechster Schritt und
 // Termin von Hand ueberschreiben"). Aendert die PENDING naechste Aktion,
 // ohne etwas als erledigt einzutragen.
@@ -3867,23 +3852,19 @@ function terminSetzenDaten(m, aktion, datum, jetzt) {
   return true;
 }
 
-function erledigen(m, s, tage, standard, zielDatum) {
+function erledigen(m, s, tage, standard) {
   const jetzt = lokalIso();
   const heute = deDatum(isoInTagen(0));
   datenstand.letzteAktion =
     { name: m.name, aktion: s.aktion, zeit: jetzt, vorher: { ...m.pitchliste } };
   (m.events = m.events || []).push(
     { typ: s.typ, datum: heute, aktion: s.aktion, positiv: "" });
-  // termin_hand muss BEIDE Richtungen koennen (v116, 12.09.), sonst
-  // zerstoert pitchNachrechnen() spaeter Daten:
-  //   zielDatum gesetzt -> Andrea hat das Datum selbst gewaehlt ("erst nach
-  //                        dem Urlaub") -> schuetzen
-  //   zielDatum leer    -> Datum kommt aus der Kadenz -> darf nachgerechnet
-  //                        werden. Ohne das false blieb ein einmal gesetzter
-  //                        Merker EWIG stehen (v113 setzt ihn, niemand
-  //                        loescht ihn) - die Zeile waere dauerhaft vom
-  //                        Nachrechnen ausgenommen, auch nach zwanzig
-  //                        normalen Follow-ups.
+  // termin_hand wird hier GELOESCHT (v116/v117), und das ist zwingend:
+  // Dieses Datum kommt aus der Kadenz, darf also von pitchNachrechnen()
+  // nachgerechnet werden. v113 setzte den Merker, niemand loeschte ihn -
+  // eine Marke waere nach EINEM Handtermin auf Dauer vom Nachrechnen
+  // ausgenommen gewesen, auch nach zwanzig normalen Follow-ups.
+  // Gesetzt wird er nur noch in terminSetzenDaten() ("✎ Termin ändern").
   // Kommentar steht ABSICHTLICH hier und nicht im Objekt: der
   // Stempel-Waechter in test_invarianten.js prueft "geaendert:" nur in den
   // 8 Zeilen nach dem Schreibzugriff.
@@ -3891,8 +3872,8 @@ function erledigen(m, s, tage, standard, zielDatum) {
     status: s.status,
     letzter_kontakt: heute,
     naechste_aktion: s.naechste,
-    datum_naechste_aktion: zielDatum || isoInTagen(tage),
-    termin_hand: !!zielDatum,
+    datum_naechste_aktion: isoInTagen(tage),
+    termin_hand: false,
     geaendert: jetzt,
   });
   if (s.zaehlt) {
