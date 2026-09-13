@@ -271,7 +271,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v120"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v121"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2727,6 +2727,12 @@ function ratingFormular(m, fertig) {
     }
     listeVeraltet = true;
     datenstandPersistieren();
+    // Fix B (v121): das Book verschieben allein reichte nie - im Dokument
+    // stand weiter das alte Rating, und "Daten pruefen" meldete es bis in
+    // alle Ewigkeit (Landpark, urbanjngl am 11.09.).
+    // NACH bookVerschieben, nicht davor: bookPfad() muss den neuen Ordner
+    // kennen, sonst liest der Schreibvorgang an der alten Stelle ins Leere.
+    bookKerninfosMelden(m);
     fertig();
   };
   const ab = el("button", "chip", "Abbrechen");
@@ -2888,6 +2894,7 @@ function kontaktFormular(m, fertig) {
       m.kerninfos[label] = i.value.trim();
     listeVeraltet = true;
     datenstandPersistieren();
+    bookKerninfosMelden(m);                       // Fix B (v121)
     fertig();
   };
   const ab = el("button", "chip", "Abbrechen");
@@ -2895,7 +2902,7 @@ function kontaktFormular(m, fertig) {
   okZ.append(ok, ab);
   wrap.append(okZ, el("div", "stand",
     "Landet beim „Brand-Book erstellen“ im Word. Steht das Book schon, " +
-    "trägt „↻ Book aktualisieren“ die Änderung nach."));
+    "wird die Änderung dort sofort nachgetragen."));
   return wrap;
 }
 
@@ -4675,9 +4682,19 @@ async function excelErzeugen() {
 // (gefunden 02.09. beim Test gegen ein echtes Brand-Book - der Selbsttest
 // mit nachgebauter XML hatte es nicht gezeigt, weil dort kein & vorkam).
 // "&amp;" zuletzt aufloesen, sonst wuerde aus "&amp;lt;" ein "<".
-function wordText(s) {
+//
+// trenner (v121): normalerweise " ", weil wordText ueber ganze ZEILEN
+// laeuft und die Zellen darin getrennt gehoeren ("06.09.2026 Follow Up 2").
+// Innerhalb EINES Absatzes ist derselbe Trenner falsch: Word zerlegt einen
+// Wert gern in mehrere Runs (Rechtschreibpruefung, rsid-Wechsel, ein
+// kaufmaennisches Und), und aus "info@calibar.de" wird dann
+// "info @ calibar.de". Gemessen am echten Bestand: 17 von 541 Wertzellen.
+// Deshalb wordText(absatz, "") fuer Werte - das ist genau das, was
+// python-docx (und damit ugc_core) liefert.
+function wordText(s, trenner) {
   return (String(s).match(/<w:t[^>]*>[^<]*<\/w:t>/g) || [])
-    .map((t) => t.replace(/<[^>]+>/g, "")).join(" ")
+    .map((t) => t.replace(/<[^>]+>/g, ""))
+    .join(trenner === undefined ? " " : trenner)
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
@@ -4697,6 +4714,43 @@ function zelleSetzen(tc, text) {
   const rPr = (rest.match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [""])[0];
   return "<w:tc>" + tcPr + "<w:p>" + pPr + "<w:r>" + rPr +
     '<w:t xml:space="preserve">' + xmlText(text) + "</w:t></w:r></w:p></w:tc>";
+}
+
+// Wie zelleSetzen, aber WEITERE Absaetze der Zelle bleiben stehen.
+//
+// Warum das noetig ist: ugc_core.extract_kerninfos liest je Zelle nur die
+// ERSTE Zeile (Briefing Abschnitt 7). Die App kennt Zeile 2 also gar nicht
+// - ein zelleSetzen() wuerde sie beim Nachziehen still wegwerfen. Bei
+// "Social Media" stehen bei Andrea durchaus zwei Links untereinander.
+//
+// <w:br/> INNERHALB des ersten Absatzes laesst sich so nicht retten: dort
+// sind beide Zeilen ein Absatz, und die Formatierung eines einzelnen
+// Umbruchs nachzubauen waere mehr Code als der ganze Fix. In dem Fall wird
+// NICHT geschrieben (null) - der Aufrufer meldet es als Handarbeit.
+// Lieber eine Meldung als eine verlorene Zeile in Andreas Word.
+// Was in Zeile 1 der Zelle steht - und zwar so, wie ugc_core es liest:
+// Runs ohne Trenner, nur der erste Absatz, getrimmt. Das ist die einzige
+// richtige Vergleichsgrundlage fuer "steht schon so da".
+//
+// Zwei Fallen stecken hier drin, beide am echten Bestand gemessen:
+//   * wordText(zelle) haengt ALLE Absaetze aneinander - bei einer Zelle mit
+//     zwei E-Mail-Adressen kaeme "info@x.de together@x.de" heraus, was nie
+//     einem App-Wert gleicht.
+//   * wordText(..., " ") setzt zwischen Runs ein Leerzeichen - aus
+//     "info@calibar.de" wird "info @ calibar.de".
+// Zusammen betrafen die beiden 16 von 60 Books: die App haette dort bei
+// JEDEM Speichern hochgeladen, ohne etwas zu aendern.
+function ersteZeileText(tc) {
+  const erster = (String(tc).match(/<w:p[\s>][\s\S]*?<\/w:p>/) || [tc])[0];
+  return wordText(erster, "").trim();
+}
+
+function zelleErsteZeileSetzen(tc, text) {
+  const absaetze = tc.match(/<w:p[\s>][\s\S]*?<\/w:p>/g) || [];
+  if (/<w:br[ />]/.test(absaetze[0] || tc)) return null;
+  const eins = zelleSetzen(tc, text);
+  return absaetze.length < 2 ? eins
+    : eins.slice(0, -"</w:tc>".length) + absaetze.slice(1).join("") + "</w:tc>";
 }
 
 // Neue Zeile aus einer Vorlagen-Zeile bauen (Spalte 1 Datum, 2 Aktion,
@@ -4773,6 +4827,87 @@ function historieXml(xml, datum, aktion, entfernen) {
   // Funktions-Ersatz: sonst wuerde ein "$&" im Word-Text (oder in einem
   // Aktionsnamen) als Rueckverweis-Muster interpretiert.
   return xml.replace(tbl, () => tblNeu);
+}
+
+// ------------------------------------- Kerninfos ins Book (Fix B, v121)
+// Aendert Andrea in der App ein Feld, das AUCH in der Kerninfos-Tabelle des
+// Brand-Books steht, wird es dort nachgezogen. Bis v120 passierte das nie:
+// beim Rating-Wechsel wanderte nur die DATEI in den neuen Ordner
+// (bookVerschieben), ihr Inhalt blieb auf dem Stand vom Erstellungstag.
+// App sagt A, Word sagt B, der Ordner heisst "A Brands". "Daten pruefen"
+// (v105) FINDET das seit dem 06.09., abstellen konnte es niemand.
+//
+// Dieselbe Mechanik wie historieXml, nur die andere Tabelle - und mit drei
+// Regeln, die es dort nicht braucht:
+//
+//   1. LEER ueberschreibt NIE. Der App-Stand kommt aus dem letzten
+//      PC-Import und kann ein Feld schlicht noch nicht kennen; leer heisst
+//      "weiss ich nicht", nicht "loesch das". Ein Ansprechpartner, der nur
+//      im Word steht, waere sonst nach dem ersten Rating-Wechsel weg.
+//   2. GLEICHER Wert = kein Schreibvorgang. Ohne das laedt jedes Speichern
+//      das Book hoch, ohne etwas zu aendern - ein Risiko ohne Nutzen.
+//   3. Fremde Zeilen bleiben stehen. Eine Marke hat "Whatsapp" in der
+//      Tabelle; was nicht in `werte` steht, wird nicht angefasst.
+//
+// Gefunden wird die Tabelle wie in ugc_core.extract_kerninfos und
+// template_platzhalter.py: ueber die erste Zelle, nicht ueber die Position.
+// Verglichen wird ueber historieSchluessel() - "Rating (A-D):",
+// "rating (A-D)" und das mit Halbgeviertstrich getippte "Rating (A–D)"
+// sind derselbe Schluessel.
+//
+// Rueckgabe: { xml, geaendert: [Label], handarbeit: [Label] } - oder null,
+// wenn die Tabelle fehlt. null heisst "Andrea muss ran", NICHT "schreib
+// trotzdem irgendwas".
+function wordZeilen(x) {
+  return String(x).match(/<w:tr[\s>][\s\S]*?<\/w:tr>/g) || [];
+}
+
+function wordZellen(x) {
+  return String(x).match(/<w:tc>[\s\S]*?<\/w:tc>/g) || [];
+}
+
+// Die Kerninfos-Tabelle eines Dokuments, oder null.
+//
+// Eigene Funktion, damit die Bestandsprobe (tests/probe_echte_books.js)
+// GENAU DIESE Erkennung benutzt statt einer nachgebauten. Eine Probe, die
+// nach einer anderen Regel sucht als die App, prueft irgendwann etwas
+// anderes als das, was ausgeliefert wird.
+function kerninfosTabelle(xml) {
+  return (String(xml).match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) || []).find((t) => {
+    const erste = wordZellen(wordZeilen(t)[0] || "");
+    return erste.length >= 2 &&
+      historieSchluessel(wordText(erste[0])) === "name";
+  }) || null;
+}
+
+function kerninfosXml(xml, werte) {
+  const tbl = kerninfosTabelle(xml);
+  if (!tbl) return null;
+  // Nur nicht-leere Werte, auf den Vergleichsschluessel gezogen (Regel 1).
+  const gesucht = new Map();
+  for (const [label, wert] of Object.entries(werte)) {
+    const w = String(wert == null ? "" : wert).trim();
+    if (w) gesucht.set(historieSchluessel(label), [label, w]);
+  }
+  let tblNeu = tbl;
+  const geaendert = [], handarbeit = [];
+  for (const z of wordZeilen(tbl)) {
+    const zellen = wordZellen(z);
+    if (zellen.length < 2) continue;
+    const treffer = gesucht.get(historieSchluessel(wordText(zellen[0])));
+    if (!treffer) continue;                       // fremde Zeile (Regel 3)
+    const [label, wert] = treffer;
+    if (ersteZeileText(zellen[1]) === wert) continue;         // Regel 2
+    const zelleNeu = zelleErsteZeileSetzen(zellen[1], wert);
+    if (!zelleNeu) { handarbeit.push(label); continue; }
+    // Funktions-Ersatz an beiden Stellen: ein "$&" im Wert (kommt in
+    // Instagram-Links vor) wuerde sonst als Rueckverweis gelesen und den
+    // gefundenen Text einsetzen statt den Wert.
+    tblNeu = tblNeu.replace(z, () => z.replace(zellen[1], () => zelleNeu));
+    geaendert.push(label);
+  }
+  return { xml: geaendert.length ? xml.replace(tbl, () => tblNeu) : xml,
+           geaendert, handarbeit };
 }
 
 // ------------------------------------------------ Datenlogging (v103)
@@ -4979,6 +5114,11 @@ const pause = (ms) => new Promise((fertig) => setTimeout(fertig, ms));
 // vor dem gleichzeitigen Ansturm vieler Clients; hier tippt eine Person.
 const BOOK_WARTEN_MS = [2000, 5000, 15000];
 
+// Beschriftung eines Kerninfos-Auftrags in der Warteliste (v121). Steht
+// dort, wo bei einem Historien-Eintrag die Aktion steht ("Follow up 2") -
+// damit zeigt wartelisteZeile() beide Arten ohne eine Zeile Sonderfall.
+const KERNINFOS_AKTION = "Kerninfos ins Book";
+
 // EIN Durchgang: lesen, aendern, schreiben.
 async function bookHistorieEinmal(m, datum, aktion, entfernen, versuch) {
   const pfad = bookPfad(m);
@@ -5041,14 +5181,167 @@ async function bookHistorieEinmal(m, datum, aktion, entfernen, versuch) {
 // zweiter Versuch mit dem alten Dokumentinhalt wuerde ihre Aenderung
 // ueberschreiben (conflictBehavior=replace fragt nicht nach).
 async function bookHistorie(m, datum, aktion, entfernen) {
-  if (!m.brandrating || !m.brandrating.brandbook ||
-      typeof OD === "undefined" || !OD.konto() ||
-      typeof JSZip === "undefined") return "kein-book";
+  // "kein-book" heisst NUR: die Marke hat gar keins. Das ist ein Dauerzustand
+  // und darf in der Outbox als erledigt gelten. Nicht angemeldet oder JSZip
+  // noch nicht geladen ist dagegen VORUEBERGEHEND und bekommt einen eigenen
+  // Rueckgabewert - sonst loescht outboxAbarbeiten() den wartenden Auftrag
+  // und zaehlt ihn als getan, ohne dass je etwas ins Book geschrieben wurde.
+  // Gefunden von Codex am 13.09. als zweite Instanz; galt fuer beide Wege.
+  if (!m.brandrating || !m.brandrating.brandbook) return "kein-book";
+  if (typeof OD === "undefined" || !OD.konto() ||
+      typeof JSZip === "undefined") return "nicht-bereit";
   for (let i = 0; ; i++) {
     const s = await bookHistorieEinmal(m, datum, aktion, entfernen, i + 1);
     if (s !== "wartet" || i >= BOOK_WARTEN_MS.length) { logSichern(); return s; }
     await pause(BOOK_WARTEN_MS[i]);
   }
+}
+
+// ------------------------------- Kerninfos-Tabelle schreiben (Fix B, v121)
+// Aufbau Zeile fuer Zeile wie bookHistorieEinmal - absichtlich, nicht aus
+// Bequemlichkeit: derselbe Lesefehler-Zweig, dieselben Rueckgabewerte,
+// dieselbe Warteschlange. Eine zweite, leicht andere Fehlerbehandlung am
+// selben Dateityp waere die Stelle, an der die naechste stille Abweichung
+// entsteht.
+//
+// Ein Zustand mehr als bei der Historie: "gleich" - im Book steht schon
+// alles richtig, es gibt nichts hochzuladen.
+async function bookKerninfosEinmal(m, versuch) {
+  const pfad = bookPfad(m);
+  const t0 = Date.now();
+  // "Name" bleibt draussen: der Name steckt AUCH im Dateinamen, und ein
+  // Book, in dem ein anderer Name steht als auf der Datei, ist schlimmer
+  // als eins mit altem Namen. Umbenennen ist ein eigener Punkt, der beides
+  // zusammen macht - dann wird hier nur das Weglassen entfernt.
+  const { Name, ...werte } = bookWerte(m);
+  const grund = { marke: m.name, aktion: KERNINFOS_AKTION, pfad,
+                  versuch: versuch || 1 };
+  try {
+    const r = await OD.graphRoh(pfad + ":/content");
+    logZeile("kerninfos-lesen", { ...grund, methode: "GET",
+      status: r ? r.status : 0, code: await logFehlerCode(r),
+      ms: Date.now() - t0 });
+    if (!r) return "wartet";
+    // 404 beim ERSTEN Versuch heisst hier nicht zwingend "Book weg":
+    // geschrieben wird direkt nach bookVerschieben(), und Graph braucht
+    // nach einem Verschieben manchmal einen Moment, bis die Datei unter
+    // dem neuen Pfad auftaucht. Ab dem zweiten Versuch gilt 404 wie
+    // ueberall sonst.
+    if (r.status === 404 && (versuch || 1) <= 1) return "wartet";
+    if (!r.ok) return schreibStatus(r);
+    const zip = await JSZip.loadAsync(await r.arrayBuffer());
+    const d = zip.file("word/document.xml");
+    if (!d) {
+      logZeile("kerninfos-abbruch", { ...grund, warum: "keine document.xml" });
+      return "braucht-dich";
+    }
+    const erg = kerninfosXml(await d.async("string"), werte);
+    if (!erg) {
+      logZeile("kerninfos-abbruch", { ...grund,
+        warum: "Kerninfos-Tabelle nicht gefunden" });
+      return "braucht-dich";
+    }
+    if (!erg.geaendert.length) {
+      // KEIN Upload ohne Aenderung. Ein PUT, der nichts aendert, ist ein
+      // Schreibzugriff auf Andreas Word ohne jeden Gegenwert - und jeder
+      // Schreibzugriff kann schiefgehen.
+      logZeile("kerninfos-gleich", { ...grund,
+        ...logMehr({ handarbeit: erg.handarbeit.join(", ") }) });
+      return erg.handarbeit.length ? "braucht-dich" : "gleich";
+    }
+    zip.file("word/document.xml", erg.xml);
+    const put = await OD.graphRoh(
+      pfad + ":/content?@microsoft.graph.conflictBehavior=replace",
+      { method: "PUT",
+        body: await zip.generateAsync(
+          { type: "arraybuffer", compression: "DEFLATE" }),
+        headers: { "Content-Type": DOCX_TYP } });
+    logZeile("kerninfos-schreiben", { ...grund, methode: "PUT",
+      status: put ? put.status : 0, code: await logFehlerCode(put),
+      ms: Date.now() - t0, ergebnis: schreibStatus(put),
+      ...logMehr({ soll: erg.geaendert.join(", "),
+                   handarbeit: erg.handarbeit.join(", "),
+                   bytes: erg.xml.length }) });
+    const s = schreibStatus(put);
+    // Geschrieben ist geschrieben - aber wenn eine Zelle stehen bleiben
+    // musste, ist das Book eben NICHT auf Stand. Dann lieber in die
+    // Warteliste unter "Braucht dich", als Erfolg zu melden.
+    return s === "ok" && erg.handarbeit.length ? "braucht-dich" : s;
+  } catch (fehler) {
+    logZeile("kerninfos-ausnahme", { ...grund, warum: String(fehler),
+      ms: Date.now() - t0 });
+    return "wartet";
+  }
+}
+
+// Mit Wiederholung, wie bookHistorie - und mit dem Spiegel-Nachzug.
+//
+// Warum der Spiegel HIER gepflegt wird und nicht beim Aufrufer: es gibt
+// zwei Aufrufer (Klick und Nacharbeit aus der Warteschlange). Stuende es
+// dort, muesste es zweimal stehen - und beim naechsten Aufrufer wieder.
+// Die Funktion, die weiss, dass die Datei jetzt stimmt, zieht ihn nach.
+async function bookKerninfos(m) {
+  // "kein-book" heisst NUR: die Marke hat gar keins. Das ist ein Dauerzustand
+  // und darf in der Outbox als erledigt gelten. Nicht angemeldet oder JSZip
+  // noch nicht geladen ist dagegen VORUEBERGEHEND und bekommt einen eigenen
+  // Rueckgabewert - sonst loescht outboxAbarbeiten() den wartenden Auftrag
+  // und zaehlt ihn als getan, ohne dass je etwas ins Book geschrieben wurde.
+  // Gefunden von Codex am 13.09. als zweite Instanz; galt fuer beide Wege.
+  if (!m.brandrating || !m.brandrating.brandbook) return "kein-book";
+  if (typeof OD === "undefined" || !OD.konto() ||
+      typeof JSZip === "undefined") return "nicht-bereit";
+  for (let i = 0; ; i++) {
+    const s = await bookKerninfosEinmal(m, i + 1);
+    if (s === "wartet" && i < BOOK_WARTEN_MS.length) {
+      await pause(BOOK_WARTEN_MS[i]);
+      continue;
+    }
+    logSichern();
+    // Im Book steht jetzt, was der Datenstand sagt - m.kerninfos darf
+    // mitziehen. Ohne das meldet "Daten pruefen" weiter rot, obwohl nichts
+    // mehr falsch ist: die Pruefung vergleicht den PC-Import-Spiegel, nicht
+    // die Datei (Abend vom 07.09.).
+    if ((s === "ok" || s === "gleich") && kerninfosNachziehen(m)) {
+      listeVeraltet = true;
+      datenstandPersistieren();
+    }
+    return s;
+  }
+}
+
+// Nachziehen und nur dann etwas sagen, wenn es etwas zu sagen gibt.
+// Laeuft NEBEN dem Speichern (kein await): der Speichern-Knopf soll nicht
+// auf einen Word-Upload warten - genauso wie beim Erledigt-Knopf.
+function bookKerninfosMelden(m) {
+  bookKettig(m, async () => {
+    const s = await bookKerninfos(m);
+    const k = outboxSchluessel(m, "", KERNINFOS_AKTION, false, "kerninfos");
+    if (s === "ok") {
+      outboxWeg(k);
+      banner("Änderung auch im Brand-Book nachgetragen.");
+      outboxAbarbeiten();          // Book war frei - Rest gleich mitnehmen
+    } else if (s === "gleich") {
+      outboxWeg(k);                // im Book stand es schon richtig
+    } else if (s === "wartet" || s === "nicht-bereit") {
+      // Beide Male gilt: nichts zurueckrollen, der Auftrag wartet. `grund`
+      // ist bewusst "wartet" - das ist der Wert, den outboxAbarbeiten()
+      // aufgreift.
+      outboxAufnehmen(m, deDatum(isoInTagen(0)), KERNINFOS_AKTION, false,
+                      "wartet", "kerninfos");
+      banner(s === "wartet"
+        ? "Gespeichert. Das Brand-Book ist gerade belegt — " +
+          "die Änderung wird automatisch nachgetragen."
+        : "Gespeichert. Keine Verbindung zum Brand-Book — die Änderung " +
+          "wird nachgetragen, sobald du wieder angemeldet bist.");
+    } else if (s === "braucht-dich") {
+      outboxAufnehmen(m, deDatum(isoInTagen(0)), KERNINFOS_AKTION, false,
+                      "braucht-dich", "kerninfos");
+      if (wartelisteZeigen()) return;
+      banner("Brand-Book konnte nicht nachgetragen werden — " +
+             "die Kerninfos dort bitte von Hand ändern.");
+    }
+    // "kein-book": die Marke hat gar keins. Normaler Zustand, still.
+  });
 }
 
 // ------------------------------------------------------- Outbox (v103)
@@ -5063,13 +5356,25 @@ function outbox() {
   return datenstand.ausstehend;
 }
 
-function outboxSchluessel(m, datum, aktion, entfernen) {
-  return [schluessel(m.name), datum, aktion, entfernen ? "weg" : "hin"].join("|");
+// art: undefined/"historie" = ein Ereignis (Pitch, Follow up, Ruecknahme)
+//      "kerninfos"           = "bring die Kerninfos-Tabelle auf Stand" (v121)
+//
+// Fuer Kerninfos gehen Datum und Aktion BEWUSST nicht in den Schluessel
+// ein: es gibt genau EINEN offenen Auftrag je Marke. Ein Feld-Update ist
+// idempotent ("setze auf den aktuellen Stand"), anders als ein Ereignis,
+// das sich anhaeuft. Zwei Eintraege waeren zweimal dieselbe Arbeit - und
+// der aeltere wuerde beim Abarbeiten nichts Aelteres schreiben, sondern
+// nur ein zweites Mal hochladen.
+function outboxSchluessel(m, datum, aktion, entfernen, art) {
+  return art === "kerninfos"
+    ? schluessel(m.name) + "|kerninfos"
+    : [schluessel(m.name), datum, aktion, entfernen ? "weg" : "hin"].join("|");
 }
 
 // grund: "wartet" (still weiterversuchen) | "braucht-dich" (Andrea muss ran)
-function outboxAufnehmen(m, datum, aktion, entfernen, grund) {
-  const k = outboxSchluessel(m, datum, aktion, entfernen);
+// art:   siehe outboxSchluessel
+function outboxAufnehmen(m, datum, aktion, entfernen, grund, art) {
+  const k = outboxSchluessel(m, datum, aktion, entfernen, art);
   // Schreiben-dann-Entfernen ist zusammen ein Nichts (v107).
   //
   // Die Warteschlange kennt keine Reihenfolge zwischen einem Eintrag und
@@ -5096,9 +5401,13 @@ function outboxAufnehmen(m, datum, aktion, entfernen, grund) {
     }
   }
   const da = outbox().find((e) => e.k === k);
-  if (da) { da.versuche = (da.versuche || 1) + 1; da.grund = grund; }
+  // da.datum mitziehen: bei einem Historien-Eintrag steckt das Datum im
+  // Schluessel und aendert sich nie - bei einem Kerninfos-Auftrag zeigt die
+  // Warteliste sonst den Tag der ERSTEN Aenderung statt der letzten.
+  if (da) { da.versuche = (da.versuche || 1) + 1; da.grund = grund;
+            da.datum = datum; }
   else outbox().push({ k, marke: m.name, datum, aktion,
-                       entfernen: !!entfernen, seit: lokalIso(),
+                       entfernen: !!entfernen, art, seit: lokalIso(),
                        versuche: 1, grund });
   logZeile("warteliste-auf", { marke: m.name, aktion, datum,
     entfernen: !!entfernen, grund, versuche: (da && da.versuche) || 1 });
@@ -5135,10 +5444,41 @@ async function outboxAbarbeiten(still) {
       // daneben, konnte ein Retry genau dann ins Book schreiben, wenn
       // outboxAufnehmen() das Paar gerade strich - Zeile im Word,
       // Warteliste leer. Gleicher Schaden, nur seltener.
-      const s = await bookKettig(m, () =>
-        bookHistorie(m, e.datum, e.aktion, e.entfernen));
-      if (s === "ok" || s === "dublette" || s === "kein-book") {
+      // Abzweig nach Art (v121). OHNE ihn liefe ein Kerninfos-Auftrag durch
+      // bookHistorie() und schriebe "Kerninfos ins Book" als ZEILE in
+      // Andreas Pitch-Historie - ein erfundenes Ereignis, und die
+      // Kennzahlen kommen aus den Books. Alte Eintraege ohne `art` sind
+      // Historien-Eintraege; deshalb wird auf "kerninfos" geprueft und
+      // nicht auf das Fehlen.
+      const s = await bookKettig(m, () => {
+        // `offen` ist ein SCHNAPPSCHUSS von vor der Schleife. Waehrend wir
+        // auf eine andere Marke warten, kann Andrea genau diesen Auftrag
+        // zurueckgenommen haben - outboxAufnehmen() streicht das Paar dann
+        // aus der echten Liste (v107-Regel), unser `e` weiss davon nichts.
+        // Ohne diese Pruefung schriebe die Nacharbeit die Zeile wieder ins
+        // Word, die Andrea gerade entfernt hat: Zeile im Book, Warteliste
+        // leer - derselbe Schaden, den v107 schon einmal behoben hat, nur
+        // ueber den Schnappschuss statt ueber die Verschraenkung.
+        // Die Pruefung steht IN der Kette, nicht davor: zwischen Einreihen
+        // und Ausfuehren liegt die Wartezeit, in der die Ruecknahme passiert.
+        // Gefunden von Codex als zweite Instanz, 13.09.
+        if (!outbox().some((x) => x.k === e.k)) return "zurueckgenommen";
+        return e.art === "kerninfos"
+          ? bookKerninfos(m)
+          : bookHistorie(m, e.datum, e.aktion, e.entfernen);
+      });
+      // Schon aus der Liste - nichts geschrieben, nichts zu loeschen,
+      // nichts anzurechnen.
+      if (s === "zurueckgenommen") continue;
+      if (s === "ok" || s === "dublette" || s === "kein-book" ||
+          s === "gleich") {
         outboxWeg(e.k); fertig++;
+      } else if (s === "nicht-bereit") {
+        // Nicht angemeldet: an diesem Eintrag ist nichts passiert, und am
+        // Rest der Schlange wird genauso nichts passieren. Abbrechen statt
+        // durchlaufen - und `grund` BLEIBT "wartet", sonst holt der
+        // naechste Lauf den Eintrag nie wieder (Filter oben).
+        break;
       } else {
         e.versuche = (e.versuche || 1) + 1;
         e.grund = s;                          // ggf. jetzt "braucht-dich"
@@ -5344,12 +5684,15 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
       outboxWeg(outboxSchluessel(m, datum, aktion, entfernen));
       banner("„" + aktion + "“ stand am " + datum + " schon im Brand-Book — " +
         "nicht doppelt eingetragen.");
-    } else if (s === "wartet") {
+    } else if (s === "wartet" || s === "nicht-bereit") {
       // Kern von v103: es wird NICHTS zurueckgenommen. Der Eintrag steht im
       // Datenstand und wartet auf seinen Weg ins Book. Andrea muss nichts
       // von Hand machen und nichts noch einmal antippen.
       outboxAufnehmen(m, datum, aktion, entfernen, "wartet");
-      banner(entfernen
+      banner(s === "nicht-bereit"
+        ? "„" + aktion + "“ ist eingetragen. Keine Verbindung zum Brand-Book — "
+          + "wird nachgetragen, sobald du wieder angemeldet bist."
+        : entfernen
         ? "„" + aktion + "“ wird aus dem Brand-Book entfernt, sobald es frei ist."
         : "„" + aktion + "“ ist eingetragen. Das Brand-Book ist gerade belegt — "
           + "wird automatisch nachgetragen.");
