@@ -178,8 +178,27 @@ function kpiZeitraum(historien, von, bis) {
     if (!k) continue;
     if (k.kontaktiert) gesamt.marken++;
     for (const feld of KPI_SUMMEN) gesamt[feld] += k[feld];
+    // `gruppe` ist der ORDNERNAME der Word-Datei, und die Gruppenliste auf
+    // dem Dashboard gruppiert danach. Bis v121 kam der Wert ausschliesslich
+    // vom PC-Import (export_snapshot.py rechnet ihn aus dem Dateipfad) - die
+    // App selbst hat ihn NIE geschrieben. Folge: Rating gewechselt, Datei
+    // verschoben, Kerninfos im Word nachgezogen - und die Liste zeigte
+    // trotzdem den alten Buchstaben, bis am PC importiert wurde.
+    // Gefunden von Tobias am 13.09. beim ersten echten Rating-Wechsel.
+    //
+    // `bookordner` weiss es besser, sobald die App die Datei selbst angelegt
+    // oder verschoben hat - dieselbe Quelle, aus der bookPfad() den Pfad
+    // baut. Ist er nicht gesetzt (Andreas gewachsene Books, die die App nie
+    // angefasst hat), bleibt der importierte Wert stehen.
+    //
+    // BEWUSST NICHT auf m.brandrating.rating zurueckgefallen wie bookPfad():
+    // das waere eine Behauptung ueber den Ablageort, die niemand geprueft
+    // hat. Weichen Rating und Ordner auseinander (Landpark, urbanjngl am
+    // 11.09.), soll genau das sichtbar bleiben.
     marken.push({ name: marke.name, quelle: marke.quelle || "",
-                  gruppe: marke.gruppe || "", ...k });
+                  gruppe: marke.bookordner
+                    ? marke.bookordner + " Brands"
+                    : (marke.gruppe || ""), ...k });
   }
   return { gesamt, marken };
 }
@@ -271,7 +290,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v121"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v122"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
