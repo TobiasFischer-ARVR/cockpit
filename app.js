@@ -276,6 +276,48 @@ function pfadWarnung() {
   return k;
 }
 
+// Hinweiszeile "in Word geaendert" (v123). Gibt null zurueck, wenn nichts
+// anliegt - der Aufrufer haengt sie einfach an.
+//
+// WEGKLICKBAR, und das ist keine Bequemlichkeit: Andrea kann den PC-Import
+// nicht selbst ausloesen, das kann nur Tobias. Ein Hinweis, der bis zum
+// Import stehen bleibt, ist fuer sie also einer, den sie NIE wegbekommt -
+// nach drei Tagen Tapete, nach einer Woche unsichtbar. Genau so ist das
+// 4-Sekunden-Sicherungsbanner am 04.09. gestorben, nur andersherum.
+//
+// Weggeklickt wird auf den cTag gemerkt: dieselbe Aenderung bleibt weg,
+// eine NEUE holt die Zeile von selbst zurueck. Dadurch kann sie nicht zur
+// Tapete werden, und es braucht keine Ruecksetz-Logik.
+//
+// Die Meldung nennt nur die Tatsache, keine Handlung (Tobias 14.09.):
+// "bitte am PC einlesen" waere eine Aufforderung an jemanden, der sie
+// nicht ausfuehren kann.
+function bookAenderungZeile() {
+  const weg = einst.bookHinweisWeg || {};
+  const namen = [...bookGeaendert].filter(([n, c]) => weg[n] !== c)
+    .map(([n]) => n);
+  if (!namen.length) return null;
+  const k = el("div", "karte block warnung");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "ℹ Hinweis"));
+  const zu = el("button", "chip", "✕");
+  zu.onclick = (e) => {
+    e.stopPropagation();
+    const w = einst.bookHinweisWeg || {};
+    for (const [n, c] of bookGeaendert) w[n] = c;
+    einst.bookHinweisWeg = w;
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    k.remove();
+  };
+  kopf.append(zu);
+  k.append(kopf, el("div", "titel", namen.length === 1
+      ? "1 Brand-Book wurde in Word geändert"
+      : `${namen.length} Brand-Books wurden in Word geändert`),
+    el("div", "kontext",
+      namen.join(", ") + " — der angezeigte Stand kann veraltet sein."));
+  return k;
+}
+
 function kopfzeile(titel, zurueckSichtbar) {
   document.getElementById("titel").textContent = titel;
   document.getElementById("zurueck").style.visibility =
@@ -290,7 +332,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v122"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v123"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -770,16 +812,32 @@ function sheetEinstellungen() {
     "zwischen Brand-Book und Excel.");
   const pZeile = el("div", "chips");
   const pKnopf = el("button", "chip", "🔍 Daten prüfen");
-  pKnopf.onclick = () => {
+  pKnopf.onclick = async () => {
     if (!datenstand || !datenstand.marken) {
       pStatus.textContent = "Kein Datenstand geladen.";
       return;
     }
     const { fehler, hinweise } = bestandBefunde(datenstand.marken);
     pStatus.textContent = "";
+    // Word -> App (v123): die einzige Stelle, an der die App ueberhaupt
+    // merkt, dass ein Book inzwischen anders aussieht.
+    //
+    // Gesperrt wird nur um den await herum, wie beim Nachbarknopf
+    // "Excel erzeugen". Das genuegt: alles davor und danach laeuft
+    // synchron, ein zweiter Klick kann sich also nur HIER dazwischen
+    // schieben. Ohne die Sperre haengen zwei Durchlaeufe ihre Ergebnisse
+    // nacheinander in dasselbe pStatus - zweimal derselbe Befund.
+    pKnopf.disabled = true;
+    const wordNeu = await bookAenderungenPruefen();
+    pKnopf.disabled = false;
+    if (wordNeu.length) {
+      listeVeraltet = true;
+      pStatus.append(el("div", null, "⚠ In Word geändert: "
+        + wordNeu.join(", ") + " — der angezeigte Stand kann veraltet sein."));
+    }
     if (!fehler.length && !hinweise.length) {
-      pStatus.textContent =
-        "✓ Keine Abweichungen — Book, Brand Rating und Pitchliste sind sich einig.";
+      pStatus.append(el("div", null,
+        "✓ Keine Abweichungen — Book, Brand Rating und Pitchliste sind sich einig."));
       pStatus.append(el("div", "stand", spiegelHinweis()));
       return;
     }
@@ -1170,7 +1228,8 @@ function markenKarte(m) {
   karte.append(kopf, el("div", "titel", m.name),
     el("div", "kontext",
       `Follow-ups: ${m.followups} · Antworten: ${m.antworten} (${m.positiv} positiv) · Nach Erstkontakt: ${m.nach_erstkontakt}`),
-    el("div", "fuss", `Quelle: ${m.quelle}.docx`));
+    el("div", "fuss", `Quelle: ${m.quelle}.docx`
+      + (bookGeaendert.has(m.name) ? " · ✎ in Word geändert" : "")));
   karte.classList.add("tippbar");
   karte.onclick = () => sheetHistorie(m);
   return karte;
@@ -3136,7 +3195,9 @@ function brKarte(m) {
     .filter(Boolean).join(" · ");
   karte.append(kopf, el("div", "titel", m.name),
     el("div", "kontext", (br.status || "—") + (skalen ? " · " + skalen : "")),
-    el("div", "fuss", br.brandbook ? "Brand-Book ✓" : "noch kein Brand-Book"));
+    el("div", "fuss",
+      (br.brandbook ? "Brand-Book ✓" : "noch kein Brand-Book")
+      + (bookGeaendert.has(m.name) ? " · ✎ in Word geändert" : "")));
   karte.classList.add("tippbar");
   karte.onclick = () => sheetBrandrating(m);
   return karte;
@@ -3653,6 +3714,8 @@ function renderUgc() {
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
     rumpf.innerHTML = "";
+    const az = bookAenderungZeile();
+    if (az) rumpf.append(az);
     const sichtbar = z.marken.filter(markenFilter);
     if (markenFilterAktiv()) {
       rumpf.append(el("div", "stand",
@@ -4174,8 +4237,135 @@ const DOCX_TYP = "application/vnd.openxmlformats-officedocument" +
 // die Brand beim Erstellen ihren Ordner; nur wenn der fehlt (Andreas
 // gewachsene Books, die die App nie angelegt hat) wird gerechnet.
 function bookPfad(m) {
-  const ordner = m.bookordner || String(m.brandrating.rating).trim();
-  return `${bookBasis()}/${ordner} Brands/Brand-Book ${m.name}.docx`;
+  // Der Ordner kommt aus bookOrdner() - EINE Stelle, die entscheidet, wo ein
+  // Book liegt. Zwei Stellen mit derselben Fallunterscheidung sind genau das
+  // Muster, aus dem der m.gruppe/m.bookordner-Fehler von v122 entstanden ist.
+  return `${bookBasis()}/${bookOrdner(m)} Brands/Brand-Book ${m.name}.docx`;
+}
+
+// ---------------------------------------- Book-Waechter (v123, Backlog 23)
+// Die Richtung Word -> App gibt es nur ueber den PC-Import. Bis der laeuft,
+// zeigt die App treu den alten Stand - und behauptet ihn. Am 07.09. hat
+// genau das einen Abend gekostet. Hier wird wenigstens SICHTBAR, dass ein
+// Book inzwischen anders aussieht. Kein Parsen, kein zweiter Leser neben
+// ugc_core.py: nur ein Fingerabdruck der Datei.
+//
+// Gemerkt wird der cTag, nicht der eTag. Der eTag zaehlt JEDE Aenderung
+// mit, auch reine Metadaten; der cTag reagiert auf deutlich weniger.
+// Der eTag gehoert zu If-Match beim Schreiben (Backlog 24.1), nicht hierher.
+//
+// ACHTUNG, am 14.09. an Tobias' echtem OneDrive NACHGEMESSEN und damit
+// eine falsche Annahme aus der Graph-Doku widerlegt: Ein Verschieben
+// aendert den cTag EBENFALLS. Gemessen an einer Wegwerf-Datei, die keine
+// Marke hat (Word zu, App konnte sie nicht anfassen, GUID unveraendert):
+// eTag +3, cTag +1 durch ein blosses Verschieben zwischen zwei Ordnern.
+//
+// Folge: Die Nachfuehrung des Merkers in bookVerschieben() ist NICHT
+// Kosmetik, sondern das, was einen Fehlalarm bei jedem Rating-Wechsel
+// verhindert. Wer sie entfernt, macht den Waechter unbrauchbar.
+// tests/test_v123.js prueft sie deshalb ausdruecklich.
+let bookGeaendert = new Map();   // Markenname -> aktueller cTag. Nur Anzeige.
+
+function bookOrdner(m) {
+  return m.bookordner || String(m.brandrating.rating).trim();
+}
+
+// Merker nachziehen, NACHDEM die App selbst geschrieben hat - sonst meldet
+// sie ihren eigenen Schreibvorgang als "in Word geaendert". Graph liefert
+// bei jedem erfolgreichen PUT/PATCH das aktualisierte driveItem zurueck,
+// es braucht also KEINEN zusaetzlichen Abruf. Wichtig: das passiert in
+// derselben await-Kette wie die Auswertung der Antwort, damit das Fenster
+// "geschrieben, aber noch nicht gemerkt" so klein wie moeglich bleibt.
+//
+// ponytail: Hat Andrea das Book veraendert, BEVOR die App hineinschrieb,
+// loescht das den Hinweis, ohne dass ihre Aenderung je gemeldet wurde.
+// Fenster ist klein (nur zwischen zwei Pruefungen) und der PC-Import bleibt
+// die eigentliche Wahrheit. Schliessen liesse sich das nur mit einem
+// zweiten Word-Leser - siehe Backlog 23 Stufe 2, Risiko hoch.
+async function bookMerkerSetzen(m, antwort) {
+  if (!antwort || !antwort.ok) return;
+  const item = await antwort.json().catch(() => null);
+  if (item && item.cTag) m.bookCTag = String(item.cTag);
+}
+
+// Vier Ordner-Abrufe (A-D Brands), nicht 104 Einzelabfragen. Muster wie
+// pruefeSicherungen(). NIE ueber ":/content" abfragen: darauf antwortet
+// Graph mit einer 302 auf eine Download-URL, fetch folgt ihr, und das ETag
+// der Endantwort gehoert dann dem Storage-Blob statt dem driveItem.
+async function bookAenderungenPruefen() {
+  if (!datenstand || typeof OD === "undefined" || !OD.konto()) return [];
+  const marken = (datenstand.marken || [])
+    .filter((m) => m.brandrating && m.brandrating.brandbook);
+  if (!marken.length) return [];
+
+  // Ein neuer PC-Snapshot heisst: die App ist wieder auf dem Stand der
+  // Books. Dann gilt der aktuelle Dateizustand als bekannt und alte
+  // Markierungen sind erledigt. Ohne das blieben sie stehen, NACHDEM
+  // Tobias eingelesen hat - und ein Hinweis, der nicht mehr weggeht, wird
+  // nicht mehr gelesen. Der Snapshot selbst wird nie zurueckgeschrieben
+  // (siehe kpiNachrechnen), er kann die Merker also nicht selbst pflegen.
+  const basisNeu = !!(snap && snap.erzeugt &&
+    String(snap.erzeugt) !== String(datenstand.bookBasisStand || ""));
+
+  const gebraucht = new Set(marken.map(bookOrdner));
+  const staende = new Map();
+  for (const o of gebraucht) {
+    const r = await OD.graphRoh(`${bookBasis()}/${o} Brands` +
+      ":/children?$select=name,cTag&$top=400");
+    if (!r || !r.ok) {
+      // Nicht still uebergehen. Ein weggeworfener Graph-Fehlercode hat am
+      // 10.09. einen Abend gekostet - daher gibt es logFehlerCode(). Der
+      // Waechter meldet nach aussen bewusst nichts (lieber schweigen als
+      // raten), aber im Protokoll MUSS stehen, warum ein Ordner fehlt.
+      logZeile("book-pruefen", { ordner: o, methode: "GET",
+        status: r ? r.status : 0, code: await logFehlerCode(r) });
+      continue;
+    }
+    const map = new Map();
+    for (const d of ((await r.json()).value) || [])
+      map.set(String(d.name), String(d.cTag || ""));
+    staende.set(o, map);
+  }
+  if (!staende.size) return [];  // gar nichts gelesen -> nichts behaupten
+
+  const geaendert = new Map();
+  let mutiert = false;
+  for (const m of marken) {
+    const map = staende.get(bookOrdner(m));
+    if (!map) {
+      // Ordner diesmal nicht lesbar (Netz, Sperre, Drosselung). Ein schon
+      // erkannter Befund darf dadurch NICHT aus der Anzeige fallen - die
+      // Aenderung besteht ja weiter. Also alten Befund uebernehmen statt
+      // ihn stillschweigend zu vergessen.
+      const alt = bookGeaendert.get(m.name);
+      if (alt) geaendert.set(m.name, alt);
+      continue;
+    }
+    const cTag = map.get(`Brand-Book ${m.name}.docx`);
+    if (!cTag) continue;                    // keine Datei -> Backlog 7, nicht hier
+    if (basisNeu || !m.bookCTag) {                       // Basis setzen, STILL
+      if (m.bookCTag !== cTag) { m.bookCTag = cTag; mutiert = true; }
+      continue;
+    }
+    if (cTag !== m.bookCTag) geaendert.set(m.name, cTag);
+  }
+  // Der Snapshot gilt erst dann als verarbeitet, wenn WIRKLICH jeder
+  // gebrauchte Ordner gelesen wurde. Sonst waere der Reset verbraucht,
+  // obwohl ein Teil der Marken ihn nie bekommen hat: die behielten dann
+  // dauerhaft ihren Vor-Import-Stand als Vergleichsbasis und meldeten ab
+  // da staendig falsch, waehrend der Rest der App den Import laengst als
+  // geschehen ansieht. Lieber beim naechsten Lauf nochmal versuchen.
+  if (basisNeu && staende.size === gebraucht.size) {
+    datenstand.bookBasisStand = String(snap.erzeugt);
+    mutiert = true;
+  }
+  // Auch die REINE Basis muss sofort gespeichert werden. Sonst ist sie beim
+  // naechsten Start weg, der Lauf gilt wieder als "erster" - und eine echte
+  // Word-Aenderung rutscht still durch. Eine verschwiegene Aenderung ist
+  // schlimmer als ein Fehlalarm.
+  if (mutiert) datenstandPersistieren();
+  bookGeaendert = geaendert;
+  return [...geaendert.keys()];
 }
 
 // Werte fuer die Template-Platzhalter (pur, testbar): Name + Kontaktfelder
@@ -5119,9 +5309,50 @@ function schreibStatus(antwort) {
   // zwischen Lesen und Schreiben geaendert hat. Die Falschmeldung schickte
   // Andrea auf die Suche nach einem Word, das nie offen war ("es ist keine
   // fucking word instanz offen, das Cockpit spinnt gerade total", 10.09.).
+  //
+  // 412 kam mit If-Match dazu (v123, Backlog 24.1): "die Datei hat sich
+  // zwischen eTag-Lesen und Schreiben geaendert" - also genau der Fall, vor
+  // dem If-Match schuetzen soll. Als "wartet" eingestuft, weil die
+  // Wiederholung in bookHistorie()/bookKerninfos() den GANZEN Durchgang
+  // neu faehrt: frischer eTag, frischer Inhalt, Aenderung neu angewendet.
+  // Genau das beschreibt der Kommentar ueber bookHistorie() seit v102 -
+  // bisher fehlte nur der Ausloeser dafuer.
   if (antwort.status === 423 || antwort.status === 429 ||
-      antwort.status === 409 || antwort.status >= 500) return "wartet";
+      antwort.status === 409 || antwort.status === 412 ||
+      antwort.status >= 500) return "wartet";
   return "braucht-dich";
+}
+
+// ------------------------------------ If-Match beim Book-PUT (v123, 24.1)
+// Seit v121 gibt es ZWEI Schreiber auf denselben .docx: die App und Andreas
+// Word. Der Rundlauf GET -> aendern -> PUT lief bisher ohne jede
+// Versionspruefung, und conflictBehavior=replace fragt nicht nach. Speichert
+// sie waehrenddessen in Word, ist ihre Aenderung weg - nicht nur in den
+// Kerninfos, sondern im GANZEN Dokument, weil die App die komplette Datei
+// hochlaedt.
+//
+// Der eTag kommt NUR aus einem Metadaten-Abruf, nie aus ":/content": darauf
+// antwortet Graph mit einer 302 auf eine Download-URL, fetch folgt ihr, und
+// das ETag der Endantwort gehoert dem Storage-Blob statt der Datei.
+//
+// REIHENFOLGE ist der Kern: erst den eTag holen, DANN den Inhalt lesen.
+// Andersherum waere die Absicherung wertlos - man haette alten Inhalt mit
+// neuem eTag in der Hand und wuerde Andreas Aenderung sauber ueberschreiben,
+// mit gueltigem If-Match und ohne jede Fehlermeldung.
+//
+// Rueckgabe: der eTag als String - oder ein Status-String fuer den Aufrufer,
+// der ihn unveraendert durchreicht. Ohne eTag wird NICHT geschrieben.
+async function bookETagLesen(m, grund) {
+  const meta = await OD.graphRoh(bookPfad(m) + "?$select=eTag");
+  logZeile("book-etag", { ...grund, methode: "GET",
+    status: meta ? meta.status : 0, code: await logFehlerCode(meta) });
+  if (!meta) return "wartet";
+  if (!meta.ok) return schreibStatus(meta);
+  const j = await meta.json().catch(() => null);
+  const etag = j && j.eTag;
+  // Kein eTag = keine Absicherung. Dann lieber gar nicht schreiben und es
+  // spaeter nochmal versuchen, als blind ueber Andreas Arbeit zu buegeln.
+  return etag ? String(etag) : "wartet";
 }
 
 const pause = (ms) => new Promise((fertig) => setTimeout(fertig, ms));
@@ -5145,6 +5376,8 @@ async function bookHistorieEinmal(m, datum, aktion, entfernen, versuch) {
   const grund = { marke: m.name, aktion, datum, entfernen: !!entfernen,
                   pfad, versuch: versuch || 1 };
   try {
+    const etag = await bookETagLesen(m, grund);
+    if (typeof etag !== "string") return etag;   // Status statt eTag
     const r = await OD.graphRoh(pfad + ":/content");
     logZeile("book-lesen", { ...grund, methode: "GET",
       status: r ? r.status : 0, code: await logFehlerCode(r),
@@ -5180,11 +5413,12 @@ async function bookHistorieEinmal(m, datum, aktion, entfernen, versuch) {
       { method: "PUT",
         body: await zip.generateAsync(
           { type: "arraybuffer", compression: "DEFLATE" }),
-        headers: { "Content-Type": DOCX_TYP } });
+        headers: { "Content-Type": DOCX_TYP, "If-Match": etag } });
     logZeile("book-schreiben", { ...grund, methode: "PUT",
       status: put ? put.status : 0, code: await logFehlerCode(put),
       ms: Date.now() - t0, ergebnis: schreibStatus(put),
       ...logMehr({ soll: datum + " " + aktion, bytes: xml.length }) });
+    await bookMerkerSetzen(m, put);   // sonst meldet die App sich selbst
     return schreibStatus(put);
   } catch (fehler) {
     logZeile("book-ausnahme", { ...grund, warum: String(fehler),
@@ -5236,6 +5470,8 @@ async function bookKerninfosEinmal(m, versuch) {
   const grund = { marke: m.name, aktion: KERNINFOS_AKTION, pfad,
                   versuch: versuch || 1 };
   try {
+    const etag = await bookETagLesen(m, grund);
+    if (typeof etag !== "string") return etag;   // Status statt eTag
     const r = await OD.graphRoh(pfad + ":/content");
     logZeile("kerninfos-lesen", { ...grund, methode: "GET",
       status: r ? r.status : 0, code: await logFehlerCode(r),
@@ -5274,7 +5510,7 @@ async function bookKerninfosEinmal(m, versuch) {
       { method: "PUT",
         body: await zip.generateAsync(
           { type: "arraybuffer", compression: "DEFLATE" }),
-        headers: { "Content-Type": DOCX_TYP } });
+        headers: { "Content-Type": DOCX_TYP, "If-Match": etag } });
     logZeile("kerninfos-schreiben", { ...grund, methode: "PUT",
       status: put ? put.status : 0, code: await logFehlerCode(put),
       ms: Date.now() - t0, ergebnis: schreibStatus(put),
@@ -5282,6 +5518,7 @@ async function bookKerninfosEinmal(m, versuch) {
                    handarbeit: erg.handarbeit.join(", "),
                    bytes: erg.xml.length }) });
     const s = schreibStatus(put);
+    await bookMerkerSetzen(m, put);   // sonst meldet die App sich selbst
     // Geschrieben ist geschrieben - aber wenn eine Zelle stehen bleiben
     // musste, ist das Book eben NICHT auf Stand. Dann lieber in die
     // Warteliste unter "Braucht dich", als Erfolg zu melden.
@@ -5765,6 +6002,11 @@ async function bookVerschieben(m, vonOrdner, nachOrdner) {
     body: JSON.stringify({ parentReference: { path: zielPfad } }),
   });
   if (!r) return "offline";
+  // TRAGEND, nicht Kosmetik: Ein Verschieben erhoeht bei OneDrive auch den
+  // cTag (nachgemessen 14.09.). Ohne diese Zeile meldet der Waechter nach
+  // JEDEM Rating-Wechsel "in Word geaendert" - und eine Warnung, die falsch
+  // anschlaegt, wird nach zwei Wochen ignoriert.
+  await bookMerkerSetzen(m, r);
   return r.ok ? "verschoben" : r.status === 404 ? "nicht gefunden" : "fehler";
 }
 
@@ -5786,6 +6028,7 @@ async function bookErzeugen(m, ersetzen) {
       (ersetzen ? "replace" : "fail"),
     { method: "PUT", body: inhalt,
       headers: { "Content-Type": DOCX_TYP } });
+  await bookMerkerSetzen(m, neu);
   return !neu ? "fehler" : neu.status === 409 ? "existiert"
        : neu.ok ? (gefuellt ? "neu" : "neu-leer") : "fehler";
 }
@@ -5837,6 +6080,8 @@ function bookRueckgaengig(m, lb) {
     if (lb.bookNeu) {
       OD.graphRoh(bookPfad(m), { method: "DELETE" }); // erst loeschen ...
       delete m.bookordner;                            // ... dann den Merker
+      delete m.bookCTag;        // sonst meldet der naechste Lauf eine Datei,
+                                // die der Nutzer selbst gerade entfernt hat
     }
     m.brandrating.brandbook = lb.vorher;
     if (lb.pitchNeu) m.pitchliste = null; // Altformat vor v42 (eine Stufe)
@@ -6444,6 +6689,13 @@ async function abgleichBeiRueckkehr() {
   // Wartende Book-Eintraege nachtragen (v103). Der richtige Moment:
   // Andrea kommt gerade aus Word zurueck, die Sperre ist gefallen.
   outboxAbarbeiten();
+  // Vier Ordner-Abrufe, kein Download. BEWUSST ohne await: die Rueckkehr
+  // soll nicht darauf warten, das Ergebnis zeichnet sich selbst nach.
+  bookAenderungenPruefen().then((g) => {
+    if (!g.length || document.getElementById("schleier")) return;
+    listeVeraltet = false;
+    render();
+  });
   if (datenstand && datenstand.geaendert !== vorher) {
     listeVeraltet = true;
     banner("Neuerer Stand von einem anderen Gerät geladen.");
