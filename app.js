@@ -318,6 +318,44 @@ function bookAenderungZeile() {
   return k;
 }
 
+// "Nur auf diesem Geraet" als BLEIBENDE Karte (v124, Backlog 8).
+//
+// Vorher war das ein Banner: vier Sekunden, dann weg. Am 04.09. genau so
+// uebersehen - Andrea arbeitete danach WOCHENLANG ohne Cloud-Kopie, ohne es
+// zu merken. Ein Warnhinweis, der von selbst verschwindet, warnt nur den,
+// der zufaellig gerade hinsieht.
+//
+// Der Merker liegt in einst (Geraet), nicht im Datenstand: "meine Kopie ist
+// nicht in der Cloud" ist eine Aussage ueber DIESES Geraet. Und er ueberlebt
+// den Neustart - der Fehler tat es schliesslich auch.
+//
+// ABSICHTLICH NICHT WEGKLICKBAR - anders als bookAenderungZeile(). Der
+// Unterschied ist nicht Geschmack, sondern die Regel dahinter: Einen
+// Hinweis, dessen Ursache man selbst beseitigen kann, darf man nicht
+// wegwischen koennen. Hier kann Andrea etwas tun (anmelden, Ordner
+// pruefen), beim Word-Hinweis nicht (nur Tobias kann importieren).
+function wolkenWarnung() {
+  if (!einst.cloudFehlt) return null;
+  const k = el("div", "karte block warnung tippbar");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "⚠ Achtung"));
+  k.append(kopf, el("div", "titel", "Nur auf diesem Gerät gesichert"),
+    el("div", "kontext",
+      "Die letzte Änderung ist nicht in OneDrive angekommen. Geht das "
+      + "Gerät verloren, sind die Einträge weg. Zum Prüfen hier tippen."));
+  k.onclick = sheetEinstellungen;
+  return k;
+}
+
+// Merker setzen/loeschen. Schreibt nur bei WECHSEL in den Geraetespeicher,
+// nicht bei jedem Speichern.
+function wolkeMerken(ok) {
+  if (Boolean(einst.cloudFehlt) === !ok) return;
+  einst.cloudFehlt = !ok;
+  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  listeVeraltet = true;
+}
+
 function kopfzeile(titel, zurueckSichtbar) {
   document.getElementById("titel").textContent = titel;
   document.getElementById("zurueck").style.visibility =
@@ -332,7 +370,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v123"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v124"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3498,6 +3536,8 @@ function renderHauptmenu() {
   // Zahlen sieht, soll den Grund auf dem ersten Bildschirm finden.
   const warnung = pfadWarnung();
   if (warnung) c.append(warnung);
+  const wolke = wolkenWarnung();
+  if (wolke) c.append(wolke);
 
   const ugc = el("div", "karte menue-karte" + (snap ? "" : " leer"));
   ugc.append(el("div", "titel", "UGC"),
@@ -3627,6 +3667,8 @@ function renderUgc() {
 
   const warnung = pfadWarnung();
   if (warnung) c.append(warnung);
+  const wolke = wolkenWarnung();
+  if (wolke) c.append(wolke);
   if (snap.zeitraeume.length > 1) c.append(chipZeile());
   // Pflicht-Hinweis (Briefing Abschnitt 5): Gefiltertes wird gezaehlt,
   // sonst haelt man die Ansicht fuer vollstaendig.
@@ -6109,6 +6151,9 @@ async function datenstandPersistieren() {
   // Ehrlich melden (Tobias 04.09.): "folgt beim naechsten Abgleich" war eine
   // beruhigende Unwahrheit - fehlt der Ordner, folgt nie etwas. Andreas
   // Eintraege lagen wochenlang nur im Geraetespeicher.
+  // Der Banner bleibt (sofortige Rueckmeldung), die KARTE ist das Gedaechtnis
+  // dazu: vier Sekunden reichen nicht, das hat der 04.09. gezeigt.
+  wolkeMerken(ok);
   banner(ok ? "Eingetragen — gesichert auf Gerät + OneDrive."
             : "⚠ Nur auf dem Gerät! OneDrive-Ordner nicht erreichbar — "
               + "Datenbank-Ordner in den Einstellungen prüfen.");
@@ -6449,6 +6494,7 @@ async function datenstandSichern(statusEl) {
     einst.gesichert = new Date().toISOString().slice(0, 16).replace("T", " ");
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
   }
+  wolkeMerken(ok);
   statusEl.textContent = sicherungsText();
   banner(ok ? "Datenstand nach OneDrive gesichert."
             : "Sichern fehlgeschlagen — bei OneDrive angemeldet?");
