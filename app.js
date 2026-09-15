@@ -382,7 +382,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v126"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v127"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6124,6 +6124,17 @@ function bookErstelltDaten(m, bookNeu, jetzt) {
   // Ordner festhalten, in dem die Datei jetzt liegt - ein spaeteres
   // Rating-Update darf den Zugriff darauf nicht verlieren (siehe bookPfad)
   m.bookordner = String(m.brandrating.rating).trim();
+  // quelle mitsetzen (v127, gefunden 15.09. an Andreas echtem Stand):
+  // Bis hierher fuellte NUR der PC-Import dieses Feld. Der Bestandswaechter
+  // in "Daten pruefen" liest aber `haken && !m.quelle` als "es gibt keine
+  // Datei" - also meldete die App jedes Book, das sie SELBST angelegt hatte,
+  // als Abweichung, bis der naechste PC-Import lief. Am 15.09. waren das
+  // fuenf Marken (Blaupunkt Smart Ring, Omoria, Renpho, Ultrahuman,
+  // ringconn); die Dateien lagen alle sauber im OneDrive.
+  //
+  // Format ohne Endung wie beim Import ("Brand-Book Landpark") - so trifft
+  // auch der kerninfos-Zugriff in markenFilter().
+  m.quelle = "Brand-Book " + m.name;
   listeVeraltet = true;
 }
 
@@ -6159,6 +6170,9 @@ function bookRueckgaengig(m, lb) {
     if (lb.bookNeu) {
       OD.graphRoh(bookPfad(m), { method: "DELETE" }); // erst loeschen ...
       delete m.bookordner;                            // ... dann den Merker
+      delete m.quelle;          // Gegenstueck zu bookErstelltDaten (v127):
+                                // ohne das behauptet die App weiter, es gebe
+                                // eine Datei, die sie gerade geloescht hat
       delete m.bookCTag;        // sonst meldet der naechste Lauf eine Datei,
                                 // die der Nutzer selbst gerade entfernt hat
     }
