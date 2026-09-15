@@ -195,7 +195,19 @@ function kpiZeitraum(historien, von, bis) {
     // das waere eine Behauptung ueber den Ablageort, die niemand geprueft
     // hat. Weichen Rating und Ordner auseinander (Landpark, urbanjngl am
     // 11.09.), soll genau das sichtbar bleiben.
+    // `rating` ist die BEWERTUNG, nicht der Ordner (v125). Bis hierher las
+    // der Rating-Filter aus snap.kerninfos - einem Wert, den nur der
+    // PC-Import schreibt. Stellte Andrea eine Marke in der App von A auf C,
+    // wanderte sie in der Gruppenliste sofort nach "C Brands", war ueber
+    // "Rating = C" aber erst nach dem naechsten Import zu finden.
+    //
+    // BEWUSST NICHT bookordner wie bei `gruppe`: der sagt, WO die Datei
+    // liegt. Rating und Ordner duerfen auseinanderlaufen (Landpark,
+    // urbanjngl am 11.09.) - ein Filter namens "Rating" muss die Bewertung
+    // nehmen, sonst versteckt er genau diese Faelle.
     marken.push({ name: marke.name, quelle: marke.quelle || "",
+                  rating: marke.brandrating
+                    ? String(marke.brandrating.rating || "").trim() : "",
                   gruppe: marke.bookordner
                     ? marke.bookordner + " Brands"
                     : (marke.gruppe || ""), ...k });
@@ -370,7 +382,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v125"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v126"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3616,7 +3628,10 @@ function markenFilterAktiv() {
 function markenFilter(m) {
   const ki = (snap.kerninfos || {})[m.quelle] || {};
   const zahl = (x) => parseInt(x, 10) || 0;
-  return (!mf.rating || String(ki["Rating (A-D)"] || "").trim() === mf.rating) &&
+  // m.rating kommt aus der App (v125), ki nur noch als Rueckfall fuer
+  // Marken, die die App nie angefasst hat.
+  const rating = m.rating || String(ki["Rating (A-D)"] || "").trim();
+  return (!mf.rating || rating === mf.rating) &&
     (!mf.fit || zahl(ki["Brand Fit"]) >= mf.fit) &&
     (!mf.geist || zahl(ki["Begeisterung"]) >= mf.geist) &&
     (!mf.chance || zahl(ki["Erfolgschance"]) >= mf.chance) &&
@@ -3643,8 +3658,15 @@ function filterZeilen(neuzeichnen, alles) {
     zeilen.push(filterGruppe("Antwort",
       [["antwort", "Mit Antwort"], ["positiv", "Antwort positiv"]],
       () => mf.antwort, (w) => { mf.antwort = w; }, neuzeichnen));
-    const ratings = [...new Set(Object.values(snap.kerninfos || {})
-      .map((k) => String(k["Rating (A-D)"] || "").trim()).filter(Boolean))].sort();
+    // Aus BEIDEN Quellen (v125): sonst fehlt ein Buchstabe als Knopf,
+    // sobald Andrea ihn in der App neu vergibt - der Filter koennte dann
+    // nach einem Rating suchen, das es laut Snapshot noch nicht gibt.
+    const ratings = [...new Set([
+      ...Object.values(snap.kerninfos || {})
+        .map((k) => String(k["Rating (A-D)"] || "").trim()),
+      ...(((snap.zeitraeume || [])[0] || {}).marken || [])
+        .map((m) => String(m.rating || "").trim()),
+    ].filter(Boolean))].sort();
     if (ratings.length > 1) {
       zeilen.push(filterGruppe("Rating", ratings.map((r) => [r, r]),
         () => mf.rating, (w) => { mf.rating = w; }, neuzeichnen));
