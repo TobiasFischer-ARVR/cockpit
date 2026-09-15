@@ -370,7 +370,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v124"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v125"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1042,6 +1042,7 @@ function sheetInfo() {
             "in OneDrive — nichts auf GitHub."),
       zeile("App-Version " + APP_VERSION + " · Updates holt die App beim " +
             "Öffnen selbst und meldet sich mit einem Banner."),
+      updateSuchKnopf(),
       zeile(datenstand
         ? `Datenstand: ${datenstand.marken.length} Marken · Stand ` +
           `${String(datenstand.geaendert).replace("T", " ")} · ` +
@@ -3729,6 +3730,20 @@ function renderUgc() {
       "Noch keine Datenquelle — füllt später Kennenlerngespräche, " +
       "Kooperationen, Abschlussquote und Ø Auftragswert."));
   c.append(kunden);
+
+  // Platzhalter Nutzungsrechte (v125, Ablaufplan Andrea 14.09.): steht
+  // bewusst UNTER den Kundenauftraegen - die Nutzungsrechte entstehen als
+  // Schritt 8 im Auftragsablauf, nicht daneben. Auf dem Blatt: "angehaengt
+  // an Brand, separate Anzeige in einem Bereich wie Brandrating,
+  // Pitchliste, Kundenauftrag". Wie oben: kein Knopf, keine Zahl.
+  const rechte = el("div", "karte block zugang platzhalter");
+  const rKopf = el("div", "kopf");
+  rKopf.append(el("span", "pill", "Geplant"));
+  rechte.append(rKopf, el("div", "titel", "Nutzungsrechte"),
+    el("div", "kontext",
+      "Noch keine Datenquelle — später Beginn, Dauer und Art " +
+      "(organisch / paid ad) je Marke."));
+  c.append(rechte);
 
   if (!z.marken.length) {
     c.append(el("div", "leerzustand", "Keine Aktivität in diesem Zeitraum."));
@@ -6627,6 +6642,32 @@ if (navigator.storage && navigator.storage.persist) {
 // also immer auf der NEUESTEN Version, nie auf einer Zwischenstufe.
 // Deshalb reicht eine Leiste und ein Knopf, ohne Zaehler.
 let wartenderWorker = null;
+let swRegistrierung = null; // fuer "Nach Update suchen" in den Einstellungen
+
+// Handbetrieb fuer den Fall, dass der automatische Weg wieder klemmt
+// (v125, Tobias 15.09.). Sucht auf Zuruf und zeigt die Leiste, wenn eine
+// Version wartet. Der Weg ueber updateBereit() ist Absicht: eine Stelle
+// baut die Leiste, nicht zwei.
+function updateSuchKnopf() {
+  const knopf = el("button", "chip", "↻ Nach Update suchen");
+  knopf.onclick = async () => {
+    if (!swRegistrierung) { banner("Update-Prüfung nicht verfügbar"); return; }
+    knopf.disabled = true;
+    knopf.textContent = "Suche …";
+    try { await swRegistrierung.update(); } catch (e) { /* offline: unten melden */ }
+    knopf.disabled = false;
+    knopf.textContent = "↻ Nach Update suchen";
+    const wartend = swRegistrierung.waiting;
+    if (wartend) {
+      wartenderWorker = null; // vorheriges "Später" darf nicht blockieren
+      updateBereit(wartend);
+      banner("Neue Version bereit");
+    } else {
+      banner("Kein Update bereit · " + APP_VERSION);
+    }
+  };
+  return knopf;
+}
 
 function updateBereit(sw) {
   if (!sw || sw === wartenderWorker) return;
@@ -6644,7 +6685,16 @@ function updateBereit(sw) {
     wartenderWorker.postMessage("uebernehmen");
   };
   const spaeter = el("button", "chip", "Später");
-  spaeter.onclick = () => leiste.remove();
+  // wartenderWorker MUSS hier zurueckgesetzt werden (v125, Andrea 14.09.):
+  // sonst greift oben "sw === wartenderWorker" und die Leiste kann in
+  // dieser Seitensitzung nie wieder erscheinen. Andrea drueckte "Später",
+  // wischte die App weg, oeffnete sie neu - Android WECKT die PWA meist nur
+  // auf, also lief kein Startcode, die Variable blieb gesetzt und das
+  // Update blieb unsichtbar. "Später" heisst spaeter, nicht nie.
+  spaeter.onclick = () => {
+    leiste.remove();
+    wartenderWorker = null;
+  };
   leiste.append(jetzt, spaeter);
   document.body.append(leiste);
 }
@@ -6658,9 +6708,15 @@ if ("serviceWorker" in navigator) {
   // wuerde Updates verpassen (so blieb v22 haengen).
   navigator.serviceWorker.register("service-worker.js")
     .then((reg) => {
+      swRegistrierung = reg;
       reg.update();
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") reg.update();
+        if (document.visibilityState !== "visible") return;
+        reg.update();
+        // Erneut anbieten (v125): reg.update() loest KEIN "updatefound" aus,
+        // wenn die neue Version schon installiert wartet. Ohne diese Zeile
+        // fragt nach einem "Später" niemand mehr nach.
+        updateBereit(reg.waiting);
       });
       // Schon einer da (App war zu, als das Release kam)?
       updateBereit(reg.waiting);
