@@ -382,7 +382,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v130"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v131"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4057,13 +4057,57 @@ function terminSetzenDaten(m, aktion, datum, jetzt) {
     p.termin_hand = true;
   }
   p.geaendert = jetzt;
+  // Ab hier beschreibt ein offener Ruecknahmepunkt einen Stand, den es nicht
+  // mehr gibt (v131). Ohne diese Zeile nahm "Rueckgaengig" den Hand-Termin mit.
+  ruecknahmeEntwerten(m);
   listeVeraltet = true;
   return true;
+}
+
+// Ein Ruecknahmepunkt gilt fuer GENAU den Stand, aus dem er entstanden ist.
+// Wird die Marke danach weiterbearbeitet, beschreibt er einen Zustand, den es
+// nicht mehr gibt - und ein Klick auf "Rueckgaengig" wirft die spaetere Arbeit
+// mit weg.
+//
+// Gefunden am 16.09. bei der Zustandspruefung (Codex-Gegenpruefung), beide
+// Auspraegungen am echten Bestand nachgemessen:
+//
+//   letzteAktion (aus erledigen)         wurde von terminSetzenDaten nicht
+//     entwertet -> das Zurueckrollen auf la.vorher nahm den von Andrea
+//     gesetzten Termin mit. 6 Marken trugen einen solchen Termin.
+//   letztesBook (aus bookBefuelltDaten)  wurde von erledigen nicht entwertet
+//     -> bookRueckgaengig setzte m.pitchliste = null, obwohl inzwischen ein
+//     Pitch-Event dranhing. Stand scharf: Ultrahuman, ein Klick entfernt.
+//
+// EINE Funktion fuer beide Wege, von beiden Seiten gerufen. Zwei getrennte
+// Pflaster waeren die Vorlage dafuer, dass in sechs Monaten der eine Weg
+// repariert wird und der andere nicht - genau das ist diesem Projekt mit der
+// v56-Regel und bookCTag passiert (v130).
+function ruecknahmeEntwerten(m) {
+  if (!m || !datenstand) return 0;
+  const k = schluessel(m.name);
+  let weg = 0;
+  if (datenstand.letzteAktion &&
+      schluessel(datenstand.letzteAktion.name) === k) {
+    delete datenstand.letzteAktion;
+    weg++;
+  }
+  if (datenstand.letztesBook &&
+      schluessel(datenstand.letztesBook.name) === k) {
+    delete datenstand.letztesBook;
+    weg++;
+  }
+  if (weg) logZeile("ruecknahme-entwertet", { marke: m.name, punkte: weg });
+  return weg;
 }
 
 function erledigen(m, s, tage, standard) {
   const jetzt = lokalIso();
   const heute = deDatum(isoInTagen(0));
+  // ZUERST entwerten, dann den eigenen Punkt setzen (v131). Ein offenes
+  // letztesBook dieser Marke wuerde sonst weiterhin anbieten, die Pitchliste
+  // auf null zu setzen - mit dem Event, das gleich darunter entsteht.
+  ruecknahmeEntwerten(m);
   datenstand.letzteAktion =
     { name: m.name, aktion: s.aktion, zeit: jetzt, vorher: { ...m.pitchliste } };
   (m.events = m.events || []).push(
@@ -6448,6 +6492,23 @@ async function datenstandLaden() {
     // nicht mit ausfallen (Codex-Gegenpruefung 11.09.). Sonst liefe bei
     // wiederholter Ablehnung wiederholt keine Rueckfahrkarte und kein
     // Tagesbackup, und genau die braucht man, wenn etwas klemmt.
+    // Der faellige Rueck-Upload haengt ebenfalls am VORHANDENEN Stand und
+    // faellt sonst mit aus (v131). Der `return` hier lag VOR dem Auto-Abgleich
+    // weiter unten - wer offline etwas eintrug und spaeter neu lud, OHNE etwas
+    // Neues zu tippen, dessen Aenderung blieb auf dem Geraet liegen. Erst die
+    // naechste Eingabe stiess ueber datenstandPersistieren() wieder einen
+    // Upload an.
+    //
+    // Der Kommentar in datenstandUebernehmen() behauptete an der
+    // Gleichstands-Ablehnung, sie koste "nur eine verzoegerte Uebernahme".
+    // Sie kostete auch den Weg zurueck zu OneDrive - und das ist der Weg, auf
+    // dem Andreas Arbeit ueberhaupt bei Tobias ankommt. Gefunden 16.09.
+    if (datenstand && cloud &&
+        String(cloud.geaendert || "") < String(datenstand.geaendert || "")) {
+      logZeile("stand-nachgereicht", { grund: "Cloud aelter trotz Ablehnung",
+        ...logMehr({ soll: datenstand.geaendert, ist: cloud.geaendert }) });
+      persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
+    }
     if (datenstand) { versionsSicherung(); autoBackupPruefen(); }
     return;
   }
