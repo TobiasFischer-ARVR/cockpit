@@ -382,7 +382,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v128"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v129"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2032,9 +2032,18 @@ function sheetPitch(p) {
     // Andrea soll auch etwas eintragen koennen, das die Kadenz nicht kennt -
     // "Angebot nachfassen", "Muster verschickt". Gleicher Bauplan wie das
     // Herkunftsfeld beim Pitch: datalist schlaegt vor, verbietet aber nichts.
+    // q, NICHT p (v129, von Tobias am 16.09. gefunden). `p` ist die
+    // Pitchlisten-Zeile, mit der sheetPitch() EINMAL aufgerufen wurde -
+    // sie friert den Stand beim Oeffnen des Sheets ein. `q` mischt bei
+    // jedem bau() den Datenstand darueber und ist damit der aktuelle Wert.
+    //
+    // Der Fehler war doppelt sichtbar: das Feld zeigte nach dem Speichern
+    // wieder den ALTEN Termin, und der Vergleich weiter unten pruefte
+    // gegen denselben alten Wert - wer den urspruenglichen Termin wieder
+    // eintrug, bekam "Nichts geändert" und kam nicht mehr zurueck.
     const tAktion = el("input", "feld");
     tAktion.type = "text";
-    tAktion.value = p.naechste_aktion || "";
+    tAktion.value = q.naechste_aktion || "";
     tAktion.placeholder = "z. B. Follow up, Neuer Pitch, Angebot nachfassen";
     const tListe = el("datalist");
     tListe.id = "vs-naechsterschritt";
@@ -2046,15 +2055,15 @@ function sheetPitch(p) {
     tAktion.setAttribute("list", tListe.id);
     const tDatum = el("input", "datum");
     tDatum.type = "date";
-    tDatum.value = p.datum_naechste_aktion || "";
+    tDatum.value = q.datum_naechste_aktion || "";
     const tSpeichern = el("button", "chip aktiv", "Speichern");
     tSpeichern.onclick = () => {
       const a = tAktion.value.trim();
       const d = tDatum.value;
       // Nur weitergeben, was sich wirklich unterscheidet - sonst stempelt
       // jedes Oeffnen des Dialogs den Eintrag neu.
-      const aNeu = a && a !== (p.naechste_aktion || "") ? a : "";
-      const dNeu = d && d !== (p.datum_naechste_aktion || "") ? d : "";
+      const aNeu = a && a !== (q.naechste_aktion || "") ? a : "";
+      const dNeu = d && d !== (q.datum_naechste_aktion || "") ? d : "";
       if (!aNeu && !dNeu) { banner("Nichts geändert."); return; }
       if (!terminSetzenDaten(m, aNeu, dNeu, lokalIso())) {
         banner("Diese Marke steht nicht in der Pitchliste."); return;
