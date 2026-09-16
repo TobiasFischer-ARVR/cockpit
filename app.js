@@ -382,7 +382,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v127"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v128"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6187,27 +6187,89 @@ function bookRueckgaengig(m, lb) {
 // Nach jeder App-Änderung: aufs Gerät (IndexedDB) + still nach OneDrive.
 // Schlägt OneDrive fehl (offline), gleicht datenstandLaden() beim nächsten
 // Laden mit Netz automatisch ab (Gerät neuer als Cloud → Rücksicherung).
-async function datenstandPersistieren() {
+//
+// SERIALISIERT (v128, Backlog 5). Vorher konnten 23 Aufrufer gleichzeitig
+// loslaufen; zwei PUTs unterwegs, und wenn die Antworten vertauscht
+// ankommen, steht in der Cloud der ÄLTERE Stand - während das Gerät den
+// neueren hat und beide sich für aktuell halten. Die Kette laesst immer nur
+// einen Lauf zu. `.catch` davor: ein Fehlschlag darf die Kette nicht
+// dauerhaft blockieren, sonst sichert die App nach dem ersten Offline-Moment
+// nie wieder.
+let persistKette = Promise.resolve();
+
+// Jeder Schreiber auf datenstand.json muss hier durch - sonst ist es keine
+// Serialisierung, sondern nur eine halbe. Zweiter Schreiber ist der
+// Auto-Abgleich in datenstandLaden() ("Geraet neuer als Cloud"), der bis
+// v127 ganz ohne await danebenherlief.
+function persistKettenLauf(fn) {
+  // Der Aufrufer bekommt SEINEN Lauf zurueck, die Kette bekommt eine
+  // beruhigte Fassung davon. Ohne die Trennung (Codex 16.09., Fund 3) blieb
+  // die Rejection des AKTUELLEN Laufs unbehandelt, wenn kein weiterer Aufruf
+  // mehr kam - das vorgeschaltete .catch deckt nur den VORHERIGEN ab.
+  const lauf = persistKette.catch(() => {}).then(fn);
+  persistKette = lauf.catch(() => {});
+  return lauf;
+}
+
+function datenstandPersistieren() {
+  return persistKettenLauf(datenstandSchreibenEinmal);
+}
+
+async function datenstandSchreibenEinmal() {
+  // EINE Referenz für beide Schreibwege (Backlog 5, Codex 11.09.). Vorher
+  // stand hier zweimal die globale `datenstand`, mit einem `await`
+  // dazwischen - taucht backupLaden() in diesem Fenster ein anderes Objekt
+  // unter, bekommt das Geraet den alten und die Cloud den neuen Stand.
+  // Zeitstempel ZUERST aufs globale Objekt - datenstandUebernehmen()
+  // vergleicht dagegen und wuerde sonst einen fremden Stand durchlassen.
   datenstand.geaendert = lokalIso();
   datenstand.geaendert_von = "Cockpit-App";
+  // Dann eine KOPIE, nicht nur dieselbe Referenz (Codex 16.09., Fund 1):
+  // `const` haelt die Referenz fest, nicht den Inhalt. Mutiert ein Aufrufer
+  // das Objekt waehrend des Graph-PUT, hat IndexedDB laengst eine Kopie von
+  // vorher - Geraet und Cloud liefen doch wieder auseinander. Der Klon ist
+  // die einzige Art, "beide bekommen dasselbe" wirklich zu garantieren.
+  //
+  // JSON-Rundlauf statt structuredClone, aus zwei Gruenden:
+  //  1. Es ist die EHRLICHERE Kopie. Der Datenstand geht als JSON raus und
+  //     wird als JSON gespeichert - der Rundlauf klont genau das, was
+  //     ankommt. structuredClone wuerde z.B. ein Date-Objekt als Date
+  //     erhalten, im PUT stuende trotzdem ein String.
+  //  2. structuredClone waere die EINZIGE moderne API in dieser Datei
+  //     (nachgezaehlt 16.09.: kein ?., kein ??, kein replaceAll). Der Code
+  //     ist bewusst konservativ - Andreas Geraet ist nicht ausgemessen.
+  // ~100 KB, das kostet rund eine Millisekunde.
+  const stand = JSON.parse(JSON.stringify(datenstand));
   // Was tatsächlich rausgeht (v108). Die Markenzahl ist der billigste
   // Hinweis auf einen Objekttausch: sie ändert sich, wenn ein anderer
   // Stand untergeschoben wurde.
-  logZeile("stand-gespeichert", { marken: (datenstand.marken || []).length,
-    ...logMehr({ geaendert: datenstand.geaendert,
+  logZeile("stand-gespeichert", { marken: (stand.marken || []).length,
+    ...logMehr({ geaendert: stand.geaendert,
                  sheet: Boolean(document.getElementById("schleier")) }) });
-  try { await idbSchreib("datenstand", datenstand); } catch (_) {}
+  // Ob das GERAET den Stand hat, muss man wissen - bisher wurde der Fehler
+  // verschluckt und die App meldete trotzdem "gesichert auf Gerät"
+  // (Codex 16.09., Fund 2; kein v128-Fehler, der stand vorher schon drin).
+  let aufGeraet = true;
+  try { await idbSchreib("datenstand", stand); } catch (_) { aufGeraet = false; }
   const ok = typeof OD !== "undefined" &&
-    await OD.graphPutLeise(OD_DATENSTAND(), datenstand);
+    await OD.graphPutLeise(OD_DATENSTAND(), stand);
   // Ehrlich melden (Tobias 04.09.): "folgt beim naechsten Abgleich" war eine
   // beruhigende Unwahrheit - fehlt der Ordner, folgt nie etwas. Andreas
   // Eintraege lagen wochenlang nur im Geraetespeicher.
   // Der Banner bleibt (sofortige Rueckmeldung), die KARTE ist das Gedaechtnis
   // dazu: vier Sekunden reichen nicht, das hat der 04.09. gezeigt.
   wolkeMerken(ok);
-  banner(ok ? "Eingetragen — gesichert auf Gerät + OneDrive."
-            : "⚠ Nur auf dem Gerät! OneDrive-Ordner nicht erreichbar — "
-              + "Datenbank-Ordner in den Einstellungen prüfen.");
+  // Ehrlich melden (Tobias 04.09.) - jetzt auch für den Fall, dass der
+  // GERÄTESPEICHER versagt hat. "Nur auf dem Gerät" war dann eine
+  // beruhigende Unwahrheit: in Wahrheit lag der Eintrag NIRGENDWO.
+  banner(ok && aufGeraet
+    ? "Eingetragen — gesichert auf Gerät + OneDrive."
+    : ok ? "⚠ Nur in OneDrive! Gerätespeicher hat abgelehnt — "
+           + "bei schlechtem Netz kann der Eintrag fehlen."
+    : aufGeraet ? "⚠ Nur auf dem Gerät! OneDrive-Ordner nicht erreichbar — "
+                  + "Datenbank-Ordner in den Einstellungen prüfen."
+    : "⚠ NICHT gespeichert — weder auf dem Gerät noch in OneDrive. "
+      + "Bitte den Eintrag merken und die App neu laden.");
 }
 
 // IndexedDB-Minimum: eine DB "cockpit", ein Key-Value-Store "kv".
@@ -6335,13 +6397,23 @@ async function datenstandLaden() {
     return;
   }
   if (datenstandQuelle !== "Gerät") {
-    try { await idbSchreib("datenstand", datenstand); } catch (_) {}
+    // Auch dieser Schreiber gehoert in die Kette (Codex 16.09., Fund 5).
+    // Direkt davor hat datenstandUebernehmen() das globale Objekt ERSETZT
+    // ([datenstand, datenstandQuelle] = paar) - der zweite Objekttausch
+    // neben backupLaden(). Laeuft gleichzeitig ein Persistieren, schreibt
+    // diese Zeile den neuen Stand aufs Geraet, waehrend der alte noch zur
+    // Cloud unterwegs ist: genau das Auseinanderlaufen aus Backlog 5.
+    await persistKettenLauf(
+      () => idbSchreib("datenstand", datenstand).catch(() => {}));
   } else if (cloud &&
              String(cloud.geaendert || "") < String(datenstand.geaendert || "")) {
     // Auto-Abgleich: Geraet ist neuer als OneDrive -> still zuruecksichern.
     // ponytail: keine WLAN-Erkennung (koennen Browser nicht zuverlaessig),
     // die Datei ist winzig - Abgleich laeuft einfach bei jedem Laden.
-    OD.graphPutLeise(OD_DATENSTAND(), datenstand);
+    // Durch die Kette (v128): das hier ist der ZWEITE Schreiber auf
+    // datenstand.json. Lief er gleichzeitig mit einem Persistieren, konnten
+    // sich die beiden PUTs ueberholen - genau der Fall aus Backlog 5.
+    persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
   }
   // Rueckfahrkarte fuer ein missratenes Release ZUERST, dann das taegliche
   // Backup. Beide bewusst OHNE await: der Start soll nicht auf einen
@@ -6539,8 +6611,11 @@ function sicherungsText() {
 async function datenstandSichern(statusEl) {
   if (!datenstand) { banner("Kein Datenstand geladen."); return; }
   statusEl.textContent = "Sichere …";
+  // Dritter Schreiber, auch er durch die Kette (v128). Andrea kann "Jetzt
+  // sichern" druecken, waehrend ein Persistieren noch laeuft - dann waren es
+  // bis v127 zwei PUTs auf dieselbe Datei.
   const ok = typeof OD !== "undefined" &&
-    await OD.graphPutLeise(OD_DATENSTAND(), datenstand);
+    await persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
   if (ok) {
     einst.gesichert = new Date().toISOString().slice(0, 16).replace("T", " ");
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
