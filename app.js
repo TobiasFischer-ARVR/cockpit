@@ -382,7 +382,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v129"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v130"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4370,10 +4370,51 @@ function bookOrdner(m) {
 // Fenster ist klein (nur zwischen zwei Pruefungen) und der PC-Import bleibt
 // die eigentliche Wahrheit. Schliessen liesse sich das nur mit einem
 // zweiten Word-Leser - siehe Backlog 23 Stufe 2, Risiko hoch.
+// ---------------------------- Book-Merker: GERAETESPEZIFISCH (v130, 16.09.)
+// Ein cTag gehoert zu EINER Datei in EINEM OneDrive-Ordner. Der Book-Ordner
+// liegt seit v56 bewusst in den Geraete-Einstellungen - im Originalton der
+// Projektdatei: "nicht im Datenstand, sonst wandert der Testpfad ueber ein
+// Backup zu Andrea". Der Merker hing bis v129 trotzdem im GETEILTEN
+// datenstand.json.
+//
+// Am 16.09. an zwei echten Geraeten gemessen:
+//   Andrea: \UGC\App                          -> ihre echten Books
+//   Tobias: \Apps\Cockpit\Testdaten\UGC\App   -> seine Kopien
+// Zwei Dateisaetze, zwei cTag-Saetze, EIN Feld. Wer zuletzt lief, hinterliess
+// seine Merker - das andere Geraet meldete daraufhin JEDES Book als "in Word
+// geaendert". Genau die Sorte Warnung, die nach zwei Wochen ignoriert wird;
+// dieses Projekt hat den Fehler schon zweimal gemacht (4-Sekunden-Banner,
+// "Word ist offen" ohne offenes Word).
+//
+// Der Pfad wird MITGESPEICHERT: wird der Ordner umgestellt, gelten die alten
+// Merker nicht mehr und der naechste Lauf setzt die Basis still neu. Ohne das
+// waere der Umbau nur eine Verlagerung desselben Fehlers.
+const CTAG_KEY = "cockpit-bookctags";
+let bookMerker = { pfad: "", tags: {} };
+try {
+  const roh = JSON.parse(localStorage.getItem(CTAG_KEY) || "{}");
+  if (roh && typeof roh === "object" && roh.tags && typeof roh.tags === "object") {
+    bookMerker = { pfad: String(roh.pfad || ""), tags: roh.tags };
+  }
+} catch (_) { /* kaputter Eintrag = kein Merker = stille Neusetzung */ }
+
+function merkerLies(name) {
+  return bookMerker.pfad === bookBasis() ? (bookMerker.tags[name] || "") : "";
+}
+function merkerSetz(name, wert) {
+  // Pfad gewechselt? Alte Merker gehoeren zu fremden Dateien - weg damit.
+  if (bookMerker.pfad !== bookBasis()) bookMerker = { pfad: bookBasis(), tags: {} };
+  bookMerker.tags[name] = String(wert);
+}
+function merkerLoeschen(name) { delete bookMerker.tags[name]; }
+function merkerSichern() {
+  try { localStorage.setItem(CTAG_KEY, JSON.stringify(bookMerker)); } catch (_) {}
+}
+
 async function bookMerkerSetzen(m, antwort) {
   if (!antwort || !antwort.ok) return;
   const item = await antwort.json().catch(() => null);
-  if (item && item.cTag) m.bookCTag = String(item.cTag);
+  if (item && item.cTag) { merkerSetz(m.name, item.cTag); merkerSichern(); }
 }
 
 // Vier Ordner-Abrufe (A-D Brands), nicht 104 Einzelabfragen. Muster wie
@@ -4417,7 +4458,8 @@ async function bookAenderungenPruefen() {
   if (!staende.size) return [];  // gar nichts gelesen -> nichts behaupten
 
   const geaendert = new Map();
-  let mutiert = false;
+  let mutiert = false;      // betrifft den Datenstand (bookBasisStand)
+  let merkerNeu = false;    // betrifft die Geraete-Merker (localStorage, v130)
   for (const m of marken) {
     const map = staende.get(bookOrdner(m));
     if (!map) {
@@ -4431,11 +4473,11 @@ async function bookAenderungenPruefen() {
     }
     const cTag = map.get(`Brand-Book ${m.name}.docx`);
     if (!cTag) continue;                    // keine Datei -> Backlog 7, nicht hier
-    if (basisNeu || !m.bookCTag) {                       // Basis setzen, STILL
-      if (m.bookCTag !== cTag) { m.bookCTag = cTag; mutiert = true; }
+    if (basisNeu || !merkerLies(m.name)) {               // Basis setzen, STILL
+      if (merkerLies(m.name) !== cTag) { merkerSetz(m.name, cTag); merkerNeu = true; }
       continue;
     }
-    if (cTag !== m.bookCTag) geaendert.set(m.name, cTag);
+    if (cTag !== merkerLies(m.name)) geaendert.set(m.name, cTag);
   }
   // Der Snapshot gilt erst dann als verarbeitet, wenn WIRKLICH jeder
   // gebrauchte Ordner gelesen wurde. Sonst waere der Reset verbraucht,
@@ -4451,6 +4493,9 @@ async function bookAenderungenPruefen() {
   // naechsten Start weg, der Lauf gilt wieder als "erster" - und eine echte
   // Word-Aenderung rutscht still durch. Eine verschwiegene Aenderung ist
   // schlimmer als ein Fehlalarm.
+  // Merker gehen auf DIESES Geraet (v130) - kein Cloud-Schreibvorgang, kein
+  // Ping-Pong mit dem anderen Geraet.
+  if (merkerNeu) merkerSichern();
   if (mutiert) datenstandPersistieren();
   bookGeaendert = geaendert;
   return [...geaendert.keys()];
@@ -6182,8 +6227,9 @@ function bookRueckgaengig(m, lb) {
       delete m.quelle;          // Gegenstueck zu bookErstelltDaten (v127):
                                 // ohne das behauptet die App weiter, es gebe
                                 // eine Datei, die sie gerade geloescht hat
-      delete m.bookCTag;        // sonst meldet der naechste Lauf eine Datei,
-                                // die der Nutzer selbst gerade entfernt hat
+      merkerLoeschen(m.name);   // sonst meldet der naechste Lauf eine Datei,
+      merkerSichern();          // die der Nutzer selbst gerade entfernt hat
+                                // (v130: Merker liegt jetzt am Geraet)
     }
     m.brandrating.brandbook = lb.vorher;
     if (lb.pitchNeu) m.pitchliste = null; // Altformat vor v42 (eine Stufe)
