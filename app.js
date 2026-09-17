@@ -118,6 +118,24 @@ function eventDatum(e) {
   return d < 1e12 ? d : null;
 }
 
+// Ereignistypen, die als KONTAKT mit der Marke gelten (Tobias/Andrea
+// 14.09., bestätigt 16.09.): "Kontakt = Pitch, Follow-up oder
+// Creatorpool-Prüfung". "Rückantworten prüfen" gehört NICHT dazu und
+// erzeugt gar kein Ereignis.
+const KONTAKT_TYPEN = ["Pitch", "FollowUp", "Creatorpool"];
+
+// Zählt dieses Ereignis als Kontakt? EINE Stelle statt vier.
+// Vor dem 16.09. stand ("Pitch", "FollowUp") an sechs Stellen verstreut
+// (vier in ugc_core.py, zwei hier) - ein neuer Typ wäre aus jeder
+// Zählung gefallen, ohne dass irgendwo etwas rot wird. Das Gegenstück
+// in ugc_core.py heißt ist_kontakt() und muss mitwandern.
+//
+// Die "einmal je Monat"-Regel steckt NICHT hier, sondern im
+// Zeitraum-Filter davor: "kontaktiert" ist ein Ja/Nein je Zeitraum.
+function istKontakt(e) {
+  return KONTAKT_TYPEN.indexOf(e.typ) !== -1;
+}
+
 // Kennzahlen EINER Marke für einen Zeitraum. Gibt null zurück, wenn die
 // Marke im Zeitraum gar nichts hatte - dann taucht sie auch nicht auf.
 function kpiMarke(ereignisse, von, bis) {
@@ -142,18 +160,22 @@ function kpiMarke(ereignisse, von, bis) {
     ((a.typ === "Antwort" ? 1 : 0) - (b.typ === "Antwort" ? 1 : 0)));
   let nachErst = 0, nachFu = 0, letzterKontakt = null;
   for (const e of sortiert) {
-    if (e.typ === "Pitch" || e.typ === "FollowUp") {
+    if (istKontakt(e)) {
       letzterKontakt = e.typ;
     } else if (e.typ === "Antwort" && drin(e)) {
       // Eine Antwort ohne jeden vorherigen Kontakt bleibt bewusst in
       // keiner der beiden Kategorien - sie zu erfinden wäre schlimmer.
-      if (letzterKontakt === "Pitch") nachErst++;
-      else if (letzterKontakt === "FollowUp") nachFu++;
+      // Creatorpool zählt wie ein Erstkontakt (Tobias, 16.09.): eine
+      // Antwort danach ist "nach Erstkontakt", nicht "nach Follow-up".
+      // Eine dritte Kategorie wurde ausdrücklich verworfen.
+      if (letzterKontakt === "Pitch" || letzterKontakt === "Creatorpool") {
+        nachErst++;
+      } else if (letzterKontakt === "FollowUp") nachFu++;
     }
   }
   return {
     // Eine Antwort ist KEIN Kontakt - die kommt von der Marke (Andrea 24.08.)
-    kontaktiert: vomTyp("Pitch").length > 0 || vomTyp("FollowUp").length > 0,
+    kontaktiert: imZeitraum.some(istKontakt),
     pitches: vomTyp("Pitch").length,
     followups: vomTyp("FollowUp").length,
     antworten: antworten.length,
@@ -382,7 +404,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v131"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v132"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -406,6 +428,8 @@ function abschnitt(titel, ...inhalt) {
 const REITER = {
   "Wiedervorlage": "Aktion",
   "Startdatum": "Aktion",
+  "Antwort eintragen": "Aktion",
+  "Kundenauftrag": "Aktion",
   "Nächster Schritt": "Aktion",
   "Brand Rating (Excel-Blatt)": "Rating",
   "Verwaltung": "Rating",
@@ -1879,7 +1903,8 @@ function sheetPitch(p) {
       tab.append(zeile);
     }
     wrap.append(abschnitt("Wiedervorlage", tab),
-                bereichStartdatum(q), bereichErledigen(q));
+                bereichKundenauftrag(), bereichStartdatum(q),
+                bereichAntwort(q), bereichErledigen(q));
 
     // EIN Bauplan fuer beide Herkuenfte (Tobias 03.09.): ob die Brand aus
     // Andreas Word kam oder in der App entstand, sieht man am Inhalt - das
@@ -1924,6 +1949,278 @@ function sheetPitch(p) {
     return frag;
   }
 
+  // Der Auftrag selbst (Release 6, Schritt 20). Nur sichtbar, wenn die Marke
+  // wirklich im Bereich steht - das Objekt IST der Zustand.
+  //
+  // Erreichbar ueber dasselbe sheetPitch() wie aus der Pitchliste: weil
+  // m.pitchliste beim Verschieben stehen bleibt, braucht ein Kundenauftrag
+  // kein eigenes Sheet. Alles darunter (Kontakt, Historie, Sonstiges) gilt
+  // unveraendert weiter.
+  function bereichKundenauftrag() {
+    const frag = document.createDocumentFragment();
+    const m = datenstand ? markeZuName(p.name) : null;
+    if (!m || !m.kundenauftrag) return frag;
+    const ka = m.kundenauftrag;
+    // Verwirft die Bereinigung Zeilen, MUSS neu gezeichnet werden: sonst
+    // zeigt der Bildschirm eine Zeile, die im Array nicht mehr existiert,
+    // und der eingefrorene Index des Loeschknopfs trifft die falsche.
+    // Reproduziert (Audit 17.09.): Text von A leeren, dann auf das X von B
+    // tippen -> geloescht wurde C, ohne Rueckfrage, ohne Rueckgaengig.
+    const sichern = (neuZeichnen) => {
+      const weg = checklisteBereinigen(ka);
+      listeVeraltet = true;
+      datenstandPersistieren();
+      if (weg && neuZeichnen !== false) bau();
+    };
+
+    frag.append(el("div", "stand", `Im Auftrag seit ${ka.seit || "—"}`));
+
+    // --- Prioritaet. Nochmal auf dieselbe Stufe tippen hebt sie auf: ohne
+    // das gaebe es keinen Weg zurueck nach "noch nicht eingeordnet".
+    const prioZeile = el("div", "chips");
+    for (const stufe of [1, 2, 3]) {
+      const k = el("button",
+        Number(ka.prio) === stufe ? "chip aktiv" : "chip", "Prio " + stufe);
+      k.onclick = () => {
+        ka.prio = Number(ka.prio) === stufe ? null : stufe;
+        sichern();
+        bau();
+      };
+      prioZeile.append(k);
+    }
+    frag.append(el("div", "stand", "Priorität:"), prioZeile);
+
+    // --- Checkliste. Gespeichert wird bei onchange, NICHT bei oninput:
+    // sonst schriebe jeder Tastendruck den ganzen Datenstand.
+    ka.checkliste = ka.checkliste || [];
+    // z && ... wie in checklisteBereinigen: ein null aus einem von Hand
+    // bearbeiteten Datenstand wuerde hier werfen, bevor die Bereinigung
+    // ueberhaupt laufen kann.
+    frag.append(el("div", "abschnitt",
+      `Checkliste (${ka.checkliste.filter((z) => z && z.erledigt).length}/` +
+      `${ka.checkliste.length})`));
+    ka.checkliste.forEach((z, i) => {
+      const zeile = el("div", "fgruppe");
+      const haken = el("input");
+      haken.type = "checkbox";
+      haken.checked = !!z.erledigt;
+      haken.onchange = () => { z.erledigt = haken.checked; sichern(); bau(); };
+      const txt = el("input", "feld");
+      txt.type = "text";
+      txt.value = z.text || "";
+      txt.placeholder = "z. B. Vertrag unterschrieben";
+      txt.onchange = () => { z.text = txt.value.trim(); sichern(); };
+      const dat = el("input", "datum");
+      dat.type = "date";
+      dat.value = z.datum || "";
+      dat.onchange = () => { z.datum = dat.value; sichern(); };
+      // Keine Anlege-Funktion ohne Loesch-Funktion (Regel aus v96): eine
+      // vertippte Zeile bliebe sonst fuer immer stehen.
+      const weg = el("button", "chip", "✕");
+      weg.onclick = () => {
+        if (z.text && !confirm(`Zeile „${z.text}“ entfernen?`)) return;
+        // Ueber die IDENTITAET loeschen, nicht ueber den Index aus dem
+        // forEach: zwischen Zeichnen und Klick kann checklisteBereinigen()
+        // das Array verkuerzt haben.
+        const stelle = ka.checkliste.indexOf(z);
+        if (stelle >= 0) ka.checkliste.splice(stelle, 1);
+        sichern(false);
+        bau();
+      };
+      const kopf = el("div", "chips");
+      kopf.append(haken, weg);
+      zeile.append(kopf, txt, dat);
+      frag.append(zeile);
+    });
+    const plusZeile = el("div", "chips");
+    const plus = el("button", "chip", "+ Zeile");
+    plus.onclick = () => {
+      // Bewusst ohne sichern(): checklisteBereinigen() wuerde die leere
+      // Zeile im selben Atemzug wieder wegwerfen. Sie wird gespeichert,
+      // sobald Text drinsteht (txt.onchange).
+      ka.checkliste.push({ text: "", datum: "", erledigt: false });
+      bau();
+    };
+    plusZeile.append(plus);
+    frag.append(plusZeile);
+
+    // --- Verlauf. EIGENER Block, absichtlich nicht in bereichHistorie()
+    // gemischt: das sind Bereichswechsel, keine Kontaktereignisse. In einer
+    // gemeinsamen Liste saehen sie aus wie etwas, das die KPI zaehlt.
+    const hist = m.kundenauftragHistorie || [];
+    if (hist.length) {
+      frag.append(el("div", "abschnitt", "Verlauf des Auftrags"));
+      for (const h of hist) {
+        frag.append(el("div", "stand",
+          `${h.datum} · ` +
+          (h.richtung === "hinein" ? "in den Auftrag" : "zurück in die Pitchliste") +
+          (h.grund ? ` — ${h.grund}` : "")));
+      }
+    }
+
+    // --- Rueckweg. Der Grund ist Pflicht (Workflow): in vier Wochen ist
+    // sonst nicht mehr nachvollziehbar, warum die Marke wieder in der
+    // Kadenz steht. Speichern bleibt inaktiv, solange nichts dasteht.
+    const zKnopf = el("button", "chip", "↩ Zurück in die Pitchliste");
+    const zForm = el("div", "fgruppe");
+    zForm.style.display = "none";
+    const zGrund = el("input", "feld");
+    zGrund.type = "text";
+    zGrund.placeholder = "Warum? (Pflichtangabe)";
+    const zOk = el("button", "chip aktiv", "Zurückschieben");
+    zOk.disabled = true;
+    zGrund.oninput = () => { zOk.disabled = !zGrund.value.trim(); };
+    zOk.onclick = () => {
+      const grund = zGrund.value.trim();
+      if (!grund) return;
+      if (!confirm(`„${m.name}“ zurück in die Pitchliste?\n\n` +
+          "Die Marke startet wieder bei Pitch, der Follow-up-Zähler wird " +
+          "zurückgesetzt. Der Auftrag samt Checkliste wird entfernt — der " +
+          "Verlauf bleibt erhalten.")) return;
+      if (!kundenauftragZurueck(m, grund, lokalIso())) {
+        banner("Das ging nicht — bitte die Liste einmal neu laden.");
+        return;
+      }
+      banner("Zurück in der Pitchliste.");
+      bau();
+    };
+    zKnopf.onclick = () => {
+      zForm.style.display = zForm.style.display === "none" ? "" : "none";
+    };
+    const zZeile = el("div", "chips unter-feld");
+    zZeile.append(zOk);
+    zForm.append(el("div", "stand", "Grund für den Rückweg:"), zGrund, zZeile);
+    const zAussen = el("div", "chips");
+    zAussen.append(zKnopf);
+    frag.append(zAussen, zForm);
+
+    return abschnitt("Kundenauftrag", frag);
+  }
+
+  // Antwort eintragen (Release 4, Baustein 1). Erscheint erst, wenn die
+  // Marke ueberhaupt kontaktiert wurde - vorher gibt es nichts zu
+  // beantworten, und ein Knopf ohne Anlass ist eine Einladung zum Fehlklick
+  // (dieselbe Ueberlegung wie beim Startdatum-Abschnitt darueber).
+  function bereichAntwort(q) {
+    const frag = document.createDocumentFragment();
+    const m = datenstand ? markeZuName(p.name) : null;
+    if (!m || !m.pitchliste || !q.letzter_kontakt) return frag;
+    // Im Kundenauftrag wird nicht geantwortet (Tobias, 17.09.): eine Antwort
+    // ist ein Vorgang der Pitchliste. Statt des Formulars steht hier der
+    // Verweis auf den einzigen richtigen Weg - sonst haette die Nutzerin
+    // zwei Wege zurueck, und nur einer davon fuehrt Buch.
+    if (m.kundenauftrag) {
+      frag.append(el("div", "stand",
+        "Diese Marke steht im Kundenauftrag — hier wird keine Antwort mehr " +
+        "eingetragen. Soll sie zurück in die Kadenz, führt der Weg über " +
+        "„↩ Zurück in die Pitchliste“ im Abschnitt „Kundenauftrag“; dort " +
+        "wird auch der Grund festgehalten."));
+      return abschnitt("Antwort eintragen", frag);
+    }
+
+    // Zwei Chips statt <input type="radio">: die App hat fuer "chip aktiv"
+    // schon eine Darstellung, ein Radio braeuchte neues CSS.
+    let positiv = true;
+    const kPos = el("button", "chip aktiv", "positiv");
+    const kNeg = el("button", "chip", "negativ");
+    const setzen = (wert) => {
+      positiv = wert;
+      kPos.className = wert ? "chip aktiv" : "chip";
+      kNeg.className = wert ? "chip" : "chip aktiv";
+    };
+    kPos.onclick = () => setzen(true);
+    kNeg.onclick = () => setzen(false);
+    const wahl = el("div", "chips");
+    wahl.append(kPos, kNeg);
+
+    // Das Datum ist der LETZTE KONTAKT, nicht der naechste Termin (Andrea,
+    // 16.09., rot auf dem Blatt). Die Antwort IST ein Kontaktereignis; die
+    // Wiedervorlage setzt sie danach getrennt ueber "Termin aendern".
+    const d = el("input", "datum");
+    d.type = "date";
+    d.value = isoInTagen(0);
+
+    const bem = el("input", "feld");
+    bem.type = "text";
+    bem.placeholder = "kurzer Satz — der ausführliche Text gehört ins Book";
+
+    const ok = el("button", "chip aktiv", "Antwort eintragen");
+    ok.onclick = () => {
+      if (!d.value) { banner("Bitte ein Datum wählen."); return; }
+      const datumDe = deDatum(d.value);
+      // Steht fuer diesen Tag schon eine Antwort, ist das eine KORREKTUR -
+      // Ereignis und Book-Zeile werden ersetzt, nicht verdoppelt
+      // (Tobias, 17.09.). Andrea soll das vorher wissen.
+      const alt = (m.events || []).find(
+        (e) => e && e.typ === "Antwort" && e.datum === datumDe);
+      if (!confirm((alt
+            ? `Für den ${datumDe} ist schon eine Antwort eingetragen ` +
+              `(${alt.positiv ? "positiv" : "negativ"}).\n` +
+              "Sie wird ERSETZT — auch im Brand-Book.\n\n"
+            : "") +
+          `Antwort als ${positiv ? "positiv" : "negativ"} eintragen, ` +
+          `datiert auf den ${datumDe}?\n\n` +
+          (positiv
+            ? "Die Kadenz wird danach gestoppt: es wird nichts mehr von " +
+              "allein fällig."
+            : "Die Marke springt danach zurück auf Pitch."))) return;
+      antwortEintragen(m, d.value, positiv, bem.value.trim(), lokalIso());
+      bau();
+    };
+    const zeile = el("div", "chips");
+    zeile.append(ok);
+
+    frag.append(
+      el("div", "stand", "Antwort:"), wahl,
+      el("div", "stand", "Datum der Antwort (= letzter Kontakt):"), d,
+      el("div", "stand", "Bemerkung (optional):"), bem,
+      zeile);
+    // 1:1 wiederverwendet, kein neuer Code fuer den Book-Knopf. Er steht
+    // hier, weil die ausfuehrliche Notiz weiter ins Word gehoert - er
+    // ersetzt das Bemerkungsfeld nicht (Tobias, 16.09.).
+    const bz = bookOeffnenZeile(quelleZuName(p.name), m);
+    if (bz) frag.append(bz);
+
+    // "in Kundenauftraege verschieben" (Release 6, Schritt 17). Der Knopf
+    // bleibt AUCH ohne Zusage sichtbar, nur ausgegraut und mit Begruendung
+    // daneben - ein Knopf, der einfach fehlt, sieht aus wie eine fehlende
+    // Funktion. Die eigentliche Sperre sitzt in kundenauftragVerschieben();
+    // hier steht nur die Anzeige davon.
+    // Der Fall "steht schon im Auftrag" ist oben abgefangen und kommt hier
+    // nicht mehr an.
+    {
+      const kaZeile = el("div", "chips");
+      // Dieselbe Funktion, die auch das Verschieben selbst absichert -
+      // nicht eine zweite Abfrage von q.positivBeantwortet (Fall 27/29).
+      const erlaubt = verschiebenErlaubt(m);
+      const kaKnopf = el("button", erlaubt ? "chip aktiv" : "chip",
+        "→ in Kundenaufträge verschieben");
+      if (!erlaubt) {
+        kaKnopf.disabled = true;
+      } else {
+        kaKnopf.onclick = () => {
+          if (!confirm(`„${m.name}“ in die Kundenaufträge verschieben?\n\n` +
+              "Die Marke verschwindet aus der Pitchliste. Die Pitchdaten " +
+              "bleiben erhalten — zurückschieben geht jederzeit.")) return;
+          if (!kundenauftragVerschieben(m, lokalIso())) {
+            banner("Das ging nicht — bitte die Liste einmal neu laden.");
+            return;
+          }
+          banner("In die Kundenaufträge verschoben.");
+          bau();
+        };
+      }
+      kaZeile.append(kaKnopf);
+      frag.append(kaZeile);
+      if (!erlaubt) {
+        frag.append(el("div", "stand",
+          "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
+          "entsteht aus der Zusage, nicht aus dem Knopf."));
+      }
+    }
+    return abschnitt("Antwort eintragen", frag);
+  }
+
   function bereichErledigen(q) {
     // Inhalt sammeln, am Ende in den aufklappbaren Abschnitt haengen -
     // die Funktion hat zwei Ausgaenge, deshalb nicht direkt hineinbauen.
@@ -1935,6 +2232,19 @@ function sheetPitch(p) {
         : "Erledigt-Funktion braucht den Datenstand — App einmal mit Internet öffnen."));
       return abschnitt("Nächster Schritt", frag);
     }
+    // Nach einer positiven Antwort ist die Kadenz still (Tobias, 16.09.):
+    // kein Erledigt-Knopf, kein "Danach: ...", kein Herkunftsfeld. OHNE das
+    // meldete die App weiter "Follow up 2 fällig", obwohl von allein nichts
+    // mehr fällig werden darf - und ein Klick erzeugte ein Ereignis, das dem
+    // Flag widerspricht. "Termin ändern" bleibt absichtlich benutzbar: eine
+    // Zusage heißt nicht, dass es nichts mehr zu terminieren gibt.
+    // A1 (Tobias, 17.09.): Hat Andrea sich nach der Zusage ueber "Termin
+    // aendern" eine Wiedervorlage gesetzt (termin_hand), bekommt sie den
+    // Erledigt-Knopf zurueck - sonst stuende die Marke rot und ueberfaellig
+    // in der Liste, ohne dass sie sie abraeumen koennte.
+    // Die automatische Kadenz bleibt trotzdem still: erledigen() leert die
+    // Terminfelder bei gesetztem Flag gleich wieder (siehe dort).
+    const gestoppt = !!q.positivBeantwortet && !q.termin_hand;
     const s = naechsterSchritt(q.naechste_aktion, fuSeitPitch(m));
     const standard = (m.intervalle || {})[s.key] || KADENZ_STD[s.key];
     const tage = el("input", "tage");
@@ -1963,7 +2273,7 @@ function sheetPitch(p) {
     // Herkunft nur beim Pitch (v90): bei einem Follow-up ist die Aktion
     // durchnummeriert, da gibt es nichts zu erklaeren.
     let herkunft = null;
-    if (s.typ === "Pitch") {
+    if (!gestoppt && s.typ === "Pitch") {
       herkunft = el("input", "feld");
       herkunft.type = "text";
       herkunft.placeholder = "z. B. über Bewerberformular auf der Homepage";
@@ -2020,7 +2330,17 @@ function sheetPitch(p) {
       erledigen(m, { ...s, aktion: text }, dTage(), standard);
       bau();
     };
-    zeile.append(ok);
+    if (gestoppt) {
+      frag.append(el("div", "stand", m.kundenauftrag
+        ? "Kadenz gestoppt — die Marke steht im Kundenauftrag. Zurück in " +
+          "die Kadenz geht es über „↩ Zurück in die Pitchliste“ im " +
+          "Abschnitt „Kundenauftrag“."
+        : "Kadenz gestoppt — positiv beantwortet. Von allein wird nichts " +
+          "mehr fällig. Zurücknehmen lässt sich das über „Antwort " +
+          "eintragen“ mit „negativ“ für denselben Tag."));
+    } else {
+      zeile.append(ok);
+    }
 
     // Zweiter Knopf DIREKT darunter (v113): Termin und naechsten Schritt
     // aendern, OHNE etwas abzuhaken. Andrea am 09.09.: "der Kunde meldet
@@ -2047,7 +2367,13 @@ function sheetPitch(p) {
     tAktion.placeholder = "z. B. Follow up, Neuer Pitch, Angebot nachfassen";
     const tListe = el("datalist");
     tListe.id = "vs-naechsterschritt";
-    for (const v of ["Pitch", "Follow up", "Neuer Pitch"]) {
+    // Creatorpool und Rueckantworten pruefen dazu (Release 5). Beide sind
+    // in naechsterSchritt() bereits eigene Zweige (Release 2) - bis hier
+    // waren sie nur nicht eintippbar, ausser als Freitext auf gut Glueck.
+    // Schreibweise WORTGLEICH zur Erkennung dort, sonst faellt der Eintrag
+    // in den Pitch-Zweig zurueck.
+    for (const v of ["Pitch", "Follow up", "Neuer Pitch", "Creatorpool",
+                     "Rückantworten prüfen"]) {
       const o = el("option");
       o.value = v;
       tListe.append(o);
@@ -2056,6 +2382,20 @@ function sheetPitch(p) {
     const tDatum = el("input", "datum");
     tDatum.type = "date";
     tDatum.value = q.datum_naechste_aktion || "";
+    // "+ X Tage" (Andrea, 16.09.): rechnet AB HEUTE und schreibt das
+    // Ergebnis sofort ins Datumsfeld. Damit gibt es keine zwei Wahrheiten
+    // und keine Vorrangregel - gespeichert wird weiterhin nur tDatum.
+    // Bewusst ohne Vorschauzeile und ohne Rueckrechnung vom Datum auf die
+    // Tage (Bauplan Schritt 15: eine Begruendung ist noch kein Beduerfnis).
+    const tPlus = el("input", "tage");
+    tPlus.type = "number";
+    tPlus.min = "1";
+    tPlus.inputMode = "numeric";
+    tPlus.placeholder = "z. B. 14";
+    tPlus.oninput = () => {
+      const n = parseInt(tPlus.value, 10);
+      if (n > 0) tDatum.value = isoInTagen(n);
+    };
     const tSpeichern = el("button", "chip aktiv", "Speichern");
     tSpeichern.onclick = () => {
       const a = tAktion.value.trim();
@@ -2083,13 +2423,15 @@ function sheetPitch(p) {
     tForm.append(
       el("div", "stand", "Nächster Schritt:"), tAktion, tListe,
       el("div", "stand", "Termin:"), tDatum,
+      el("div", "stand", "… oder ab heute in Tagen:"), tPlus,
       tZeile,
       el("div", "stand",
         "Gilt einmalig. Der Abstand für die folgenden Termine bleibt, wie " +
         "er ist — und dieser Termin wird als „von Hand gesetzt“ vermerkt, " +
         "damit ihn keine Nachrechnung überschreibt."));
     zeile.append(tKnopf);
-    frag.append(zeile, tForm, abstand, danach);
+    frag.append(zeile, tForm);
+    if (!gestoppt) frag.append(abstand, danach);
     // Rückgängig nur für die letzte Aktion (Regel: keine Erstellen-
     // Funktion ohne Löschen-Funktion) — genau diese eine, sonst nichts
     const la = datenstand.letzteAktion;
@@ -2204,7 +2546,14 @@ function pitchlisteAktuell() {
     return Boolean(m && m.brandrating &&
       String(m.brandrating.rating || "").trim().toUpperCase() === "D");
   };
-  return liste.filter((p) => !istD(p));
+  // Marken im Kundenauftrag verschwinden aus der Pitchliste (Release 6).
+  // EXAKT dasselbe Muster wie istD: gefiltert wird die ANSICHT, die Daten
+  // bleiben unangetastet. Deshalb ist der Rueckweg geschenkt.
+  const imAuftrag = (p) => {
+    const m = datenstand && markeZuName(p.name);
+    return Boolean(m && m.kundenauftrag);
+  };
+  return liste.filter((p) => !istD(p) && !imAuftrag(p));
 }
 
 // Ampel der Excel-Pitchliste, live gerechnet (Regeln siehe Projektnotiz):
@@ -2562,6 +2911,116 @@ function renderPitchliste() {
     }
     const karten = el("div", "karten");
     for (const p of liste) if (!neu.includes(p)) karten.append(pitchKarte(p));
+    rumpf.append(karten);
+  }
+}
+
+// ------------------------------------------------- Kundenauftraege (v132)
+//
+// Die Liste zeigt dieselben Karten wie die Pitchliste - pitchKarte() wird
+// 1:1 wiederverwendet, und ein Tipp oeffnet dasselbe sheetPitch(). Das geht
+// nur, weil m.pitchliste beim Verschieben STEHEN bleibt (Schritt 16); haetten
+// wir sie ersetzt, braeuchte es hier eine zweite Kartenart und ein zweites
+// Sheet.
+//
+// Bewusst OHNE Filter-Chips (Rating/Kategorie/Anzeigen/Budget): das sind
+// Pitch-Fragen. Ein Kundenauftrag wird nach Name, Zeitpunkt oder Prioritaet
+// gesucht, und die Liste ist kurz. Kommt der Bedarf, ist filterGruppe() da.
+function kundenauftraegeAktuell() {
+  return (datenstand ? datenstand.marken || [] : [])
+    .filter((m) => m.kundenauftrag)
+    .map((m) => ({ name: m.name, ...m.pitchliste, ...m.kundenauftrag }));
+}
+
+const kf = { suche: "", sortierung: "" };
+
+// EIGENE Suche statt pitchPasst() - gefunden beim Audit 17.09., zweifach
+// reproduziert:
+//
+//   * pitchPasst liest p.ad.anzeigen. renderKundenauftraege haengt kein
+//     ad-Feld an (renderPitchliste schon). Hatte Andrea in der Pitchliste
+//     "Mit Anzeigen" gesetzt, warf der Filter einen TypeError mitten im
+//     Zeichnen: Suchfeld und Sortierknopf blieben stehen, darunter nichts,
+//     keine Meldung.
+//   * pf ist MODULWEIT und ueberlebt den Ansichtswechsel. Mit "faellig <= 7"
+//     verschwanden ALLE Auftraege, weil eine stillgelegte Marke
+//     datum_naechste_aktion:"" hat -> ampel liefert tage:null.
+//
+// In den Kundenauftraegen gibt es bewusst keine Filter-Chips. Damit hatte
+// Andrea keinen Bedienweg, den Filter ueberhaupt zu sehen - geschweige denn
+// ihn zu loeschen. Diese Ansicht filtert deshalb NUR ueber ihr eigenes
+// Suchfeld.
+function kundenPasst(p, s) {
+  if (!s) return true;
+  return [p.name, p.status, p.naechste_aktion, p.kooperation, p.kategorie]
+    .join(" ").toLowerCase().includes(s);
+}
+const SORT_KUNDEN = [["", "Zuletzt verschoben"], ["name", "Name A–Z"],
+                     ["prio", "Priorität"]];
+
+// Ohne Prioritaet ans Ende (9 als Ersatzwert), nicht an den Anfang: eine
+// noch nicht eingeordnete Marke ist keine wichtige Marke.
+function sortiereKunden(liste, art) {
+  const l = [...liste];
+  if (art === "name") return l.sort((a, b) => nameVgl(a.name, b.name));
+  if (art === "prio") {
+    return l.sort((a, b) => (Number(a.prio) || 9) - (Number(b.prio) || 9) ||
+                            nameVgl(a.name, b.name));
+  }
+  // datumWert() schiebt Unlesbares mit 1e12 ans Ende - bei ABSTEIGENDER
+  // Sortierung landet es damit ganz vorn. Ein Auftrag ohne `seit` fuehrte
+  // die Liste an (Audit 17.09., reproduziert).
+  const wann = (x) => (x.seit ? datumWert(x.seit) : -1);
+  return l.sort((a, b) => wann(b) - wann(a) || nameVgl(a.name, b.name));
+}
+
+function renderKundenauftraege() {
+  kopfzeile("Kundenaufträge", true);
+  const c = document.getElementById("inhalt");
+  c.innerHTML = "";
+  const heute = heuteNull();
+  const alle = kundenauftraegeAktuell()
+    .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute) }));
+  if (!alle.length) {
+    c.append(el("div", "leerzustand",
+      "Noch keine Kundenaufträge. Marken kommen hierher über " +
+      "„in Kundenaufträge verschieben“ im Pitchlisten-Eintrag — erst nach " +
+      "einer positiv eingetragenen Antwort."));
+    return;
+  }
+  const suche = el("input", "suche");
+  suche.type = "search";
+  suche.placeholder = "Suchen (Name, Status …)";
+  suche.value = kf.suche;
+  suche.oninput = () => { kf.suche = suche.value; zeichnen(); };
+  c.append(suche);
+
+  const knopfZeile = el("div", "chips");
+  const sortBtn = sortierKnopf(SORT_KUNDEN, () => kf.sortierung,
+    (w) => { kf.sortierung = w; }, () => zeichnen());
+  knopfZeile.append(sortBtn);
+  c.append(knopfZeile);
+
+  const rumpf = el("div");
+  c.append(rumpf);
+  zeichnen();
+
+  function zeichnen() {
+    sortBtn.textContent = "⇅ " + sortLabel(SORT_KUNDEN, kf.sortierung);
+    sortBtn.classList.toggle("aktiv", Boolean(kf.sortierung));
+    const s = kf.suche.trim().toLowerCase();
+    const liste = sortiereKunden(alle.filter((p) => kundenPasst(p, s)),
+                                 kf.sortierung);
+    rumpf.innerHTML = "";
+    rumpf.append(el("div", "stand",
+      `${liste.length} von ${alle.length} Aufträgen · sortiert nach ` +
+      sortLabel(SORT_KUNDEN, kf.sortierung)));
+    if (!liste.length) {
+      rumpf.append(el("div", "leerzustand", "Nichts passt zur Suche."));
+      return;
+    }
+    const karten = el("div", "karten");
+    for (const p of liste) karten.append(pitchKarte(p));
     rumpf.append(karten);
   }
 }
@@ -3748,18 +4207,26 @@ function renderUgc() {
     c.append(zugang);
   }
 
-  // Platzhalter Kundenauftraege (v86, Tobias 06.09.): das Kundenauftraege-
-  // Blatt der Excel (Liste2346) wird noch nicht gelesen. Es ist die Quelle
-  // fuer die vier leeren KPI-Kacheln (Kennenlerngespraeche, Kooperationen,
-  // Abschlussquote, Oe Auftragswert). Bewusst NICHT tippbar und ohne Zahl -
-  // eine 0 waere eine Behauptung, ein toter Knopf eine Enttaeuschung.
-  const kunden = el("div", "karte block zugang platzhalter");
+  // Kundenauftraege (v132): aus dem Platzhalter von v86 ist ein echter
+  // Zugang geworden. Die Datenquelle ist NICHT das alte Excel-Blatt
+  // (Liste2346), sondern m.kundenauftrag im Datenstand - gesetzt beim
+  // Verschieben aus der Pitchliste.
+  //
+  // Die vier KPI-Kacheln (Kennenlerngespraeche, Kooperationen,
+  // Abschlussquote, Oe Auftragswert) bleiben vorerst leer: dafuer braucht es
+  // Auftragswerte, die noch nirgends erfasst werden. Weiterhin keine 0 -
+  // eine 0 waere eine Behauptung.
+  const kunden = el("div", "karte block zugang");
+  const kAnzahl = kundenauftraegeAktuell().length;
   const kKopf = el("div", "kopf");
-  kKopf.append(el("span", "pill", "Geplant"));
+  kKopf.append(el("span", "pill", "Aufträge"),
+               el("span", "badge" + (kAnzahl ? " voll" : ""), String(kAnzahl)));
   kunden.append(kKopf, el("div", "titel", "Kundenaufträge"),
-    el("div", "kontext",
-      "Noch keine Datenquelle — füllt später Kennenlerngespräche, " +
-      "Kooperationen, Abschlussquote und Ø Auftragswert."));
+    el("div", "kontext", kAnzahl
+      ? `${kAnzahl} Marke${kAnzahl === 1 ? "" : "n"} im Auftrag`
+      : "Noch keine — Marken kommen über „in Kundenaufträge verschieben“ " +
+        "aus der Pitchliste hierher."));
+  kunden.onclick = () => { location.hash = "#/kundenauftraege"; };
   c.append(kunden);
 
   // Platzhalter Nutzungsrechte (v125, Ablaufplan Andrea 14.09.): steht
@@ -3907,6 +4374,8 @@ function render() {
     renderUgc();
   } else if (h === "#/pitchliste") {
     renderPitchliste();
+  } else if (h === "#/kundenauftraege") {
+    renderKundenauftraege();
   } else if (h === "#/brandrating") {
     renderBrandrating();
   } else if (h === "#/buecher") {
@@ -3999,18 +4468,41 @@ function herkunftUnzulaessig(text) {
 }
 
 function naechsterSchritt(aktion, pos) {
-  if (String(aktion || "").toLowerCase().includes("follow")) {
+  const a = String(aktion || "").toLowerCase();
+  if (a.includes("follow")) {
     const nr = Math.min(pos + 1, 3);
     return {
       typ: "FollowUp", aktion: "Follow up " + nr, status: "Follow up",
-      zaehlt: true,
+      zaehlt: true, kontakt: true,
       naechste: nr < 3 ? "Follow up" : "Neuer Pitch",
       key: nr === 1 ? "fu2" : nr === 2 ? "fu3" : "pause",
     };
   }
+  // Creatorpool-Prüfung (16.09.): zählt als KONTAKT, aber NICHT als
+  // Follow-up. Deshalb zaehlt:false - "zaehlt" erhöht weiter unten
+  // pitchliste.zaehler, und das ist der Follow-up-Zähler. Mit true
+  // stünde nach einer Prüfung "Follow-ups: 3", obwohl keines war.
+  // Erkennung wortgleich zu klassifiziere_aktion() in ugc_core.py.
+  if (a.includes("creatorpool")) {
+    return { typ: "Creatorpool", aktion: "Creatorpool",
+      status: "Creatorpool", zaehlt: false, kontakt: true,
+      naechste: "Creatorpool", key: "fu1" };
+  }
+  // "Rückantworten prüfen" zählt weder in Historie noch KPI (14.09.) -
+  // kontakt:false unterdrückt das Ereignis ganz.
+  // ABSICHTLICH eng: nur "rückantwort", NICHT "rückmeldung". Andreas
+  // Freitexte ("Warten auf Rückmeldung") verhalten sich damit wie
+  // bisher; eine Umdeutung bestehender Daten wäre eine stille
+  // Verhaltensänderung an 3 Marken im Bestand.
+  if (a.includes("rückantwort") || a.includes("rueckantwort")) {
+    return { typ: "Ruecksprache", aktion: "Rückantworten prüfen",
+      status: "Rückantworten prüfen", zaehlt: false, kontakt: false,
+      naechste: "Rückantworten prüfen", key: "fu1" };
+  }
   return { typ: "Pitch",
     aktion: aktion === "Neuer Pitch" ? "Neuer Pitch" : "Pitch",
-    status: "Pitch", zaehlt: false, naechste: "Follow up", key: "fu1" };
+    status: "Pitch", zaehlt: false, kontakt: true,
+    naechste: "Follow up", key: "fu1" };
 }
 
 // Position im aktuellen Zyklus: FollowUp-Events zählen, Pitch setzt zurück.
@@ -4110,8 +4602,15 @@ function erledigen(m, s, tage, standard) {
   ruecknahmeEntwerten(m);
   datenstand.letzteAktion =
     { name: m.name, aktion: s.aktion, zeit: jetzt, vorher: { ...m.pitchliste } };
-  (m.events = m.events || []).push(
-    { typ: s.typ, datum: heute, aktion: s.aktion, positiv: "" });
+  // Kein Ereignis bei einem Nicht-Kontakt (16.09.): "Rückantworten
+  // prüfen" soll weder in der Historie noch in der KPI auftauchen.
+  // s.kontakt !== false statt s.kontakt: ein altes s ohne das Feld
+  // (z.B. aus einem gespeicherten Rückgängig-Stand) verhält sich dann
+  // wie bisher, statt still das Ereignis zu verschlucken.
+  if (s.kontakt !== false) {
+    (m.events = m.events || []).push(
+      { typ: s.typ, datum: heute, aktion: s.aktion, positiv: "" });
+  }
   // termin_hand wird hier GELOESCHT (v116/v117), und das ist zwingend:
   // Dieses Datum kommt aus der Kadenz, darf also von pitchNachrechnen()
   // nachgerechnet werden. v113 setzte den Merker, niemand loeschte ihn -
@@ -4121,9 +4620,15 @@ function erledigen(m, s, tage, standard) {
   // Kommentar steht ABSICHTLICH hier und nicht im Objekt: der
   // Stempel-Waechter in test_invarianten.js prueft "geaendert:" nur in den
   // 8 Zeilen nach dem Schreibzugriff.
+  // letzter_kontakt wird nur bei echtem Kontakt fortgeschrieben (16.09.):
+  // eine Rückantworten-Prüfung ist keiner, sonst behauptete die Pitchliste
+  // einen Kontakt, den es nie gab. Kommentar steht hier oben und NICHT im
+  // Objekt - aus demselben Grund wie der Absatz darüber: der Stempel-Wächter
+  // sucht "geaendert:" nur in den 8 Zeilen nach dem Schreibzugriff.
+  const kontaktDatum = s.kontakt !== false ? heute : m.pitchliste.letzter_kontakt;
   Object.assign(m.pitchliste, {
     status: s.status,
-    letzter_kontakt: heute,
+    letzter_kontakt: kontaktDatum,
     naechste_aktion: s.naechste,
     datum_naechste_aktion: isoInTagen(tage),
     termin_hand: false,
@@ -4134,10 +4639,267 @@ function erledigen(m, s, tage, standard) {
       (parseInt(datenstand.letzteAktion.vorher.zaehler, 10) || 0) + 1);
   }
   if (tage !== standard) (m.intervalle = m.intervalle || {})[s.key] = tage;
+  // A1 (Tobias, 17.09.): Nach einer Zusage haekelt der Erledigt-Knopf nur
+  // die von Hand gesetzte Wiedervorlage ab - er startet KEINE neue Kadenz.
+  // Das Ereignis bleibt stehen (Andrea hat ja etwas getan), aber die
+  // Terminfelder werden sofort wieder geleert, sonst rechnete die Kadenz
+  // munter weiter, obwohl die Marke laengst zugesagt hat.
+  // Kommentar ueber dem Aufruf, nicht im Objektliteral: der Stempel-Waechter
+  // sucht "geaendert:" nur in den 8 Zeilen nach dem Schreibzugriff.
+  // `status` wird MIT zurueckgesetzt: erledigen() hat ihn oben auf den
+  // Schritt gesetzt ("Creatorpool"), und danach stuende auf der Karte wieder
+  // etwas anderes als "Zugesagt" - A2 waere ausgehebelt. Gemessen 17.09.
+  if (m.pitchliste.positivBeantwortet) {
+    Object.assign(m.pitchliste, {
+      status: "Zugesagt",
+      naechste_aktion: "",
+      datum_naechste_aktion: "",
+      termin_hand: false,
+      geaendert: jetzt,
+    });
+  }
   listeVeraltet = true;
   datenstandPersistieren();
   // Punkt 4 im Brand-Book sofort mitschreiben (Andrea 02.09.)
   bookHistorieMelden(m, heute, s.aktion);
+}
+
+// Rücksprung auf Pitch nach einer Absage ODER nach dem Zurückschieben aus
+// den Kundenaufträgen. EIN Handgriff, ZWEI Auslöser - sonst wird in sechs
+// Monaten der eine Weg repariert und der andere nicht (wie bei der v56-Regel
+// und bookCTag, v130).
+//
+// Ruft ABSICHTLICH NICHT ruecknahmeEntwerten(): das macht der jeweilige
+// Aufrufer selbst, VOR seinem eigenen Rückgängig-Punkt. Täte es diese
+// Funktion, löschte sie den Punkt, den der Aufrufer zwei Zeilen vorher
+// gesetzt hat - "Rückgängig" nach einer negativen Antwort täte dann nichts,
+// ohne jede Meldung.
+//
+// Erzeugt KEIN Pitch-Ereignis (Tobias, 16.09.): das entsteht erst, wenn
+// Andrea "Pitch erledigt" drückt. Bis dahin weicht fuSeitPitch() (rechnet
+// aus Ereignissen) vom Feld zaehler ab - folgenlos, weil pos nur im
+// Follow-up-Zweig von naechsterSchritt() benutzt wird und hier "Pitch" steht.
+function ruecksprungAufPitch(m, jetzt) {
+  if (!m || !m.pitchliste) return false;
+  Object.assign(m.pitchliste, {
+    status: "Pitch",
+    naechste_aktion: "Pitch",
+    datum_naechste_aktion: isoInTagen(0),
+    zaehler: "0",
+    termin_hand: false,
+    positivBeantwortet: false,
+    geaendert: jetzt,
+  });
+  listeVeraltet = true;
+  return true;
+}
+
+// Eine Brandantwort eintragen (Release 4, Baustein 1). `datumIso` ist der
+// LETZTE KONTAKT, nicht der naechste Termin (Andrea, 16.09.): die Antwort
+// ist selbst ein Kontaktereignis. Das Wiedervorlage-Datum setzt sie danach
+// getrennt ueber "Termin aendern".
+//
+// KEIN Rueckgaengig-Punkt, anders als bei erledigen(). Korrigiert wird durch
+// erneutes Eintragen am selben Tag (Tobias, 17.09.), und zwar aus drei
+// nachgemessenen Gruenden:
+//   1. rueckgaengig() vergleicht ev[last].aktion gegen la.aktion. Ein
+//      Antwort-Ereignis hat aktion:"" - der Vergleich traefe nie.
+//   2. Das Ereignis MUSS aktion:"" behalten: ugc_core.extract_events()
+//      erzeugt fuer eine Antwort aus dem Word exakt dasselbe. Stuende in
+//      der App "Antwort", haetten App- und Word-Ereignis verschiedene
+//      historieSchluessel - historieAktuell() zeigte die Antwort DOPPELT.
+//   3. rueckgaengig() endet mit bookHistorieMelden(..., true) und leert eine
+//      Zeile in der HISTORIEN-Tabelle. Die Antwort steht in der
+//      Antwort-Tabelle; dort faende es nichts und meldete Andrea Handarbeit
+//      fuer etwas, das nie dort stand.
+//
+// ruecknahmeEntwerten() laeuft trotzdem, und das ist zwingend: ein offener
+// Punkt dieser Marke wuerde sonst weiter anbieten, die Pitchliste auf einen
+// Stand VOR der Antwort zurueckzurollen - waehrend das Antwort-Ereignis
+// stehen bleibt. Genau der v131-Fehler, nur an einer neuen Stelle.
+function antwortEintragen(m, datumIso, positiv, bemerkung, jetzt) {
+  if (!m || !m.pitchliste) return false;
+  // Antworten gehoeren in die Pitchliste (Tobias, 17.09.). Steht die Marke
+  // im Kundenauftrag, ist der einzige Weg zurueck der Knopf "Zurueck in die
+  // Pitchliste" - mit seinem Pflichtgrund und seinem Historien-Eintrag.
+  //
+  // Die Sperre steht HIER und nicht nur in der Oberflaeche: ohne sie liefe
+  // der Negativ-Zweig ueber ruecksprungAufPitch() und setzte Flag, Status
+  // und Zaehler zurueck, waehrend m.kundenauftrag stehen bliebe. Die Marke
+  // waere dann in der Pitchliste unsichtbar und liefe dort trotzdem eine
+  // Kadenz - nachgemessen am 17.09., genau so eingetreten.
+  if (m.kundenauftrag) return false;
+  // Ohne Datum wird NICHTS geschrieben (Pruefkriterien Fall 12). Der Guard
+  // steht hier und nicht nur im Knopf: was allein im Klick-Handler haengt,
+  // ist nicht pruefbar und faellt beim naechsten Umbau still weg.
+  // Ohne ihn liefe deDatum(undefined) durch und die Marke bekaeme ein
+  // Ereignis mit unbrauchbarem Datum - das der PC-Import spaeter einliest.
+  if (!datumIso) return false;
+  jetzt = jetzt || lokalIso();
+  const datum = deDatum(datumIso);
+  ruecknahmeEntwerten(m);
+  // Ereignis ERSETZEN statt anhaengen, wenn fuer dieses Datum schon eine
+  // Antwort steht - das ist die Korrektur. Ohne diesen Zweig entstuende
+  // beim Umtippen ein zweites Ereignis, und die KPI zaehlte zwei Antworten.
+  // Dieselbe Regel wie im Book (antwortXml) und in der Warteschlange
+  // (outboxSchluessel mit art "antwort"): Marke + Datum ist die Identitaet.
+  // A3 (Tobias, 17.09.): Steuert diese Antwort ueberhaupt noch den Zustand?
+  // Nur die JUENGSTE tut das. Wird nachtraeglich die Bemerkung einer
+  // aelteren Antwort korrigiert, sollen Ereignis und Word-Zeile stimmen -
+  // aber Flag, Termin und letzter Kontakt duerfen sich nicht ruehren.
+  // Vorher ueberstimmte eine Korrektur vom 15. stillschweigend die Absage
+  // vom 17.: das Flag stand wieder, und die Marke war sofort verschiebbar.
+  // Berechnet VOR dem Einfuegen und ohne den eigenen Eintrag.
+  const neuereAntwort = (m.events || []).some(
+    (e) => e && e.typ === "Antwort" && e.datum !== datum &&
+           datumWert(e.datum) > datumWert(datum));
+  const ereignis = { typ: "Antwort", datum, aktion: "",
+                     positiv: positiv ? "X" : "", negativ: positiv ? "" : "X",
+                     bemerkung: bemerkung || "" };
+  m.events = m.events || [];
+  const i = m.events.findIndex(
+    (e) => e && e.typ === "Antwort" && e.datum === datum);
+  if (i >= 0) m.events[i] = ereignis;
+  else m.events.push(ereignis);
+  if (neuereAntwort) {
+    // Reine Korrektur an einer ueberholten Antwort: Ereignis und Book
+    // aktualisieren, Zustand in Ruhe lassen.
+    listeVeraltet = true;
+    datenstandPersistieren();
+    bookAntwortMelden(m, datum, positiv, !positiv, bemerkung);
+    return true;
+  }
+  if (positiv) {
+    // Stilllegung nach positiv, Option A (Tobias, 16.09.): die Kadenz wird
+    // still gelegt, indem BEIDE Terminfelder geleert werden. Das
+    // entscheidende Feld ist das DATUM - daran haengt die Faelligkeit;
+    // ampel("") liefert sauber grau statt eines Fehlers (vorab geprueft).
+    // termin_hand faellt mit, sonst bliebe die Marke vom Nachrechnen
+    // ausgenommen (v116/v117).
+    // Der Kommentar steht hier oben und NICHT im Objektliteral: der
+    // Stempel-Waechter sucht "geaendert:" nur in den 8 Zeilen nach dem
+    // Schreibzugriff.
+    // A2 (Tobias, 17.09.): `status` sagt jetzt "Zugesagt" statt weiter
+    // "Follow up" - auf der Auftragskarte stand sonst "Follow up ·
+    // Follow-ups: 4", obwohl die Marke laengst zugesagt hatte.
+    // `zaehler` bleibt ABSICHTLICH unberuehrt: eine Zusage kann direkt nach
+    // dem Pitch kommen oder nach Follow-up 1, und genau das haelt der
+    // Zaehler fest. Zuruecksetzen wuerde diese Information wegwerfen.
+    Object.assign(m.pitchliste, {
+      letzter_kontakt: datum,
+      status: "Zugesagt",
+      positivBeantwortet: true,
+      naechste_aktion: "",
+      datum_naechste_aktion: "",
+      termin_hand: false,
+      geaendert: jetzt,
+    });
+  } else {
+    // Absage: zurueck auf Pitch. ruecksprungAufPitch() stempelt selbst und
+    // setzt positivBeantwortet zurueck - es entwertet ABSICHTLICH keine
+    // Ruecknahmepunkte, das ist oben schon passiert.
+    Object.assign(m.pitchliste, { letzter_kontakt: datum, geaendert: jetzt });
+    ruecksprungAufPitch(m, jetzt);
+  }
+  listeVeraltet = true;
+  datenstandPersistieren();
+  bookAntwortMelden(m, datum, positiv, !positiv, bemerkung);
+  return true;
+}
+
+// ------------------------------------ Kundenauftraege (Release 6, v132)
+//
+// Ein Bereich ist ein OBJEKT, das da ist oder fehlt - dasselbe Muster wie
+// m.pitchliste und m.brandrating. Kein zusaetzliches Zustandsfeld, das mit
+// dem Objekt synchron gehalten werden muesste.
+//
+// m.pitchliste bleibt beim Verschieben STEHEN. Objekte werden addiert, nicht
+// ersetzt, genau wie beim Uebergang Brand Rating -> Pitchliste. Sichtbar
+// wird der Wechsel allein ueber den Filter in pitchlisteAktuell(); der
+// Rueckweg muss deshalb NICHTS rekonstruieren, es faellt nur der Filtergrund
+// weg.
+//
+// Beide Wege erzeugen KEIN Ereignis (Tobias, 16.09.): ein Bereichswechsel
+// ist keine Kontaktaufnahme und darf in keiner Kennzahl auftauchen. Die
+// Spur davon steht in m.kundenauftragHistorie - einem EIGENEN Feld, nicht
+// in m.events, damit sie gar nicht erst in die Naehe der KPI-Rechnung
+// kommt.
+// Darf diese Marke in die Kundenauftraege? EINE Stelle, zwei Leser: die
+// Funktion unten und die Graustellung des Knopfs (Pruefkriterien 27/29).
+// Vorher stand dieselbe Bedingung zweimal da - die Vorlage dafuer, dass in
+// sechs Monaten die eine Stelle gelockert wird und die andere nicht.
+//
+// Das Flag ist die EINZIGE Bedingung. Kein Termin, kein Mindestalter, kein
+// erledigter Schritt - Pruefkriterium R7 prueft ausdruecklich, dass die
+// Sperre nicht zu eng gebaut ist.
+// Leere Checklisten-Zeilen werden nicht gespeichert (Pruefkriterien Fall 36).
+// Eine frisch angelegte Zeile lebt nur in der Anzeige, bis Text drinsteht -
+// deshalb ruft "+ Zeile" bewusst KEIN sichern(). Haken und Datum ohne Text
+// sind nichts wert: die Zeile sagt dann nicht, WAS erledigt ist.
+// Gibt zurueck, wie viele Zeilen verworfen wurden (fuer den Test).
+function checklisteBereinigen(ka) {
+  if (!ka || !Array.isArray(ka.checkliste)) return 0;
+  const vorher = ka.checkliste.length;
+  ka.checkliste = ka.checkliste.filter(
+    (z) => z && String(z.text == null ? "" : z.text).trim());
+  return vorher - ka.checkliste.length;
+}
+
+function verschiebenErlaubt(m) {
+  return Boolean(m && m.pitchliste && m.pitchliste.positivBeantwortet &&
+                 !m.kundenauftrag);
+}
+
+function kundenauftragVerschieben(m, jetzt) {
+  if (!verschiebenErlaubt(m)) return false;
+  const heute = deDatum(isoInTagen(0));
+  m.kundenauftrag = { seit: heute, prio: null, checkliste: [] };
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "hinein", datum: heute });
+  // Ab hier beschreibt ein offener Ruecknahmepunkt einen Stand, den es nicht
+  // mehr gibt - dieselbe Regel wie in terminSetzenDaten() (v131). Ohne das
+  // naehme "Rueckgaengig" die Marke aus dem Auftrag heraus, ohne den Auftrag
+  // selbst anzufassen.
+  ruecknahmeEntwerten(m);
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+
+// Zurueck in die Pitchliste. `grund` ist Pflicht (Workflow): ein
+// Rueckweg ohne Begruendung ist in vier Wochen nicht mehr nachvollziehbar.
+// Die Pruefung sitzt am Knopf - hier wird nur festgehalten, was ankam.
+function kundenauftragZurueck(m, grund, jetzt) {
+  if (!m || !m.kundenauftrag) return false;
+  // Der Grund ist PFLICHT (Pruefkriterien Fall 31) - und die Pruefung gehoert
+  // hierher, nicht nur an den ausgegrauten Speichern-Knopf. Ohne Grund wird
+  // nichts veraendert: kein Historien-Eintrag, kein Ruecksprung, nichts.
+  // Ein Rueckweg ohne Begruendung ist in vier Wochen nicht mehr
+  // nachvollziehbar, und die Historie ist die einzige Spur des Wechsels.
+  const text = String(grund == null ? "" : grund).trim();
+  if (!text) return false;
+  jetzt = jetzt || lokalIso();
+  ruecknahmeEntwerten(m);
+  // REIHENFOLGE (Pruefkriterien R4): erst das Flag fallen lassen, dann die
+  // Historie schreiben. Andersherum entstuende - und sei es nur fuer eine
+  // Anweisung lang - eine Zeile "zurueck in die Pitchliste" neben einem
+  // Flag, das das Verschieben noch freigibt. Bricht irgendetwas dazwischen
+  // ab, bleibt genau dieser widerspruechliche Stand stehen.
+  //
+  // ruecksprungAufPitch setzt status/naechste_aktion/zaehler zurueck UND
+  // raeumt positivBeantwortet weg - sonst stuende die Marke wieder in der
+  // Pitchliste und waere ohne neue Zusage sofort wieder verschiebbar (N2).
+  // Scheitert der Ruecksprung (keine Pitchzeile), wird der Auftrag NICHT
+  // entfernt - sonst stuende die Marke in keiner der beiden Listen und waere
+  // nur noch ueber das Brand Rating erreichbar (Audit 17.09.).
+  if (!ruecksprungAufPitch(m, jetzt)) return false;
+  delete m.kundenauftrag;
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "zurueck", datum: deDatum(isoInTagen(0)),
+            grund: text });
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
 }
 
 function rueckgaengig(m, la) {
@@ -5215,6 +5977,152 @@ function historieXml(xml, datum, aktion, entfernen) {
   return xml.replace(tbl, () => tblNeu);
 }
 
+// ------------------------- Antwort ins Book (Baustein 2, Release 3, v132)
+// Traegt eine Brandantwort in die Antwort-Tabelle ein: vier Spalten
+// (Datum | Positiv | Negativ | Bemerkung) statt der zwei der Historie.
+//
+// Warum eine eigene Funktion statt historieXml mit einem Schalter:
+// zeileBauen() setzt genau ZWEI Zellen und kopiert alles ab Zelle 3
+// unveraendert aus der Vorlagenzeile mit. An einer vierspaltigen Tabelle
+// waeren das Negativ und Bemerkung der VORLAGE - Andreas Text in einer
+// fremden Zeile. Am Bestand gemessen (17.09., 64 Books): heute ist die
+// letzte Zeile in 64 von 64 leer, wir kaemen damit durch. Nach der ersten
+// App-Schreibung nicht mehr. Deshalb werden hier alle vier Zellen gesetzt.
+//
+// KEIN entfernen-Zweig, anders als historieXml. Zwei Gruende:
+//   1. rueckgaengig() vergleicht ev[last].aktion gegen la.aktion; ein
+//      Antwort-Ereignis hat aktion:"" - der Weg wird nie betreten
+//      (Codex-Fund, nachgemessen 16.09.).
+//   2. Andrea schreibt den ausfuehrlichen Text ueber "Brandbook oeffnen"
+//      NACHTRAEGLICH in die Bemerkungsspalte. Ein Leeren der Zeile naehme
+//      ihn mit - genau der Datenverlust, den v88 verhindern sollte.
+// Wird "Antwort zuruecknehmen" gewuenscht, ist das ein eigener Auftrag mit
+// eigener Frage: was passiert mit ihrem Text?
+
+// Gegenstueck zu ugc_core._ist_antwort_tabelle - Kopfzelle 0 "Datum",
+// Kopfzelle 1 "Positiv". ZELLENWEISE, nicht ueber den Zeilentext: die
+// Historien-Tabelle beginnt ebenfalls mit "Datum", und ein Book, in dem
+// irgendwo "positiv" im Kopf steht, wuerde sonst dort landen.
+// Aendert sich die Regel, muss sie in ugc_core.py mitwandern - JS kann
+// Python nicht importieren, das sind zwei Implementierungen derselben Regel.
+function antwortTabelle(xml) {
+  return (String(xml).match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) || []).find((t) => {
+    const kopf = wordZellen(wordZeilen(t)[0] || "");
+    return kopf.length >= 2 &&
+      wordText(kopf[0]).toLowerCase().includes("datum") &&
+      wordText(kopf[1]).toLowerCase().includes("positiv");
+  }) || null;
+}
+
+// Zeilenumbrueche raus, Raender weg. NICHT kosmetisch:
+// Ein rohes Umbruchzeichen in <w:t> ist in OOXML KEIN Zeilenumbruch.
+// Gemessen 17.09. an einer Book-Kopie: ugc_core liest es als Umbruch
+// zurueck, Word zeigt EINE Zeile. App und PC-Import waeren sich einig,
+// Andreas Bildschirm saehe etwas anderes - eine stille Abweichung wie die,
+// die vom 06.09. bis v121 unentdeckt lief.
+// Ein echter Umbruch braucht <w:br/>; das lohnt erst, wenn Andrea ihn
+// verlangt - fuer den kurzen Satz in der App ist eine Zeile die Vorgabe
+// (Workflow Brandantwort: "der kurze Satz in der App, der lange Text im
+// Brandbook"). Bis dahin ist zusammenziehen ehrlicher als so tun als ob.
+// ponytail: Umbruch wird zu Leerzeichen; <w:br/> nachruesten, falls Andrea
+// mehrzeilige App-Bemerkungen will.
+function antwortZelltext(s) {
+  return String(s == null ? "" : s).replace(/\s*[\r\n]+\s*/g, " ").trim();
+}
+
+// Neue Antwort-Zeile aus einer Vorlagen-Zeile: alle vier Zellen werden
+// gesetzt, Spalte 5+ (gibt es in keinem Book, aber kostenlos) bleibt stehen.
+// `null` in werte[i] heisst: DIESE Zelle nicht anfassen, die der Vorlage
+// bleibt wie sie ist. Gebraucht beim Korrigieren, wo Andreas nachgetragener
+// Bemerkungstext stehen bleiben muss (siehe antwortXml).
+function antwortZeileBauen(vorlage, werte) {
+  const trPr = (vorlage.match(/<w:trPr>[\s\S]*?<\/w:trPr>/) || [""])[0];
+  const zellen = wordZellen(vorlage);
+  if (zellen.length < 4) return null;
+  return "<w:tr>" + trPr +
+    zellen.slice(0, 4)
+      .map((z, i) => werte[i] === null
+        ? z
+        : zelleSetzen(z, antwortZelltext(werte[i]))).join("") +
+    zellen.slice(4).join("") + "</w:tr>";
+}
+
+// Gibt die neue XML zurueck, "dublette" (steht schon da) oder null
+// (Tabelle/Zeile nicht gefunden) - dann bleibt das Book unangetastet,
+// statt es kaputtzuschreiben. Gleiche drei Ausgaenge wie historieXml.
+function antwortXml(xml, datum, positiv, negativ, bemerkung) {
+  const tbl = antwortTabelle(xml);
+  if (!tbl) return null;
+  const zeilen = wordZeilen(tbl);
+  if (zeilen.length < 2) return null;
+  // Steht die Antwort schon da? Verglichen werden NUR Datum und die beiden
+  // Kreuze - die Bemerkung bleibt bewusst draussen (Tobias, 17.09.).
+  // Andrea ergaenzt den langen Text nachtraeglich im Word; naehme man ihn
+  // in den Vergleich auf, erkennt die App ihre eigene Zeile danach nicht
+  // wieder und schriebe sie ein zweites Mal.
+  // Gegenprobe am Bestand (17.09., 64 Books, 21 Antworten): keine Marke hat
+  // zwei Antworten am selben Tag. Das Kreuz steht mal "X", mal "x" -
+  // historieSchluessel() normalisiert Schreibweise und Leerzeichen weg.
+  const suche = historieSchluessel(datum, positiv, negativ);
+  const nurDatum = historieSchluessel(datum);
+  // Das DATUM ist der Anker, nicht der ganze Schluessel: dieselbe Zeile ist
+  // je nach Inhalt eine Dublette (nichts tun) oder eine Korrektur
+  // (ersetzen). Am Bestand gemessen (17.09., 64 Books, 21 Antworten) hat
+  // keine Marke zwei Antworten am selben Tag - ein Datum trifft hoechstens
+  // eine Zeile.
+  let treffer = -1;
+  for (let j = 1; j < zeilen.length; j++) {
+    const c = wordZellen(zeilen[j]);
+    if (c.length < 2) continue;
+    if (historieSchluessel(wordText(c[0])) !== nurDatum) continue;
+    if (historieSchluessel(wordText(c[0]), wordText(c[1]),
+                           wordText(c[2] || "")) === suche) {
+      // Datum und Kreuze stimmen ueberein - aber steht im Book noch KEINE
+      // Bemerkung und wir haben eine, ist das ein Nachtrag, keine Dublette
+      // (Codex-Befund, nachgemessen 17.09.). Ohne diesen Zweig kam eine
+      // nachtraeglich ergaenzte Bemerkung nie ins Word, und der wartende
+      // Auftrag wurde als erledigt gestrichen.
+      const bemImBook = wordText(c[3] || "").trim();
+      if (bemImBook || !String(bemerkung == null ? "" : bemerkung).trim()) {
+        return "dublette";
+      }
+    }
+    treffer = j;
+  }
+  const werte = [datum, positiv, negativ, bemerkung];
+  let tblNeu;
+  if (treffer > 0) {
+    // Korrektur derselben Zeile (Tobias, 17.09.: "korrigieren statt
+    // zuruecknehmen"). Geaendert werden Datum und die beiden Kreuze.
+    //
+    // Die BEMERKUNG wird nur gesetzt, wenn die Zelle im Book leer ist.
+    // Andrea schreibt den ausfuehrlichen Text ueber "Brandbook oeffnen"
+    // direkt ins Word; ein Korrekturklick in der App wuerde ihn sonst durch
+    // den kurzen App-Satz ersetzen - genau der Datenverlust, den v88
+    // verhindern sollte, und dieselbe Regel wie bei den Kerninfos (v121,
+    // "LEER ueberschreibt NIE", hier eine Stufe strenger).
+    // ponytail: Book-Text gewinnt immer. Feiner unterscheiden (nur
+    // ueberschreiben, wenn der Text noch der zuletzt von der App
+    // geschriebene ist) erst, wenn Andrea es vermisst - dafuer muesste der
+    // alte Wert mitgereicht werden.
+    const alt = wordZellen(zeilen[treffer]);
+    if (wordText(alt[3] || "").trim()) werte[3] = null;
+    const neu = antwortZeileBauen(zeilen[treffer], werte);
+    if (!neu) return null;
+    tblNeu = tbl.replace(zeilen[treffer], () => neu);
+  } else {
+    const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
+    const neu = antwortZeileBauen(zeilen[zeilen.length - 1], werte);
+    if (!neu) return null;
+    tblNeu = leer > 0
+      ? tbl.replace(zeilen[leer], () => neu)
+      : tbl.slice(0, -"</w:tbl>".length) + neu + "</w:tbl>";
+  }
+  // Funktions-Ersatz wie bei historieXml: ein "$&" in Andreas Bemerkung
+  // waere sonst ein Rueckverweis-Muster.
+  return xml.replace(tbl, () => tblNeu);
+}
+
 // ------------------------------------- Kerninfos ins Book (Fix B, v121)
 // Aendert Andrea in der App ein Feld, das AUCH in der Kerninfos-Tabelle des
 // Brand-Books steht, wird es dort nachgezogen. Bis v120 passierte das nie:
@@ -5627,6 +6535,136 @@ async function bookHistorie(m, datum, aktion, entfernen) {
   }
 }
 
+// ------------------------- Antwort ins Book schreiben (Release 3, v132)
+// Aufbau Zeile fuer Zeile wie bookHistorieEinmal - absichtlich, nicht aus
+// Bequemlichkeit: derselbe Lesefehler-Zweig, dieselben Rueckgabewerte,
+// dieselbe Warteschlange. Eine zweite, leicht andere Fehlerbehandlung am
+// selben Dateityp waere die Stelle, an der die naechste stille Abweichung
+// entsteht (Begruendung von v121, gilt hier unveraendert).
+
+// Beschriftung in der Warteliste - steht dort, wo bei einem
+// Historien-Eintrag die Aktion steht ("Follow up 2"). Damit zeigt
+// wartelisteZeile() alle drei Arten ohne eine Zeile Sonderfall.
+function antwortAktion(positiv) {
+  return "Antwort " + (positiv ? "positiv" : "negativ");
+}
+
+async function bookAntwortEinmal(m, datum, positiv, negativ, bemerkung, versuch) {
+  const pfad = bookPfad(m);
+  const t0 = Date.now();
+  const aktion = antwortAktion(positiv);
+  const grund = { marke: m.name, aktion, datum, entfernen: false,
+                  pfad, versuch: versuch || 1 };
+  try {
+    const etag = await bookETagLesen(m, grund);
+    if (typeof etag !== "string") return etag;   // Status statt eTag
+    const r = await OD.graphRoh(pfad + ":/content");
+    logZeile("book-lesen", { ...grund, methode: "GET",
+      status: r ? r.status : 0, code: await logFehlerCode(r),
+      ms: Date.now() - t0 });
+    // Wie bei der Historie: nur eine wirklich fehlende Datei ist
+    // "kein-book", alles andere wartet. Ein Lesefehler, der als
+    // "kein-book" durchrutscht, verschwindet spurlos (Befund v102).
+    if (!r) return "wartet";
+    if (!r.ok) return schreibStatus(r);
+    const zip = await JSZip.loadAsync(await r.arrayBuffer());
+    const d = zip.file("word/document.xml");
+    if (!d) { logZeile("book-abbruch", { ...grund, warum: "keine document.xml" });
+             return "braucht-dich"; }
+    // negativ wird BENUTZT, nicht aus positiv abgeleitet (Audit 17.09.):
+    // die Signatur versprach eine Unabhaengigkeit, die es nicht gab. Ein
+    // Outbox-Auftrag mit {positiv:false, negativ:false} waere sonst als
+    // negativ ins Book gegangen.
+    const xml = antwortXml(await d.async("string"), datum,
+                           positiv ? "X" : "", negativ ? "X" : "", bemerkung);
+    if (xml === "dublette") {                     // steht schon im Book
+      logZeile("book-dublette", { ...grund,
+        ...logMehr({ soll: datum + " " + aktion, ist: "stand schon da" }) });
+      return "dublette";
+    }
+    if (!xml) {                                   // Tabelle/Zeile fehlt
+      logZeile("book-abbruch", { ...grund,
+        warum: "Antwort-Tabelle nicht gefunden" });
+      return "braucht-dich";
+    }
+    zip.file("word/document.xml", xml);
+    const put = await OD.graphRoh(
+      pfad + ":/content?@microsoft.graph.conflictBehavior=replace",
+      { method: "PUT",
+        body: await zip.generateAsync(
+          { type: "arraybuffer", compression: "DEFLATE" }),
+        headers: { "Content-Type": DOCX_TYP, "If-Match": etag } });
+    logZeile("book-schreiben", { ...grund, methode: "PUT",
+      status: put ? put.status : 0, code: await logFehlerCode(put),
+      ms: Date.now() - t0, ergebnis: schreibStatus(put),
+      ...logMehr({ soll: datum + " " + aktion, bytes: xml.length }) });
+    await bookMerkerSetzen(m, put);   // sonst meldet die App sich selbst
+    return schreibStatus(put);
+  } catch (fehler) {
+    logZeile("book-ausnahme", { ...grund, warum: String(fehler),
+      ms: Date.now() - t0 });
+    // Netzabbruch mitten im Rundlauf. NICHT wegwerfen - Andrea hat ihre
+    // Antwort eingetragen, der Eintrag gehoert in die Warteschlange.
+    return "wartet";
+  }
+}
+
+// Mit Wiederholung. Wiederholt wird der GANZE Durchgang, nicht nur der PUT:
+// nach einer Sperre kann Andrea in Word gespeichert haben, und ein zweiter
+// Versuch mit dem alten Dokumentinhalt wuerde ihre Aenderung ueberschreiben
+// (conflictBehavior=replace fragt nicht nach).
+async function bookAntwort(m, datum, positiv, negativ, bemerkung) {
+  if (!m.brandrating || !m.brandrating.brandbook) return "kein-book";
+  if (typeof OD === "undefined" || !OD.konto() ||
+      typeof JSZip === "undefined") return "nicht-bereit";
+  for (let i = 0; ; i++) {
+    const s = await bookAntwortEinmal(m, datum, positiv, negativ, bemerkung,
+                                      i + 1);
+    if (s !== "wartet" || i >= BOOK_WARTEN_MS.length) { logSichern(); return s; }
+    await pause(BOOK_WARTEN_MS[i]);
+  }
+}
+
+// Schreiben und nur dann etwas sagen, wenn es etwas zu sagen gibt.
+// Laeuft NEBEN dem Speichern (kein await): das Antwort-Fenster soll nicht
+// auf einen Word-Upload warten - genauso wie beim Erledigt-Knopf.
+function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
+  const aktion = antwortAktion(positiv);
+  const daten = { positiv: !!positiv, negativ: !!negativ,
+                  bemerkung: bemerkung || "" };
+  const k = outboxSchluessel(m, datum, aktion, false, "antwort");
+  bookKettig(m, async () => {
+    const s = await bookAntwort(m, datum, positiv, negativ, bemerkung);
+    if (s === "ok") {
+      outboxWeg(k);
+      banner("Antwort auch in die Antwort-Tabelle im Brand-Book eingetragen.");
+      outboxAbarbeiten();        // Book war frei - Rest gleich mitnehmen
+    } else if (s === "dublette") {
+      // Bewusst gemeldet statt still uebergangen: Andrea soll wissen, dass
+      // ihr Klick nichts geschrieben hat - und warum. Der haeufigste gute
+      // Ausgang ist, dass sie die Zeile selbst ins Word getippt hat.
+      outboxWeg(k);
+      banner("Die Antwort vom " + datum + " stand schon im Brand-Book — " +
+        "nicht doppelt eingetragen.");
+    } else if (s === "wartet" || s === "nicht-bereit") {
+      // Es wird NICHTS zurueckgenommen (Kern von v103). Die Antwort steht
+      // im Datenstand und wartet auf ihren Weg ins Book.
+      outboxAufnehmen(m, datum, aktion, false, "wartet", "antwort", daten);
+      banner(s === "nicht-bereit"
+        ? "Antwort ist eingetragen. Keine Verbindung zum Brand-Book — "
+          + "wird nachgetragen, sobald du wieder angemeldet bist."
+        : "Antwort ist eingetragen. Das Brand-Book ist gerade belegt — "
+          + "wird automatisch nachgetragen.");
+    } else if (s === "braucht-dich") {
+      outboxAufnehmen(m, datum, aktion, false, "braucht-dich", "antwort", daten);
+      if (wartelisteZeigen()) return;
+      banner("Brand-Book konnte nicht nachgetragen werden — " +
+             "die Antwort-Tabelle dort bitte von Hand ergänzen.");
+    }
+    // "kein-book": die Marke hat gar keins. Normaler Zustand, still.
+  });
+}
+
 // ------------------------------- Kerninfos-Tabelle schreiben (Fix B, v121)
 // Aufbau Zeile fuer Zeile wie bookHistorieEinmal - absichtlich, nicht aus
 // Bequemlichkeit: derselbe Lesefehler-Zweig, dieselben Rueckgabewerte,
@@ -5798,15 +6836,25 @@ function outbox() {
 // das sich anhaeuft. Zwei Eintraege waeren zweimal dieselbe Arbeit - und
 // der aeltere wuerde beim Abarbeiten nichts Aelteres schreiben, sondern
 // nur ein zweites Mal hochladen.
+// Fuer eine Antwort geht die BEMERKUNG bewusst nicht in den Schluessel ein,
+// nur Marke und Datum: es gibt hoechstens eine Antwort je Marke und Tag
+// (am Bestand gemessen 17.09.: 21 Antworten, kein einziger Doppeltag).
+// Traegt Andrea am selben Tag eine Korrektur nach, soll sie denselben
+// Auftrag aktualisieren statt einen zweiten anzulegen - sonst stuenden
+// beide Fassungen nacheinander in ihrem Word.
 function outboxSchluessel(m, datum, aktion, entfernen, art) {
-  return art === "kerninfos"
-    ? schluessel(m.name) + "|kerninfos"
-    : [schluessel(m.name), datum, aktion, entfernen ? "weg" : "hin"].join("|");
+  if (art === "kerninfos") return schluessel(m.name) + "|kerninfos";
+  if (art === "antwort") return schluessel(m.name) + "|antwort|" + datum;
+  return [schluessel(m.name), datum, aktion, entfernen ? "weg" : "hin"].join("|");
 }
 
 // grund: "wartet" (still weiterversuchen) | "braucht-dich" (Andrea muss ran)
 // art:   siehe outboxSchluessel
-function outboxAufnehmen(m, datum, aktion, entfernen, grund, art) {
+// `daten` (nur bei art "antwort"): positiv/negativ/bemerkung. Ein Ereignis
+// ist durch Datum und Aktion vollstaendig beschrieben, eine Antwort nicht -
+// ohne diese Nutzlast wuesste outboxAbarbeiten() spaeter nicht, WAS es
+// nachzutragen hat.
+function outboxAufnehmen(m, datum, aktion, entfernen, grund, art, daten) {
   const k = outboxSchluessel(m, datum, aktion, entfernen, art);
   // Schreiben-dann-Entfernen ist zusammen ein Nichts (v107).
   //
@@ -5837,11 +6885,19 @@ function outboxAufnehmen(m, datum, aktion, entfernen, grund, art) {
   // da.datum mitziehen: bei einem Historien-Eintrag steckt das Datum im
   // Schluessel und aendert sich nie - bei einem Kerninfos-Auftrag zeigt die
   // Warteliste sonst den Tag der ERSTEN Aenderung statt der letzten.
+  // da.daten mitziehen wie da.datum: korrigiert Andrea ihre Antwort am
+  // selben Tag, soll der wartende Auftrag den NEUEN Stand tragen, nicht
+  // den ersten.
+  // da.aktion MITZIEHEN (Codex-Befund, nachgemessen 17.09.): bei einer
+  // Korrektur von positiv auf negativ blieb die Beschriftung stehen, und
+  // die Warteliste zeigte "Antwort positiv", waehrend die Nutzlast laengst
+  // negativ war - also genau das Gegenteil des ausstehenden Auftrags.
   if (da) { da.versuche = (da.versuche || 1) + 1; da.grund = grund;
-            da.datum = datum; }
+            da.datum = datum; da.aktion = aktion;
+            if (daten) da.daten = daten; }
   else outbox().push({ k, marke: m.name, datum, aktion,
                        entfernen: !!entfernen, art, seit: lokalIso(),
-                       versuche: 1, grund });
+                       versuche: 1, grund, ...(daten ? { daten } : {}) });
   logZeile("warteliste-auf", { marke: m.name, aktion, datum,
     entfernen: !!entfernen, grund, versuche: (da && da.versuche) || 1 });
   datenstandPersistieren();
@@ -5896,9 +6952,17 @@ async function outboxAbarbeiten(still) {
         // und Ausfuehren liegt die Wartezeit, in der die Ruecknahme passiert.
         // Gefunden von Codex als zweite Instanz, 13.09.
         if (!outbox().some((x) => x.k === e.k)) return "zurueckgenommen";
-        return e.art === "kerninfos"
-          ? bookKerninfos(m)
-          : bookHistorie(m, e.datum, e.aktion, e.entfernen);
+        if (e.art === "kerninfos") return bookKerninfos(m);
+        if (e.art === "antwort") {
+          // Ohne Nutzlast NICHT schreiben. Ein Auftrag ohne `daten` kann
+          // nur aus einem aelteren Datenstand stammen; blind ausgefuehrt
+          // schriebe er eine LEERE Antwort-Zeile in Andreas Book - und die
+          // Kennzahlen kommen aus den Books.
+          if (!e.daten) return "braucht-dich";
+          return bookAntwort(m, e.datum, e.daten.positiv, e.daten.negativ,
+                             e.daten.bemerkung);
+        }
+        return bookHistorie(m, e.datum, e.aktion, e.entfernen);
       });
       // Schon aus der Liste - nichts geschrieben, nichts zu loeschen,
       // nichts anzurechnen.
