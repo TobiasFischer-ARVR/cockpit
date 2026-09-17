@@ -404,7 +404,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v133"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v134"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1795,6 +1795,15 @@ async function bookOeffnen(quelle, btn, m) {
     if (fenster) fenster.location = url;
     else window.open(url, "_blank");
   };
+  // Protokoll (Backlog 2): v108 deckt die Datenstand- und Book-SCHREIBwege ab,
+  // das Oeffnen in Word fehlte. Genau dort ist aber "nicht gefunden" schon
+  // zweimal aufgeschlagen - v93 (Suchindex hinkt) und v95 (eigener Pfad).
+  // Festgehalten wird, WELCHER der beiden Wege getragen hat: nur daran sieht
+  // man spaeter, ob die Suche wieder hinterherhinkt oder der Pfad falsch ist.
+  const t0 = Date.now();
+  const notiz = (weg, gefunden) => logZeile("book-oeffnen",
+    { marke: (m && m.name) || String(quelle), quelle: String(quelle),
+      weg, gefunden, ms: Date.now() - t0 });
   try {
     // 1. Der Pfad, den die App SELBST kennt (v95). Bis v93 lief das nur
     // ueber die OneDrive-Suche - die ist indexbasiert und liefert eine
@@ -1805,7 +1814,10 @@ async function bookOeffnen(quelle, btn, m) {
     // zwei gleichnamigen Dateien nahm die Suche einfach die erste.
     if (m && m.brandrating) {
       const t = await OD.graphLeise(bookPfad(m) + "?$select=webUrl");
-      if (t && t.webUrl) { hin(t.webUrl); btn.disabled = false; return; }
+      if (t && t.webUrl) {
+        notiz("eigener-pfad", true);
+        hin(t.webUrl); btn.disabled = false; return;
+      }
     }
     // 2. Rueckfall Suche: Andreas gewachsene Books hat die App nie
     // angelegt - dort kann der Dateiname vom berechneten Pfad abweichen.
@@ -1816,12 +1828,15 @@ async function bookOeffnen(quelle, btn, m) {
     const treffer = ((d && d.value) || []).find(
       (e) => e.file && String(e.name).toLowerCase() === soll);
     if (treffer && treffer.webUrl) {
+      notiz("suche", true);
       hin(treffer.webUrl);
     } else {
+      notiz("suche", false);
       zu();
       banner(`„${quelle}.docx“ nicht in OneDrive gefunden.`);
     }
   } catch (_) {
+    notiz("fehler", false);
     zu();
     banner("OneDrive-Suche fehlgeschlagen.");
   }
@@ -5032,7 +5047,13 @@ function verschiebenErlaubt(m) {
 function kundenauftragVerschieben(m, jetzt) {
   if (!verschiebenErlaubt(m)) return false;
   const heute = deDatum(isoInTagen(0));
-  m.kundenauftrag = { seit: heute, prio: null, checkliste: [] };
+  // geaendert: die Zeitspur AN DER MARKE (Audit A9, 17.09.). "seit" und der
+  // Historien-Eintrag tragen nur ein Datum ohne Uhrzeit; beim Nachsehen, in
+  // welcher Reihenfolge an einem Tag etwas passiert ist, half das nicht.
+  // Der Parameter `jetzt` wurde bis dahin entgegengenommen und nirgends
+  // benutzt - hier ist die Stelle, fuer die er gedacht war.
+  m.kundenauftrag = { seit: heute, prio: null, checkliste: [],
+                      geaendert: jetzt || lokalIso() };
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
     .push({ richtung: "hinein", datum: heute });
   // Ab hier beschreibt ein offener Ruecknahmepunkt einen Stand, den es nicht
@@ -6089,7 +6110,12 @@ function ersteZeileText(tc) {
 
 function zelleErsteZeileSetzen(tc, text) {
   const absaetze = tc.match(/<w:p[\s>][\s\S]*?<\/w:p>/g) || [];
-  if (/<w:br[ />]/.test(absaetze[0] || tc)) return null;
+  // <w:cr/> ist der zweite Umbruch, den Word kennt (Backlog 32, Fall 1).
+  // Er verhaelt sich hier genau wie <w:br/>: beide Zeilen stehen in EINEM
+  // Absatz. Ohne ihn mitzupruefen haette zelleSetzen() alles hinter dem
+  // Umbruch weggeworfen - im echten Bestand am 17.09. 0 Treffer, aber das
+  // gilt nur, bis Andrea die Zelle einmal mit Strg+Enter umbricht.
+  if (/<w:(br|cr)[ />]/.test(absaetze[0] || tc)) return null;
   const eins = zelleSetzen(tc, text);
   return absaetze.length < 2 ? eins
     : eins.slice(0, -"</w:tc>".length) + absaetze.slice(1).join("") + "</w:tc>";
@@ -6469,7 +6495,29 @@ function logZeile(art, daten) {
   if (!logStufe()) return;
   try {
     logPuffer.push(JSON.stringify({ z: lokalIso(), art, ...daten }));
-  } catch (_) { return; }        // zirkulaere Daten o.ae. - nie werfen
+  } catch (_) {
+    // Nie werfen (zirkulaere Daten o.ae.) - aber auch nicht mehr schweigen
+    // (Backlog 3). Bis 17.09. stand hier ein blankes `return;`: der Logger
+    // war damit blind fuer seine EIGENEN Aussetzer. Wer spaeter im Protokoll
+    // nach einem Vorgang sucht, der nie angekommen ist, sucht dann an der
+    // falschen Stelle.
+    //
+    // GENAU EINMAL je Sitzung. Steckt der Fehler in einer Schleife, wuerde
+    // jede Wiederholung denselben Eintrag schreiben und den Puffer fluten -
+    // das Gegenteil dessen, wofuer das Protokoll da ist.
+    //
+    // Der Merker haengt an der Funktion statt an einer Modul-Variablen:
+    // drei Testdateien schneiden logZeile() heraus und eval-en sie einzeln;
+    // eine neue Variable daneben muesste in jeder davon nachgetragen werden.
+    if (!logZeile.eigenerFehler) {
+      logZeile.eigenerFehler = true;
+      try {
+        logPuffer.push(JSON.stringify(
+          { z: lokalIso(), art: "log-fehler", betraf: String(art) }));
+      } catch (_) { /* dann eben nicht - hier ist wirklich Schluss */ }
+    }
+    return;
+  }
   // Nach 40 NEUEN Zeilen sichern, nicht nach 40 im Puffer. Seit v106
   // bleibt der Puffer stehen; ein Vergleich gegen die Gesamtlaenge wuerde
   // ab der ersten Sicherung bei JEDER weiteren Zeile erneut ausloesen.
@@ -6603,6 +6651,11 @@ function schreibStatus(antwort) {
 }
 
 // ------------------------------------ If-Match beim Book-PUT (v123, 24.1)
+// Ein eTag von Microsoft Graph steht immer in Anfuehrungszeichen, schwache
+// eTags zusaetzlich mit W/ davor. Genau daran unterscheidet der Aufrufer
+// einen echten eTag von einem Status-Wort (Audit A4) - siehe bookETagLesen().
+const ETAG_MUSTER = /^(W\/)?"/;
+
 // Seit v121 gibt es ZWEI Schreiber auf denselben .docx: die App und Andreas
 // Word. Der Rundlauf GET -> aendern -> PUT lief bisher ohne jede
 // Versionspruefung, und conflictBehavior=replace fragt nicht nach. Speichert
@@ -6621,6 +6674,15 @@ function schreibStatus(antwort) {
 //
 // Rueckgabe: der eTag als String - oder ein Status-String fuer den Aufrufer,
 // der ihn unveraendert durchreicht. Ohne eTag wird NICHT geschrieben.
+//
+// WIE der Aufrufer die beiden auseinanderhaelt (Audit A4, 17.09.): am
+// Anfuehrungszeichen. Ein eTag von Graph steht IMMER in Anfuehrungszeichen -
+// "{GUID},3" oder W/"..." -, schreibStatus() liefert dagegen nackte Woerter
+// ("wartet", "braucht-dich"). Bis 17.09. stand an den drei Aufrufstellen
+// `typeof etag !== "string"`, und das konnte NIE zutreffen: diese Funktion
+// gibt in jedem Fall einen String zurueck. Ein Status wanderte dadurch als
+// If-Match-Header mit, der Server antwortete 412, und der Auftrag wiederholte
+// sich endlos - ohne Knopf, mit dem Andrea ihn haette abhaken koennen.
 async function bookETagLesen(m, grund) {
   const meta = await OD.graphRoh(bookPfad(m) + "?$select=eTag");
   logZeile("book-etag", { ...grund, methode: "GET",
@@ -6631,7 +6693,10 @@ async function bookETagLesen(m, grund) {
   const etag = j && j.eTag;
   // Kein eTag = keine Absicherung. Dann lieber gar nicht schreiben und es
   // spaeter nochmal versuchen, als blind ueber Andreas Arbeit zu buegeln.
-  return etag ? String(etag) : "wartet";
+  // "Kein eTag" heisst auch: etwas, das nicht wie ein eTag aussieht. Sonst
+  // gaebe diese Funktion einen Wert heraus, den der Aufrufer fuer einen
+  // Status halten muesste - und dann passiert gar nichts, still.
+  return ETAG_MUSTER.test(String(etag || "")) ? String(etag) : "wartet";
 }
 
 const pause = (ms) => new Promise((fertig) => setTimeout(fertig, ms));
@@ -6656,7 +6721,7 @@ async function bookHistorieEinmal(m, datum, aktion, entfernen, versuch) {
                   pfad, versuch: versuch || 1 };
   try {
     const etag = await bookETagLesen(m, grund);
-    if (typeof etag !== "string") return etag;   // Status statt eTag
+    if (!ETAG_MUSTER.test(etag)) return etag;    // Status statt eTag (A4)
     const r = await OD.graphRoh(pfad + ":/content");
     logZeile("book-lesen", { ...grund, methode: "GET",
       status: r ? r.status : 0, code: await logFehlerCode(r),
@@ -6751,7 +6816,7 @@ async function bookAntwortEinmal(m, datum, positiv, negativ, bemerkung, versuch)
                   pfad, versuch: versuch || 1 };
   try {
     const etag = await bookETagLesen(m, grund);
-    if (typeof etag !== "string") return etag;   // Status statt eTag
+    if (!ETAG_MUSTER.test(etag)) return etag;    // Status statt eTag (A4)
     const r = await OD.graphRoh(pfad + ":/content");
     logZeile("book-lesen", { ...grund, methode: "GET",
       status: r ? r.status : 0, code: await logFehlerCode(r),
@@ -6880,7 +6945,7 @@ async function bookKerninfosEinmal(m, versuch) {
                   versuch: versuch || 1 };
   try {
     const etag = await bookETagLesen(m, grund);
-    if (typeof etag !== "string") return etag;   // Status statt eTag
+    if (!ETAG_MUSTER.test(etag)) return etag;    // Status statt eTag (A4)
     const r = await OD.graphRoh(pfad + ":/content");
     logZeile("kerninfos-lesen", { ...grund, methode: "GET",
       status: r ? r.status : 0, code: await logFehlerCode(r),
