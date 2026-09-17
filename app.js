@@ -404,7 +404,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v132"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v133"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -430,6 +430,9 @@ const REITER = {
   "Startdatum": "Aktion",
   "Antwort eintragen": "Aktion",
   "Kundenauftrag": "Aktion",
+  // Bereichswechsel, keine Kontaktereignisse - steht trotzdem bei der
+  // Historie, weil es dort gesucht wird.
+  "Verlauf des Auftrags": "Historie",
   "Nächster Schritt": "Aktion",
   "Brand Rating (Excel-Blatt)": "Rating",
   "Verwaltung": "Rating",
@@ -1902,9 +1905,16 @@ function sheetPitch(p) {
       zeile.append(el("span", "leise", label), el("span", null, wert));
       tab.append(zeile);
     }
+    // Im Kundenauftrag gibt es KEINEN "Naechster Schritt"-Abschnitt mehr
+    // (Tobias, 17.09.): die Checkliste ist dort der Terminplan, und zwei
+    // Terminquellen nebeneinander waeren genau die Doppeldeutigkeit, die
+    // vermieden werden soll.
+    const imAuftrag = !!(mv && mv.kundenauftrag);
     wrap.append(abschnitt("Wiedervorlage", tab),
                 bereichKundenauftrag(), bereichStartdatum(q),
-                bereichAntwort(q), bereichErledigen(q));
+                bereichAntwort(q));
+    if (!imAuftrag) wrap.append(bereichErledigen(q));
+    wrap.append(bereichAuftragsverlauf());
 
     // EIN Bauplan fuer beide Herkuenfte (Tobias 03.09.): ob die Brand aus
     // Andreas Word kam oder in der App entstand, sieht man am Inhalt - das
@@ -1947,6 +1957,45 @@ function sheetPitch(p) {
       "Ab diesem Datum ist der Pitch fällig — erst damit beginnt die " +
       "5/5/10/90-Kadenz.")));
     return frag;
+  }
+
+  // Der Verlauf der Bereichswechsel - ein EIGENER Abschnitt, nicht Teil des
+  // Kundenauftrags (Codex-Befund, 17.09.). Lag er darin, verschwand er beim
+  // Zurueckschieben aus der Anzeige, obwohl die Daten erhalten blieben: die
+  // einzige Spur, dass die Marke je im Auftrag war, war nicht mehr zu sehen.
+  //
+  // Absichtlich nicht in bereichHistorie() gemischt: das sind
+  // Bereichswechsel, keine Kontaktereignisse. In einer gemeinsamen Liste
+  // saehen sie aus wie etwas, das die KPI zaehlt.
+  function bereichAuftragsverlauf() {
+    const frag = document.createDocumentFragment();
+    const m = datenstand ? markeZuName(p.name) : null;
+    const hist = (m && m.kundenauftragHistorie) || [];
+    if (!hist.length) return frag;
+    for (const h of hist) {
+      const zeile = el("div", "stand",
+        `${h.datum} · ` +
+        (h.richtung === "hinein" ? "in den Auftrag" : "zurück in die Pitchliste") +
+        (h.grund ? ` — ${h.grund}` : "") +
+        (h.naechsterPitch ? ` · nächster Pitch am ${deDatum(h.naechsterPitch)}` : ""));
+      frag.append(zeile);
+      // Archivierte Checkliste: offene Punkte bleiben offen (Codex, 17.09.).
+      // Sie stehen hier, damit nachvollziehbar ist, was beim Rueckweg
+      // liegengeblieben ist.
+      const a = h.archiv;
+      if (a && (a.checkliste || []).length) {
+        const offen = a.checkliste.filter((z) => !z.erledigt);
+        frag.append(el("div", "leise",
+          `   archiviert: ${a.checkliste.length} Punkt(e), ` +
+          `${offen.length} davon offen` +
+          (a.prio ? ` · war Prio ${a.prio}` : "")));
+        for (const z of offen) {
+          frag.append(el("div", "leise",
+            `   ☐ ${z.text}${z.datum ? " — " + deDatum(z.datum) : ""}`));
+        }
+      }
+    }
+    return abschnitt("Verlauf des Auftrags", frag);
   }
 
   // Der Auftrag selbst (Release 6, Schritt 20). Nur sichtbar, wenn die Marke
@@ -2044,20 +2093,6 @@ function sheetPitch(p) {
     plusZeile.append(plus);
     frag.append(plusZeile);
 
-    // --- Verlauf. EIGENER Block, absichtlich nicht in bereichHistorie()
-    // gemischt: das sind Bereichswechsel, keine Kontaktereignisse. In einer
-    // gemeinsamen Liste saehen sie aus wie etwas, das die KPI zaehlt.
-    const hist = m.kundenauftragHistorie || [];
-    if (hist.length) {
-      frag.append(el("div", "abschnitt", "Verlauf des Auftrags"));
-      for (const h of hist) {
-        frag.append(el("div", "stand",
-          `${h.datum} · ` +
-          (h.richtung === "hinein" ? "in den Auftrag" : "zurück in die Pitchliste") +
-          (h.grund ? ` — ${h.grund}` : "")));
-      }
-    }
-
     // --- Rueckweg. Der Grund ist Pflicht (Workflow): in vier Wochen ist
     // sonst nicht mehr nachvollziehbar, warum die Marke wieder in der
     // Kadenz steht. Speichern bleibt inaktiv, solange nichts dasteht.
@@ -2067,17 +2102,51 @@ function sheetPitch(p) {
     const zGrund = el("input", "feld");
     zGrund.type = "text";
     zGrund.placeholder = "Warum? (Pflichtangabe)";
+    // Pflicht-Datum (Tobias, 17.09.): ohne gewaehlten Termin war jede
+    // zurueckgeschobene Marke sofort faellig, auch wenn gerade nichts zu tun
+    // war. Sichtbar vorbelegt mit heute - damit ist es kein stiller
+    // Standard mehr, sondern eine Angabe, die Andrea sieht und aendert.
+    const zDatum = el("input", "datum");
+    zDatum.type = "date";
+    zDatum.value = isoInTagen(0);
+    // Dasselbe Muster wie im Termin-Dialog: die Zahl schreibt ins Datumsfeld,
+    // damit es nur EINE Quelle gibt und keine Vorrangregel braucht.
+    const zPlus = el("input", "tage");
+    zPlus.type = "number";
+    zPlus.min = "1";
+    zPlus.inputMode = "numeric";
+    zPlus.placeholder = "z. B. 90";
+    zPlus.oninput = () => {
+      const t = parseInt(zPlus.value, 10);
+      if (t > 0) zDatum.value = isoInTagen(t);
+    };
     const zOk = el("button", "chip aktiv", "Zurückschieben");
     zOk.disabled = true;
-    zGrund.oninput = () => { zOk.disabled = !zGrund.value.trim(); };
+    const zPruefen = () => {
+      zOk.disabled = !zGrund.value.trim() || !zDatum.value;
+    };
+    zGrund.oninput = zPruefen;
+    zDatum.onchange = zPruefen;
     zOk.onclick = () => {
       const grund = zGrund.value.trim();
-      if (!grund) return;
+      if (!grund || !zDatum.value) return;
+      // Offene Punkte ausdruecklich nennen (Codex, 17.09.): muessen sie
+      // weiter verfolgt werden, ist das Beenden des Auftrags fachlich noch
+      // nicht passend. Andrea soll das sehen, bevor sie bestaetigt.
+      const offen = (ka.checkliste || []).filter((z) => z && !z.erledigt);
       if (!confirm(`„${m.name}“ zurück in die Pitchliste?\n\n` +
+          (offen.length
+            ? `ACHTUNG: ${offen.length} Punkt(e) der Checkliste sind noch ` +
+              `offen:\n` +
+              offen.slice(0, 5).map((z) => "  · " + (z.text || "(ohne Text)"))
+                .join("\n") +
+              (offen.length > 5 ? `\n  · … und ${offen.length - 5} weitere` : "") +
+              "\n\n"
+            : "") +
           "Die Marke startet wieder bei Pitch, der Follow-up-Zähler wird " +
-          "zurückgesetzt. Der Auftrag samt Checkliste wird entfernt — der " +
-          "Verlauf bleibt erhalten.")) return;
-      if (!kundenauftragZurueck(m, grund, lokalIso())) {
+          `zurückgesetzt, nächster Pitch am ${deDatum(zDatum.value)}.\n` +
+          "Checkliste und Priorität werden im Verlauf archiviert.")) return;
+      if (!kundenauftragZurueck(m, grund, lokalIso(), zDatum.value)) {
         banner("Das ging nicht — bitte die Liste einmal neu laden.");
         return;
       }
@@ -2089,7 +2158,10 @@ function sheetPitch(p) {
     };
     const zZeile = el("div", "chips unter-feld");
     zZeile.append(zOk);
-    zForm.append(el("div", "stand", "Grund für den Rückweg:"), zGrund, zZeile);
+    zForm.append(el("div", "stand", "Grund für den Rückweg:"), zGrund,
+      el("div", "stand", "Nächster Pitch am:"), zDatum,
+      el("div", "stand", "… oder ab heute in Tagen:"), zPlus,
+      zZeile);
     const zAussen = el("div", "chips");
     zAussen.append(zKnopf);
     frag.append(zAussen, zForm);
@@ -2575,19 +2647,40 @@ function ampel(datumIso, heute) {
   return { klasse: "neutral", text, tage };
 }
 
-function pitchKarte(p) {
+// `alsAuftrag`: dieselbe Karte, andere Quelle (Tobias, 17.09.).
+//
+// In der Pitchliste kommen Schritt und Termin aus der Kadenz
+// (naechste_aktion / datum_naechste_aktion), im Kundenauftrag aus der
+// CHECKLISTE - und statt der Follow-ups steht dort die Prio. Follow-ups
+// sagen im Auftrag nichts mehr: die Kadenz liegt still, die Zahl ist nur
+// noch Vorgeschichte.
+//
+// Ein Parameter statt einer zweiten Kartenfunktion: die Karte ist sonst
+// identisch, und zwei Fassungen waeren die Stelle, an der in sechs Monaten
+// die eine gepflegt wird und die andere nicht.
+function pitchKarte(p, alsAuftrag) {
   const karte = el("div", "karte ampel-" + p.klasse);
   const kopf = el("div", "kopf");
   kopf.append(el("span", "pill", p.kategorie || "—"),
               el("span", null, p.rating ? "Rating " + p.rating : ""));
-  const datum = p.datum_naechste_aktion
-    ? deDatum(p.datum_naechste_aktion) : null;
-  karte.append(kopf, el("div", "titel", p.name),
-    el("div", "kontext",
-      `${p.status || "—"} · Follow-ups: ${p.zaehler || "0"}` +
+  const quelle = alsAuftrag ? p.naechsterTermin : p.datum_naechste_aktion;
+  const datum = quelle ? deDatum(quelle) : null;
+  const kontext = alsAuftrag
+    ? `${p.status || "—"} · ${p.prio ? "Prio " + p.prio : "ohne Prio"}` +
+      (p.naechsterCheckText
+        ? ` · Nächster Schritt: ${p.naechsterCheckText}` : "") +
+      (p.kooperation ? ` · Kooperation: ${p.kooperation}` : "")
+    : `${p.status || "—"} · Follow-ups: ${p.zaehler || "0"}` +
       (p.naechste_aktion ? ` · Nächster Schritt: ${p.naechste_aktion}` : "") +
-      (p.kooperation ? ` · Kooperation: ${p.kooperation}` : "")),
-    el("div", "fuss", datum ? `${datum} — ${p.text}` : p.text));
+      (p.kooperation ? ` · Kooperation: ${p.kooperation}` : "");
+  // Ohne offenen Punkt mit Datum ist nichts mehr zu tun - das sagt die Karte
+  // ausdruecklich, statt "kein Termin eingetragen" zu behaupten (Tobias).
+  const fuss = alsAuftrag && !datum
+    ? "Alle Punkte erledigt"
+    : (datum ? `${datum} — ${p.text}` : p.text);
+  karte.append(kopf, el("div", "titel", p.name),
+    el("div", "kontext", kontext),
+    el("div", "fuss", fuss));
   karte.classList.add("tippbar");
   karte.onclick = () => sheetPitch(p);
   return karte;
@@ -2929,10 +3022,22 @@ function renderPitchliste() {
 function kundenauftraegeAktuell() {
   return (datenstand ? datenstand.marken || [] : [])
     .filter((m) => m.kundenauftrag)
-    .map((m) => ({ name: m.name, ...m.pitchliste, ...m.kundenauftrag }));
+    .map((m) => {
+      // Termin und Schritt werden ABGELEITET, nicht nach m.pitchliste
+      // zurueckgeschrieben. Zwei Quellen fuer denselben Termin synchron zu
+      // halten waere ein Zustand mehr, der auseinanderlaufen kann.
+      const cp = naechsterCheckpunkt(m.kundenauftrag);
+      return { name: m.name, ...m.pitchliste, ...m.kundenauftrag,
+               naechsterTermin: cp ? cp.datum : "",
+               naechsterCheckText: cp ? cp.text : "" };
+    });
 }
 
-const kf = { suche: "", sortierung: "" };
+// EIGENER Filterzustand, nicht der `pf` der Pitchliste. Genau diese
+// geteilte Variable hat am 17.09. die Auftragsliste zerlegt: ein dort
+// gesetzter Anzeigen-Filter warf hier einen TypeError, ein
+// Faelligkeitsfilter leerte die Liste still.
+const kf = { suche: "", sortierung: "", prio: "", faellig: "" };
 
 // EIGENE Suche statt pitchPasst() - gefunden beim Audit 17.09., zweifach
 // reproduziert:
@@ -2951,12 +3056,24 @@ const kf = { suche: "", sortierung: "" };
 // ihn zu loeschen. Diese Ansicht filtert deshalb NUR ueber ihr eigenes
 // Suchfeld.
 function kundenPasst(p, s) {
+  // Prio: "1"/"2"/"3" oder "ohne". Ein Auftrag ohne Einordnung ist eine
+  // eigene Gruppe, nicht "alle".
+  if (kf.prio) {
+    const hat = p.prio == null || p.prio === "" ? "ohne" : String(p.prio);
+    if (hat !== kf.prio) return false;
+  }
+  // Faelligkeit rechnet auf dem CHECKLISTEN-Termin (p.tage kommt aus
+  // ampel(naechsterTermin)). Ohne offenen Termin faellt der Auftrag aus
+  // jedem Faelligkeitsfilter - dort ist nichts zu tun.
+  if (kf.faellig !== "" && (p.tage === null || p.tage > kf.faellig)) {
+    return false;
+  }
   if (!s) return true;
-  return [p.name, p.status, p.naechste_aktion, p.kooperation, p.kategorie]
+  return [p.name, p.status, p.naechsterCheckText, p.kooperation, p.kategorie]
     .join(" ").toLowerCase().includes(s);
 }
-const SORT_KUNDEN = [["", "Zuletzt verschoben"], ["name", "Name A–Z"],
-                     ["prio", "Priorität"]];
+const SORT_KUNDEN = [["", "Nächster Termin"], ["verschoben", "Zuletzt verschoben"],
+                     ["name", "Name A–Z"], ["prio", "Priorität"]];
 
 // Ohne Prioritaet ans Ende (9 als Ersatzwert), nicht an den Anfang: eine
 // noch nicht eingeordnete Marke ist keine wichtige Marke.
@@ -2966,6 +3083,16 @@ function sortiereKunden(liste, art) {
   if (art === "prio") {
     return l.sort((a, b) => (Number(a.prio) || 9) - (Number(b.prio) || 9) ||
                             nameVgl(a.name, b.name));
+  }
+  if (art === "verschoben") {
+    const wann = (x) => (x.seit ? datumWert(x.seit) : -1);
+    return l.sort((a, b) => wann(b) - wann(a) || nameVgl(a.name, b.name));
+  }
+  // Voreinstellung: naechster Termin aus der Checkliste, frueheste zuerst.
+  // Auftraege ohne offenen Termin ans Ende - dort ist nichts zu tun.
+  {
+    const wann = (x) => (x.naechsterTermin ? datumWert(x.naechsterTermin) : 1e13);
+    return l.sort((a, b) => wann(a) - wann(b) || nameVgl(a.name, b.name));
   }
   // datumWert() schiebt Unlesbares mit 1e12 ans Ende - bei ABSTEIGENDER
   // Sortierung landet es damit ganz vorn. Ein Auftrag ohne `seit` fuehrte
@@ -2979,8 +3106,10 @@ function renderKundenauftraege() {
   const c = document.getElementById("inhalt");
   c.innerHTML = "";
   const heute = heuteNull();
+  // Die Ampel rechnet auf dem Checklisten-Termin, nicht auf der Kadenz -
+  // die liegt im Auftrag still.
   const alle = kundenauftraegeAktuell()
-    .map((p) => ({ ...p, ...ampel(p.datum_naechste_aktion, heute) }));
+    .map((p) => ({ ...p, ...ampel(p.naechsterTermin || "", heute) }));
   if (!alle.length) {
     c.append(el("div", "leerzustand",
       "Noch keine Kundenaufträge. Marken kommen hierher über " +
@@ -2996,9 +3125,22 @@ function renderKundenauftraege() {
   c.append(suche);
 
   const knopfZeile = el("div", "chips");
+  // Filter mit denselben Groessen wie die Sortierung (Tobias, 17.09.):
+  // Prio und naechster Termin. Der Name bleibt dem Suchfeld vorbehalten.
+  const filterBtn = el("button", "chip");
+  filterBtn.onclick = () => {
+    const w = el("div");
+    w.append(filterGruppe("Priorität",
+      [["1", "Prio 1"], ["2", "Prio 2"], ["3", "Prio 3"], ["ohne", "ohne Prio"]],
+      () => kf.prio, (x) => { kf.prio = x; }, zeichnen));
+    w.append(filterGruppe("Nächster Termin",
+      [[0, "fällig"], [7, "≤ 7 Tage"], [14, "≤ 14 Tage"]],
+      () => kf.faellig, (x) => { kf.faellig = x; }, zeichnen));
+    sheetOeffnen("Filter", w);
+  };
   const sortBtn = sortierKnopf(SORT_KUNDEN, () => kf.sortierung,
     (w) => { kf.sortierung = w; }, () => zeichnen());
-  knopfZeile.append(sortBtn);
+  knopfZeile.append(filterBtn, sortBtn);
   c.append(knopfZeile);
 
   const rumpf = el("div");
@@ -3006,6 +3148,9 @@ function renderKundenauftraege() {
   zeichnen();
 
   function zeichnen() {
+    const aktiv = [kf.prio, kf.faellig].filter(gesetzt).length;
+    filterBtn.textContent = "⛭ Filter" + (aktiv ? ` · ${aktiv} aktiv` : "");
+    filterBtn.classList.toggle("aktiv", aktiv > 0);
     sortBtn.textContent = "⇅ " + sortLabel(SORT_KUNDEN, kf.sortierung);
     sortBtn.classList.toggle("aktiv", Boolean(kf.sortierung));
     const s = kf.suche.trim().toLowerCase();
@@ -3016,11 +3161,13 @@ function renderKundenauftraege() {
       `${liste.length} von ${alle.length} Aufträgen · sortiert nach ` +
       sortLabel(SORT_KUNDEN, kf.sortierung)));
     if (!liste.length) {
-      rumpf.append(el("div", "leerzustand", "Nichts passt zur Suche."));
+      rumpf.append(el("div", "leerzustand", aktiv
+        ? "Nichts passt zu den Filtern."
+        : "Nichts passt zur Suche."));
       return;
     }
     const karten = el("div", "karten");
-    for (const p of liste) karten.append(pitchKarte(p));
+    for (const p of liste) karten.append(pitchKarte(p, true));
     rumpf.append(karten);
   }
 }
@@ -4679,14 +4826,24 @@ function erledigen(m, s, tage, standard) {
 // Andrea "Pitch erledigt" drückt. Bis dahin weicht fuSeitPitch() (rechnet
 // aus Ereignissen) vom Feld zaehler ab - folgenlos, weil pos nur im
 // Follow-up-Zweig von naechsterSchritt() benutzt wird und hier "Pitch" steht.
-function ruecksprungAufPitch(m, jetzt) {
+// `datumIso` ist OPTIONAL und aendert nichts am Absage-Weg: ohne Angabe
+// bleibt es bei "heute faellig", genau wie bisher. Nur der Rueckweg aus dem
+// Kundenauftrag reicht ein gewaehltes Datum herein und markiert es als
+// Handtermin (Tobias, 17.09.).
+//
+// Warum das hier und nicht in einer zweiten Funktion: ruecksprungAufPitch()
+// ist der EINE Handgriff mit mehreren Ausloesern (v130-Regel). Eine Kopie
+// "mit Datum" waere die Vorlage dafuer, dass in sechs Monaten der eine Weg
+// repariert wird und der andere nicht.
+function ruecksprungAufPitch(m, jetzt, datumIso) {
   if (!m || !m.pitchliste) return false;
+  const termin = datumIso || isoInTagen(0);
   Object.assign(m.pitchliste, {
     status: "Pitch",
     naechste_aktion: "Pitch",
-    datum_naechste_aktion: isoInTagen(0),
+    datum_naechste_aktion: termin,
     zaehler: "0",
-    termin_hand: false,
+    termin_hand: !!datumIso,
     positivBeantwortet: false,
     geaendert: jetzt,
   });
@@ -4845,6 +5002,28 @@ function checklisteBereinigen(ka) {
   return vorher - ka.checkliste.length;
 }
 
+// Die naechste offene Aufgabe mit Datum - im Kundenauftrag ersetzt sie die
+// Kadenz (Tobias, 17.09.). Gibt { datum, text } oder null.
+//
+// Nur OFFENE Punkte zaehlen: eine erledigte Aufgabe ist kein Termin mehr.
+// Punkte ohne Datum bleiben aussen vor - sie sind eine Aufgabe, aber keine
+// Verabredung. Sortiert wird ueber datumWert(), das auch mit deutschem und
+// ISO-Format zurechtkommt.
+//
+// ABLEITEN, NICHT ZURUECKSCHREIBEN: der Wert wandert NICHT nach
+// m.pitchliste. Zwei Quellen fuer denselben Termin synchron zu halten waere
+// die Sorte Zustand, an der dieses Projekt schon zweimal haengengeblieben
+// ist (Codex, 17.09.: "schafft zusaetzliche widerspruchsanfaellige Zustaende").
+function naechsterCheckpunkt(ka) {
+  if (!ka || !Array.isArray(ka.checkliste)) return null;
+  let treffer = null;
+  for (const z of ka.checkliste) {
+    if (!z || z.erledigt || !z.datum || !String(z.datum).trim()) continue;
+    if (!treffer || datumWert(z.datum) < datumWert(treffer.datum)) treffer = z;
+  }
+  return treffer ? { datum: treffer.datum, text: treffer.text || "" } : null;
+}
+
 function verschiebenErlaubt(m) {
   return Boolean(m && m.pitchliste && m.pitchliste.positivBeantwortet &&
                  !m.kundenauftrag);
@@ -4869,8 +5048,12 @@ function kundenauftragVerschieben(m, jetzt) {
 // Zurueck in die Pitchliste. `grund` ist Pflicht (Workflow): ein
 // Rueckweg ohne Begruendung ist in vier Wochen nicht mehr nachvollziehbar.
 // Die Pruefung sitzt am Knopf - hier wird nur festgehalten, was ankam.
-function kundenauftragZurueck(m, grund, jetzt) {
+// `datumIso` ist PFLICHT (Tobias, 17.09.): ohne gewaehlten Termin war jede
+// zurueckgeschobene Marke sofort faellig, auch wenn gerade nichts zu tun war.
+// Der Grund ist es ohnehin schon.
+function kundenauftragZurueck(m, grund, jetzt, datumIso) {
   if (!m || !m.kundenauftrag) return false;
+  if (!datumIso) return false;
   // Der Grund ist PFLICHT (Pruefkriterien Fall 31) - und die Pruefung gehoert
   // hierher, nicht nur an den ausgegrauten Speichern-Knopf. Ohne Grund wird
   // nichts veraendert: kein Historien-Eintrag, kein Ruecksprung, nichts.
@@ -4892,11 +5075,22 @@ function kundenauftragZurueck(m, grund, jetzt) {
   // Scheitert der Ruecksprung (keine Pitchzeile), wird der Auftrag NICHT
   // entfernt - sonst stuende die Marke in keiner der beiden Listen und waere
   // nur noch ueber das Brand Rating erreichbar (Audit 17.09.).
-  if (!ruecksprungAufPitch(m, jetzt)) return false;
+  if (!ruecksprungAufPitch(m, jetzt, datumIso)) return false;
+  // Die Checkliste wird ARCHIVIERT, nicht weggeworfen (Codex, 17.09.):
+  // offene Punkte bleiben darin ausdruecklich offen. Archivieren heisst
+  // nicht erledigen. Ohne das waere jede zugesagte Aufgabe mit einem Klick
+  // spurlos weg - und es gibt dafuer kein Word-Gegenstueck.
+  const archiv = {
+    seit: m.kundenauftrag.seit || "",
+    prio: m.kundenauftrag.prio == null ? null : m.kundenauftrag.prio,
+    checkliste: (m.kundenauftrag.checkliste || []).map(
+      (z) => ({ text: z.text || "", datum: z.datum || "",
+                erledigt: !!z.erledigt })),
+  };
   delete m.kundenauftrag;
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
     .push({ richtung: "zurueck", datum: deDatum(isoInTagen(0)),
-            grund: text });
+            grund: text, naechsterPitch: datumIso, archiv });
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
