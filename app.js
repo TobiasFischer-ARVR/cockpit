@@ -495,7 +495,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v138"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v139"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3509,6 +3509,28 @@ function ratingAbweichungen(marken) {
 //
 // Pur gehalten (Marken rein, Befunde raus), damit test_v105.js das ohne
 // OneDrive und ohne DOM prueft.
+// Wie viele Follow-ups stehen SEIT dem letzten Pitch in der Historie?
+//
+// Nicht insgesamt - nach einem neuen Pitch faengt der Zaehler wieder bei 0
+// an (ruecksprungAufPitch). Am 18.09. am echten Bestand nachgemessen, und
+// der Unterschied ist genau der Grund, warum diese Pruefung vorher nicht
+// gebaut werden konnte:
+//
+//   ueber ALLE Ereignisse gezaehlt   ->  6 von 57 Marken weichen ab
+//   seit dem letzten Pitch gezaehlt  ->  3 von 57
+//
+// Die ersten drei waren zweite Pitch-Runden, also gar kein Befund. Eine
+// Pruefung, die zur Haelfte Fehlalarm ist, haette niemand lange gelesen.
+function folgeSeitPitch(events) {
+  const liste = (events || [])
+    .filter((e) => e && (e.typ === "Pitch" || e.typ === "FollowUp"))
+    .slice()
+    .sort((a, b) => datumWert(a.datum) - datumWert(b.datum));
+  let n = 0;
+  for (const e of liste) n = e.typ === "Pitch" ? 0 : n + 1;
+  return n;
+}
+
 function bestandBefunde(marken) {
   const fehler = [], hinweise = [];
   const d = (x) => String(x || "").trim().toUpperCase() === "D";
@@ -3542,6 +3564,30 @@ function bestandBefunde(marken) {
     }
 
     if (archiv) continue;
+
+    // --- 2b. Follow-up-Zaehler gegen die Historie (v139) ---
+    //
+    // Gefunden beim Durchspielen am 18.09.: Wer von Hand eine Follow-up-Zeile
+    // ins Book tippt und danach in der App "erledigt" drueckt, hat die Zeile
+    // zweimal im Word - der Zaehler zaehlt aber nur einmal. Umgekehrt geht es
+    // auch: ein gezaehltes Follow-up, dessen Zeile nie im Book ankam
+    // (Outbox-Fehler, den niemand bemerkt hat).
+    //
+    // HINWEIS, nicht Fehler. Im echten Bestand stehen drei solche Faelle -
+    // als Fehler stuende ab sofort dauerhaft eine Warnkarte da, die niemand
+    // wegbekommt. Dieselbe Tapeten-Falle wie beim 4-Sekunden-Banner.
+    //
+    // Und bewusst OHNE Reparatur-Knopf: die App weiss nicht, welche Seite
+    // recht hat - genau wie beim Rating-Konflikt.
+    if (pl && String(pl.zaehler || "").trim()) {
+      const z = parseInt(pl.zaehler, 10);
+      const echt = folgeSeitPitch(m.events);
+      if (!isNaN(z) && z !== echt) {
+        hinweise.push({ name: m.name, art: "zaehler-ereignisse",
+          text: "Follow-up-Z\u00e4hler steht auf " + z + ", in der Historie "
+                + "stehen " + echt + " Follow-ups seit dem letzten Pitch" });
+      }
+    }
 
     // --- 3. Der Haken "Brand Book" gegen die Wirklichkeit (NEU) ---
     const haken = String(br.brandbook || "").trim();
@@ -5575,13 +5621,35 @@ function brandAnlegen(name, kategorie, f) {
   // das Formular soll nicht auf DNS-Antworten warten. Nur fuellen, nie
   // ueberschreiben: bis die Antwort da ist, kann Andrea schon getippt haben.
   webVorschlag(name).then((url) => {
-    if (!url) return;
-    neu.kerninfos = neu.kerninfos || {};
-    if (String(neu.kerninfos.Website || "").trim()) return;
-    neu.kerninfos.Website = url;
+    if (!websiteNachtragen(name, url)) return;
     datenstandPersistieren();
     banner(`Website-Vorschlag für „${name}“: ${url} — bitte prüfen.`);
   });
+}
+
+// Den Website-Vorschlag im AKTUELLEN Datenstand ablegen (v139).
+//
+// Vorher hielt der .then()-Callback die eben angelegte Marke per Closure
+// fest. Wird der Datenstand waehrend der DNS-Suche ausgetauscht - Abgleich,
+// Backup laden, die Standwahl aus v136 -, schreibt er in ein Objekt, das
+// niemand mehr liest: der Vorschlag landet im Nichts, die Erfolgsmeldung
+// kommt trotzdem. Zeitfenster Sekunden, Schaden ein verlorener Vorschlag,
+// aber es ist dieselbe Klasse wie v129 (Befund vom 16.09.).
+//
+// Deshalb wird die Marke hier im laufenden Stand GESUCHT statt mitgeschleppt.
+// Rueckgabe sagt dem Aufrufer, ob es etwas zu melden gibt - so bleibt die
+// Entscheidung pruefbar, statt im Callback zu stecken.
+function websiteNachtragen(name, url) {
+  if (!url) return false;
+  const m = typeof datenstand !== "undefined" && datenstand
+    ? markeZuName(name) : null;
+  if (!m) return false;            // Marke weg oder Stand getauscht
+  m.kerninfos = m.kerninfos || {};
+  // Nie ueberschreiben: bis die Antwort da ist, kann Andrea schon getippt
+  // haben. Das galt vorher auch und bleibt.
+  if (String(m.kerninfos.Website || "").trim()) return false;
+  m.kerninfos.Website = url;
+  return true;
 }
 
 function brandLoeschen(m) {
