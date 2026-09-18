@@ -495,7 +495,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v139"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v140"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3529,6 +3529,11 @@ function folgeSeitPitch(events) {
   let n = 0;
   for (const e of liste) n = e.typ === "Pitch" ? 0 : n + 1;
   return n;
+  // ponytail: sortiert wird nur nach dem DATUM. Liegen ein Pitch und ein
+  // Follow-up auf demselben Tag, entscheidet die Reihenfolge im Datenstand -
+  // bei Asam Beauty ist genau das der Fall. Aufmachen, wenn daraus ein
+  // echter Fehlalarm wird; dann braucht es einen Sortier-Tiebreak wie in
+  // ugc_core ("bei Gleichstand Kontakt vor Antwort").
 }
 
 function bestandBefunde(marken) {
@@ -3579,7 +3584,19 @@ function bestandBefunde(marken) {
     //
     // Und bewusst OHNE Reparatur-Knopf: die App weiss nicht, welche Seite
     // recht hat - genau wie beim Rating-Konflikt.
-    if (pl && String(pl.zaehler || "").trim()) {
+    // NICHT bei zugesagten Marken (v140, Tobias 19.09.): Ab der Zusage ist
+    // der Zaehler kein laufender Zaehler mehr, sondern eine Notiz darueber,
+    // WIE LANGE es gedauert hat - antwortEintragen() laesst ihn deshalb
+    // ausdruecklich stehen. Ihn danach gegen die Historie zu halten
+    // vergleicht zwei Dinge, die nicht mehr dasselbe messen sollen.
+    //
+    // Der Fall, der es aufgedeckt hat: Asam Beauty, am 15.09. erneut
+    // gepitcht, Zusage noch am selben Tag. Zaehler 1 (vom Follow up davor),
+    // null Follow-ups seit dem zweiten Pitch - gemeldet, obwohl alles
+    // richtig war. Am Bestand nachgemessen: 9 Marken tragen das Flag, die
+    // Regel nimmt genau diesen einen Fehlalarm weg und laesst die zwei
+    // echten Befunde stehen.
+    if (pl && !pl.positivBeantwortet && String(pl.zaehler || "").trim()) {
       const z = parseInt(pl.zaehler, 10);
       const echt = folgeSeitPitch(m.events);
       if (!isNaN(z) && z !== echt) {
