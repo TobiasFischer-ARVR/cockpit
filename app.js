@@ -398,6 +398,80 @@ function standWahlWarnung() {
   return k;
 }
 
+// Hat der letzte Bestandslauf FEHLER gefunden? Traegt die Warnkarte.
+//
+// Modulweit und ephemer, mit Absicht weder in einst noch im Datenstand:
+// der Wert wird bei jedem Start neu berechnet, und er haengt am
+// geraetespezifischen Book-Pfad. Ihn zu speichern hiesse, eine Aussage ueber
+// DIESES Geraet zu konservieren, die beim naechsten Start ohnehin neu
+// entsteht - und die Andreas Handy nach ihrer eigenen Korrektur noch als
+// alte Warnung zeigen wuerde.
+let bestandFehlerDa = false;
+
+// Laeuft gerade ein Bestandslauf? Sperre nach dem Muster von abgleichLaeuft
+// / abgleichNachholen (v95).
+//
+// Noetig geworden durch die Reparatur-Knoepfe (Review 18.09.): Der Knopf am
+// Befund ruft den Pruefknopf PROGRAMMATISCH auf - und `disabled` blockiert
+// nur einen echten Fingertipp, keinen Funktionsaufruf. Tippt sie einen
+// zweiten Befund an, waehrend der erste noch speichert, laufen zwei
+// Durchgaenge gleichzeitig: beide leeren dieselbe Statuszeile und befuellen
+// sie neu, beide schreiben bookDateien und den Befund-Merker. Die DATEN
+// bleiben heil (die Schreibkette aus v128 serialisiert sie), die ANZEIGE
+// nicht.
+//
+// Vertagt statt verworfen: ein abgewiesener Lauf holt sich hinterher nach.
+// Wer einen Knopf drueckt, muss das Ergebnis sehen - ein still
+// verschluckter zweiter Lauf hiesse "nichts passiert", obwohl repariert
+// wurde.
+let bestandLaeuft = false;
+
+// Stiller Bestandslauf (v137, Backlog 28). Tobias am 18.09.: "auf User
+// Anfrage (manuell) pruefen oder beim Start der App" - also beides.
+//
+// Beim Start aber STILL, ausser es gibt einen Befund. Eine Meldung, die bei
+// jedem Start erscheint, wird nach drei Tagen weggeklickt und greift dann
+// nicht mehr, wenn sie zaehlt. Genau daran ist das Sicherungsbanner am
+// 04.09. gestorben.
+//
+// Nur FEHLER ziehen die Karte hoch, keine Hinweise: eine verwaiste Datei
+// darf gewollt sein und steht deshalb in "Daten pruefen" und sonst nirgends.
+//
+// Rueckgabe: ob sich der Zustand geaendert hat - nur dann muss neu
+// gezeichnet werden.
+async function bestandStillPruefen() {
+  if (!datenstand || !datenstand.marken) return false;
+  // Einem laufenden Durchgang aus dem Weg gehen: der Hintergrundlauf wuerde
+  // ihm sonst bookDateien unter den Fuessen austauschen.
+  if (bestandLaeuft) return false;
+  bestandLaeuft = true;
+  try {
+  await bookAenderungenPruefen();          // fuellt bookDateien
+  const daten = bestandBefunde(datenstand.marken);
+  const dateien = bestandDateiBefunde(datenstand.marken, bookDateien);
+  const vorher = bestandFehlerDa;
+  bestandFehlerDa = (daten.fehler.length + dateien.fehler.length) > 0;
+  return bestandFehlerDa !== vorher;
+  } finally { bestandLaeuft = false; }
+}
+
+// Befund-Karte (v137). Bleibend und nicht wegklickbar - nach derselben
+// Regel wie die Wolken-Warnung: was die Nutzerin selbst beheben kann, darf
+// sie nicht wegwischen koennen. Und beheben kann sie es jetzt wirklich, der
+// Knopf sitzt seit v137 am Befund.
+function bestandWarnung() {
+  if (!bestandFehlerDa) return null;
+  const k = el("div", "karte block warnung tippbar");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "\u26a0 Achtung"));
+  k.append(kopf, el("div", "titel", "Daten pr\u00fcfen hat etwas gefunden"),
+    el("div", "kontext",
+      "Buch, Brand Rating und Pitchliste widersprechen sich an mindestens "
+      + "einer Stelle. Zum Ansehen hier tippen."));
+  k.onclick = sheetEinstellungen;
+  return k;
+}
+
 // Merker setzen/loeschen. Schreibt nur bei WECHSEL in den Geraetespeicher,
 // nicht bei jedem Speichern.
 function wolkeMerken(ok) {
@@ -421,7 +495,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v136"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v137"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -909,6 +983,49 @@ function sheetEinstellungen() {
       "Export liegen neben dem Datenbank-Ordner. Gleicher Tag = gleiche " +
       "Datei, sie wird ersetzt.")));
 
+  // Eine Befundzeile, bei zwei Befundarten mit Reparatur-Knopf (v137,
+  // Backlog 13). Bis hierher war jeder Befund reiner Text: die App fand die
+  // Sache, konnte sie aber nicht abstellen - fuer eine Altlast blieb nur
+  // Handarbeit an der JSON (werkzeuge/haken_entfernen.py, am 11.09. fuer
+  // Kena gebaut).
+  //
+  // Einen Knopf gibt es NUR, wo die App sicher weiss, was richtig ist:
+  //   haken-ohne-book       es gibt keine Datei, also ist der Haken falsch
+  //   book-falscher-ordner  bookordner IST das Feld "wo die Datei liegt"
+  //
+  // Rating-Konflikte bekommen bewusst keinen (Tobias, 18.09.): dort muesste
+  // die App entscheiden, welche Seite gewinnt, und beim Word-Vergleich auch
+  // noch ins Dokument schreiben. Die Anweisung dazu steht seit dem 07.09.
+  // unter dem Befund und bleibt stehen.
+  const befundReparatur = (f) => {
+    const m = markeZuName(f.name);
+    if (!m) return null;
+    if (f.art === "haken-ohne-book" && m.brandrating) {
+      return { text: "Haken entfernen",
+               mach: () => { m.brandrating.brandbook = ""; } };
+    }
+    if (f.art === "book-falscher-ordner" && f.ordner) {
+      return { text: "Ordner nachtragen",
+               mach: () => { m.bookordner = f.ordner; } };
+    }
+    return null;
+  };
+  const befundZeile = (f, nochmal) => {
+    const zeile = el("div", null, "• " + f.name + ": " + f.text);
+    const tu = befundReparatur(f);
+    if (!tu) return zeile;
+    const k = el("button", "chip", tu.text);
+    k.onclick = async () => {
+      k.disabled = true;                 // ein Klick, eine Aenderung
+      tu.mach();
+      listeVeraltet = true;
+      await datenstandPersistieren();
+      nochmal();      // frisch nachrechnen statt die Zeile nur wegzunehmen
+    };
+    zeile.append(" ", k);
+    return zeile;
+  };
+
   // Datenpruefung (v92): Word-Book gegen Excel. Findet Marken, bei denen
   // das Brand-Book noch ein aelteres Rating traegt - ein stiller
   // Widerspruch, den vorher niemand sehen konnte (3 von 45 am 06.09.).
@@ -917,12 +1034,25 @@ function sheetEinstellungen() {
     "zwischen Brand-Book und Excel.");
   const pZeile = el("div", "chips");
   const pKnopf = el("button", "chip", "🔍 Daten prüfen");
-  pKnopf.onclick = async () => {
+  let bestandNachholen = false;
+  // Zwei Funktionen statt einer: der Durchgang selbst darf frueh
+  // zurueckspringen ("keine Abweichungen"), ohne dass dabei das Nachholen
+  // verlorengeht. In EINER Funktion haette genau dieser frueher return das
+  // Nachholen uebersprungen - und eine Reparatur waere ohne sichtbare
+  // Wirkung geblieben.
+  const pruefen = async () => {
+    if (bestandLaeuft) { bestandNachholen = true; return; }
+    bestandLaeuft = true;
+    try { await pruefenEinmal(); } finally { bestandLaeuft = false; }
+    // Waehrend des Laufs kam noch eine Reparatur dazu -> noch einmal, damit
+    // die Anzeige den Stand NACH der letzten Aenderung zeigt.
+    if (bestandNachholen) { bestandNachholen = false; await pruefen(); }
+  };
+  const pruefenEinmal = async () => {
     if (!datenstand || !datenstand.marken) {
       pStatus.textContent = "Kein Datenstand geladen.";
       return;
     }
-    const { fehler, hinweise } = bestandBefunde(datenstand.marken);
     pStatus.textContent = "";
     // Word -> App (v123): die einzige Stelle, an der die App ueberhaupt
     // merkt, dass ein Book inzwischen anders aussieht.
@@ -935,6 +1065,24 @@ function sheetEinstellungen() {
     pKnopf.disabled = true;
     const wordNeu = await bookAenderungenPruefen();
     pKnopf.disabled = false;
+    // ERST JETZT rechnen (v137). Die Bestandspruefung lief bis v136 VOR dem
+    // await - bestandDateiBefunde() saehe dann die Dateiliste des vorigen
+    // Laufs oder gar keine. Reihenfolge-Regel vom 10.09.: wer liest, muss
+    // hinter dem stehen, der holt.
+    const daten = bestandBefunde(datenstand.marken);
+    const dateien = bestandDateiBefunde(datenstand.marken, bookDateien);
+    const fehler = daten.fehler.concat(dateien.fehler);
+    const hinweise = daten.hinweise.concat(dateien.hinweise);
+    // Wechselt der Befundstand, muss die Ansicht DAHINTER neu gezeichnet
+    // werden - sonst haengt die Warnkarte hinterher (Review 18.09.). Beide
+    // Richtungen zaehlen: ein frisch gefundener Fehler muss die Karte
+    // hochziehen, ein behobener sie wegnehmen. Ohne das zeigte die App
+    // entweder einen Befund nicht an, den sie gerade gefunden hat, oder
+    // warnte weiter vor etwas, das erledigt ist - beides genau der Fehler,
+    // den dieses Paket abstellen soll.
+    const warVorher = bestandFehlerDa;
+    bestandFehlerDa = fehler.length > 0;
+    if (bestandFehlerDa !== warVorher) listeVeraltet = true;
     if (wordNeu.length) {
       listeVeraltet = true;
       pStatus.append(el("div", null, "⚠ In Word geändert: "
@@ -949,7 +1097,7 @@ function sheetEinstellungen() {
     if (fehler.length) {
       pStatus.append(el("div", null, `⚠ ${fehler.length} Abweichung(en):`));
       for (const f of fehler) {
-        pStatus.append(el("div", null, "• " + f.name + ": " + f.text));
+        pStatus.append(befundZeile(f, pruefen));
       }
       // Die Anweisung MUSS der PC-Weg sein (Tobias 07.09., v93): "↻ Book
       // aktualisieren" stand hier bis v92 - der Knopf ist fuer genau diese
@@ -962,13 +1110,14 @@ function sheetEinstellungen() {
     if (hinweise.length) {
       pStatus.append(el("div", null, `ℹ ${hinweise.length} Hinweis(e):`));
       for (const h of hinweise) {
-        pStatus.append(el("div", null, "• " + h.name + ": " + h.text));
+        pStatus.append(befundZeile(h, pruefen));
       }
       pStatus.append(el("div", "stand",
         "Kein Fehler — nur Marken, die liegengeblieben sein könnten."));
     }
     pStatus.append(el("div", "stand", spiegelHinweis()));
   };
+  pKnopf.onclick = pruefen;
   pZeile.append(pKnopf);
   wrap.append(abschnitt("Daten prüfen", pStatus, pZeile));
 
@@ -4280,6 +4429,8 @@ function renderHauptmenu() {
   if (wolke) c.append(wolke);
   const wahl = standWahlWarnung();
   if (wahl) c.append(wahl);
+  const bef = bestandWarnung();
+  if (bef) c.append(bef);
 
   const ugc = el("div", "karte menue-karte" + (snap ? "" : " leer"));
   ugc.append(el("div", "titel", "UGC"),
@@ -4437,6 +4588,8 @@ function renderUgc() {
   if (wolke) c.append(wolke);
   const wahl = standWahlWarnung();
   if (wahl) c.append(wahl);
+  const bef = bestandWarnung();
+  if (bef) c.append(bef);
   if (snap.zeitraeume.length > 1) c.append(chipZeile());
   // Pflicht-Hinweis (Briefing Abschnitt 5): Gefiltertes wird gezaehlt,
   // sonst haelt man die Ansicht fuer vollstaendig.
@@ -5521,6 +5674,27 @@ function bookPfad(m) {
 // tests/test_v123.js prueft sie deshalb ausdruecklich.
 let bookGeaendert = new Map();   // Markenname -> aktueller cTag. Nur Anzeige.
 
+// Die Dateiliste des letzten Ordner-Abrufs (v137, Backlog 7).
+// bookAenderungenPruefen() holt sie ohnehin und warf sie bisher bis auf den
+// cTag weg - genau das war der blinde Fleck: der Waechter verglich Daten
+// gegen Daten, nie DATEIEN gegen Daten. Im Quelltext stand der Hinweis sogar
+// schon ("keine Datei -> Backlog 7, nicht hier").
+// Ordnerbuchstabe -> Map(Dateiname -> cTag).
+// Nur Anzeige, wie bookGeaendert: weder Datenstand noch localStorage.
+let bookDateien = new Map();
+
+// Die vier Rating-Ordner. Bis v136 lief der Abruf nur ueber die Ordner, die
+// aus den Marken abgeleitet waren - eine verwaiste Datei liegt aber gerade
+// dort, wo die App keine Marke erwartet. Praktisch aendert das nichts an den
+// vier Abrufen: im echten Bestand sind ohnehin alle vier Ordner belegt.
+const BOOK_ORDNER = ["A", "B", "C", "D"];
+
+// Dateiname -> Markenname. Muss zu bookPfad() passen, das genauso baut.
+// ponytail: Books, die NICHT so heissen, sieht die Waisen-Suche nicht. Das
+// ist die bewusste Grenze - lieber ein uebersehener Sonderfall als ein
+// Fehlalarm auf jede fremde .docx im Ordner.
+const BOOK_DATEI = /^Brand-Book (.+)\.docx$/i;
+
 function bookOrdner(m) {
   return m.bookordner || String(m.brandrating.rating).trim();
 }
@@ -5592,7 +5766,9 @@ async function bookAenderungenPruefen() {
   if (!datenstand || typeof OD === "undefined" || !OD.konto()) return [];
   const marken = (datenstand.marken || [])
     .filter((m) => m.brandrating && m.brandrating.brandbook);
-  if (!marken.length) return [];
+  // Frueher stand hier ein `if (!marken.length) return []`. Er faellt weg
+  // (v137): ohne Abruf gaebe es auch keine Dateiliste - und eine verwaiste
+  // Datei ist gerade der Fall, in dem KEINE Marke auf sie zeigt.
 
   // Ein neuer PC-Snapshot heisst: die App ist wieder auf dem Stand der
   // Books. Dann gilt der aktuelle Dateizustand als bekannt und alte
@@ -5603,9 +5779,11 @@ async function bookAenderungenPruefen() {
   const basisNeu = !!(snap && snap.erzeugt &&
     String(snap.erzeugt) !== String(datenstand.bookBasisStand || ""));
 
+  // `gebraucht` zaehlt weiter nur die Ordner, die die Marken brauchen - der
+  // Abschluss-Check unten haengt daran. Gelesen werden aber ALLE vier.
   const gebraucht = new Set(marken.map(bookOrdner));
   const staende = new Map();
-  for (const o of gebraucht) {
+  for (const o of BOOK_ORDNER) {
     const r = await OD.graphRoh(`${bookBasis()}/${o} Brands` +
       ":/children?$select=name,cTag&$top=400");
     if (!r || !r.ok) {
@@ -5622,6 +5800,9 @@ async function bookAenderungenPruefen() {
       map.set(String(d.name), String(d.cTag || ""));
     staende.set(o, map);
   }
+  // Ablegen, BEVOR irgendein return greift: bestandDateiBefunde() lebt davon,
+  // und ein leerer Lauf muss die alte Liste loeschen statt sie stehenzulassen.
+  bookDateien = staende;
   if (!staende.size) return [];  // gar nichts gelesen -> nichts behaupten
 
   const geaendert = new Map();
@@ -5652,7 +5833,11 @@ async function bookAenderungenPruefen() {
   // dauerhaft ihren Vor-Import-Stand als Vergleichsbasis und meldeten ab
   // da staendig falsch, waehrend der Rest der App den Import laengst als
   // geschehen ansieht. Lieber beim naechsten Lauf nochmal versuchen.
-  if (basisNeu && staende.size === gebraucht.size) {
+  // Ordnergenau statt ueber die Groesse (v137): seit alle vier Ordner
+  // gelesen werden, ist `staende` eine Obermenge von `gebraucht` - ein
+  // Groessenvergleich waere nie wieder wahr geworden, und bookBasisStand
+  // haette sich nie wieder gesetzt.
+  if (basisNeu && [...gebraucht].every((o) => staende.has(o))) {
     datenstand.bookBasisStand = String(snap.erzeugt);
     mutiert = true;
   }
@@ -5666,6 +5851,66 @@ async function bookAenderungenPruefen() {
   if (mutiert) datenstandPersistieren();
   bookGeaendert = geaendert;
   return [...geaendert.keys()];
+}
+
+// Dateien gegen Daten (v137, Backlog 7 + 28).
+//
+// REIN wie bestandBefunde(): Marken rein, Dateiliste rein, Befunde raus. Die
+// Liste wird hier NICHT geholt - sie kommt aus bookAenderungenPruefen().
+// Gleiches Muster und gleicher Grund wie bei sicherungenAussortieren(): so
+// prueft der Test beide Faelle ohne OneDrive und ohne DOM.
+//
+// Zwei Befunde, mit Absicht verschieden eingestuft:
+//
+//   falscher Ordner -> FEHLER, mit Reparatur. `m.bookordner` ist das Feld
+//     "wo die Datei liegt", NICHT das Rating - die beiden duerfen
+//     auseinanderlaufen (Landpark, urbanjngl, 11.09.). Stimmt es nicht,
+//     zeigt bookPfad() ins Leere und die Gruppenanzeige luegt.
+//
+//   verwaiste Datei -> HINWEIS, ohne Reparatur. Sie kann gewollt sein
+//     (Entwurf, Zwischenstand, von Hand angelegt). Als Fehler wuerde sie die
+//     Warnkarte bei JEDEM Start hochziehen und waere nach drei Tagen Tapete
+//     - dieselbe Falle wie beim 4-Sekunden-Banner vom 04.09.
+//
+// Ein nicht gelesener Ordner fehlt in `dateien` und erzeugt deshalb gar
+// nichts. Geschwiegen wird hier vom Aufbau her, nicht durch eine Sonderabfrage
+// - das ist die Projektregel "lieber schweigen als raten" als Struktur.
+//
+// ponytail: liegt dieselbe Datei in ZWEI Ordnern, gewinnt der zuletzt
+// gelesene. Aufmachen, wenn Kopien real vorkommen - dann ist "doppelt
+// vorhanden" ein eigener Befund und keine stille Auswahl.
+function bestandDateiBefunde(marken, dateien) {
+  const fehler = [], hinweise = [];
+  if (!dateien || !dateien.size) return { fehler: fehler, hinweise: hinweise };
+  // Wo liegt welche Datei wirklich? Schluessel des Markennamens -> Fundort.
+  const gefunden = new Map();
+  for (const paar of dateien) {
+    const ordner = paar[0];
+    for (const datei of paar[1].keys()) {
+      const t = BOOK_DATEI.exec(String(datei));
+      if (t) gefunden.set(schluessel(t[1]), { ordner: ordner, datei: datei });
+    }
+  }
+  const bekannt = new Set();
+  for (const m of marken || []) {
+    const s = schluessel(m.name);
+    bekannt.add(s);
+    const ort = gefunden.get(s);
+    if (!ort) continue;                       // keine Datei -> nicht mein Fall
+    const soll = String(bookOrdner(m) || "").trim().toUpperCase();
+    if (!soll || soll === String(ort.ordner).toUpperCase()) continue;
+    fehler.push({ name: m.name, art: "book-falscher-ordner",
+      ordner: ort.ordner,
+      text: "Datei liegt in \u201e" + ort.ordner + " Brands\u201c, erwartet "
+            + "wurde \u201e" + soll + " Brands\u201c" });
+  }
+  for (const paar of gefunden) {
+    if (bekannt.has(paar[0])) continue;
+    hinweise.push({ name: paar[1].datei, art: "book-verwaist",
+      text: "liegt in \u201e" + paar[1].ordner + " Brands\u201c, dazu gibt es "
+            + "keine Marke" });
+  }
+  return { fehler: fehler, hinweise: hinweise };
 }
 
 // Werte fuer die Template-Platzhalter (pur, testbar): Name + Kontaktfelder
@@ -8600,6 +8845,13 @@ window.addEventListener("hashchange", render);
 window.addEventListener("od-ready", async () => {
   try { await laden(); } catch (_) { /* Fehlerbild steht schon */ }
   render();
+  // Stiller Bestandslauf (v137). Hier und nicht in laden(): vorher ist
+  // OneDrive nicht verbunden, die Ordner waeren nicht lesbar und der Lauf
+  // muesste schweigen. BEWUSST ohne await - der Start wartet nicht darauf,
+  // bei Befund zeichnet er selbst nach.
+  bestandStillPruefen().then((neu) => {
+    if (neu && !document.getElementById("schleier")) render();
+  });
 });
 
 // Persistenter Speicher (Phase 4): sonst darf der Browser IndexedDB bei
@@ -8765,8 +9017,13 @@ async function abgleichBeiRueckkehr() {
   outboxAbarbeiten();
   // Vier Ordner-Abrufe, kein Download. BEWUSST ohne await: die Rueckkehr
   // soll nicht darauf warten, das Ergebnis zeichnet sich selbst nach.
-  bookAenderungenPruefen().then((g) => {
-    if (!g.length || document.getElementById("schleier")) return;
+  // Seit v137 laeuft hier der ganze Bestandslauf, nicht nur der
+  // Book-Waechter: er holt dieselbe Dateiliste, und die Warnkarte waere
+  // sonst bis zum naechsten echten Neustart veraltet - behebt Andrea etwas,
+  // waehrend die App offen bleibt, saehe man es nicht.
+  bestandStillPruefen().then((neu) => {
+    if (document.getElementById("schleier")) return;
+    if (!bookGeaendert.size && !neu) return;
     listeVeraltet = false;
     render();
   });
