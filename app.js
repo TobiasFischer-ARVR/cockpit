@@ -381,6 +381,23 @@ function wolkenWarnung() {
   return k;
 }
 
+// Offene Standwahl als BLEIBENDE Karte (v136) - gleiche Regel wie bei der
+// Wolken-Warnung: nicht wegklickbar, weil Andrea die Ursache selbst
+// beseitigen kann (naemlich durch Entscheiden). Antippen holt die Frage
+// zurueck, statt sie nur zu beschreiben.
+function standWahlWarnung() {
+  if (!standWahlOffen) return null;
+  const k = el("div", "karte block warnung tippbar");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "⚠ Achtung"));
+  k.append(kopf, el("div", "titel", "Datenstand noch nicht entschieden"),
+    el("div", "kontext",
+      "Zwei Stände unterscheiden sich in den Marken. Es wurde nichts "
+      + "übernommen und nichts gespeichert. Zum Entscheiden hier tippen."));
+  k.onclick = () => abgleichBeiRueckkehr();
+  return k;
+}
+
 // Merker setzen/loeschen. Schreibt nur bei WECHSEL in den Geraetespeicher,
 // nicht bei jedem Speichern.
 function wolkeMerken(ok) {
@@ -404,7 +421,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v134"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v136"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -814,7 +831,18 @@ function sheetEinstellungen() {
   wrap.append(abschnitt("Datenstand-Sicherung", sStatus, sZeile,
     el("div", "stand",
       "Backup laden: eine cockpit-datenstand-….json auswählen " +
-      "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand.")));
+      "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand. " +
+      "Der jetzige Stand wird vorher automatisch in den Download-Ordner " +
+      "gesichert (cockpit-vor-rueckspielung-….json)."),
+    // Punkt 34 (Tobias, 18.09.): *"Egal, packt den Hinweis halt unter den
+    // Button in die Settings."* Stand bisher nur in der Sammelmappe fuer
+    // Andrea - also an einer Stelle, die sie im Ernstfall nicht offen hat.
+    // Hier steht er da, wo der Knopf ist.
+    el("div", "stand",
+      "⚠ Grenze: „Backup laden“ stellt nur die Daten der App wieder her — " +
+      "NICHT die Word-Dokumente. Wurde zwischenzeitlich z. B. ein Rating " +
+      "geändert, steht danach in der App wieder der alte Wert, im " +
+      "Brand-Book aber der neue.")));
 
   // Datenlogging (v103). Werkzeug auf Zeit: einschalten, Fehler einfangen,
   // wieder ausschalten. Der Pfad wird MIT angezeigt - steht der Datenbank-
@@ -1027,7 +1055,76 @@ function backupLaden() {
     if (!confirm(`Backup „${datei.name}“ laden?\n` +
         `Stand: ${String(d.geaendert || "?").replace("T", " ")} · ` +
         `${d.marken.length} Marken.\n` +
-        "Ersetzt den aktuellen Datenstand auf Gerät + OneDrive.")) return;
+        `Aktuell: ${((datenstand && datenstand.marken) || []).length} Marken.\n` +
+        "Ersetzt den aktuellen Datenstand auf Gerät + OneDrive.\n" +
+        "Der jetzige Stand wird vorher gesichert — nach OneDrive und in " +
+        "den Download-Ordner.")) return;
+    // Backlog 33 (gefunden 14.09. beim Durchspielen von Backlog 9): bis hier
+    // war das Zurueckspielen eine Einbahnstrasse. Die einzige Pruefung war
+    // Array.isArray(d.marken) - eine Datei mit LEEREM Marken-Array kam
+    // anstandslos durch, auf Geraet UND OneDrive, ohne Weg zurueck.
+    // Greift jemand unter Druck zur falschen von mehreren aehnlich
+    // benannten Dateien, ist die Kopie hier die einzige Rueckfahrkarte.
+    // BEWUSST vor dem Ersetzen und NACH dem confirm: kein Download bei
+    // jedem Abbruch, aber einer bei jedem echten Zurueckspielen.
+    // Gehoert die Datei ueberhaupt zu diesem Konto? (Backlog 33b)
+    // Geprueft wird NUR, wenn beide Seiten es wissen:
+    //   - nicht angemeldet    -> keine Vergleichsbasis, durchlassen
+    //   - Datei ohne Stempel  -> vom PC-Werkzeug oder aelter als v135,
+    //                            durchlassen. Ein Abbruch wuerde hier jedes
+    //                            bestehende Backup entwerten.
+    // Beide bekannt und verschieden: das ist der Fall, um den es geht -
+    // Tobias' Testdaten in Andreas Bestand. Strukturell sieht die Datei
+    // identisch aus, nur der Inhalt gehoert jemand anderem.
+    const dessen = kontoFremd(d);
+    if (dessen) {
+      const meins = kontoKennung();
+      if (!confirm("⚠ ACHTUNG — dieses Backup gehört zu einem ANDEREN " +
+          "OneDrive-Konto.\n\n" +
+          "Backup von:  " + (dessen.name || "unbekannt") + "\n" +
+          "Angemeldet:  " + (meins.name || "unbekannt") + "\n\n" +
+          "Wird es geladen, ersetzt es den kompletten Bestand dieses Kontos " +
+          "durch fremde Daten — auf Gerät UND OneDrive.\n\n" +
+          "Wirklich fremde Daten laden?")) {
+        banner("Abgebrochen — das Backup gehört zu " +
+               (dessen.name || "einem anderen Konto") + ".");
+        return;
+      }
+      logZeile("backup-fremdes-konto",
+        { von: dessen.name || dessen.id, nach: meins.name || meins.id });
+    }
+    // Sicherheitskopie - aber nur, wenn es etwas zu sichern GIBT.
+    //
+    // Zweiter Review 18.09., zwei Funde in einem Absatz:
+    //
+    //  1. Ohne geladenen Datenstand hat die erste Fassung ABGEBROCHEN -
+    //     datenstandBackup() liefert dann false. Das ist genau der Notfall,
+    //     fuer den dieser Weg existiert: frische Installation, Browserdaten
+    //     geloescht. Ein Sicherheitsnetz, das die Rettung verhindert, ist
+    //     keines. Ohne Bestand gibt es nichts zu verlieren - durchlassen.
+    //
+    //  2. Der Download-Ordner ist NICHT nachweisbar. datenstandBackup()
+    //     meldete true, sobald a.click() zurueckkam - ob Android den
+    //     Download wirklich angenommen hat, weiss die App nicht. Ein Gate
+    //     auf einen unbeweisbaren Erfolg ist Theater. Der PUT nach OneDrive
+    //     liefert dagegen ein echtes true/false.
+    //
+    // Deshalb: die CLOUD-Kopie ist die Bedingung, der Download laeuft
+    // zusaetzlich mit. Scheitert die Cloud-Kopie, wird nicht ersetzt - ohne
+    // OneDrive liefe das Zurueckspielen ohnehin nur aufs Geraet, und dann
+    // steht der wiederhergestellte Stand an genau einer Stelle.
+    if (datenstand) {
+      const kopie = "cockpit-vor-rueckspielung-" +
+        lokalIso().slice(0, 16).replace("T", "-").replace(":", "") + ".json";
+      const gesichert = typeof OD !== "undefined" && await OD.graphPutLeise(
+        datenBasis() + "/" + kopie + ":/content", datenstand);
+      datenstandBackup("cockpit-vor-rueckspielung-"); // zusaetzlich, ungeprueft
+      if (!gesichert) {
+        banner("Sicherheitskopie konnte nicht in OneDrive abgelegt werden — " +
+               "es wurde NICHTS ersetzt. Erst wieder verbinden.");
+        return;
+      }
+    }
     datenstand = d;
     await datenstandPersistieren();
     listeVeraltet = true;
@@ -4181,6 +4278,8 @@ function renderHauptmenu() {
   if (warnung) c.append(warnung);
   const wolke = wolkenWarnung();
   if (wolke) c.append(wolke);
+  const wahl = standWahlWarnung();
+  if (wahl) c.append(wahl);
 
   const ugc = el("div", "karte menue-karte" + (snap ? "" : " leer"));
   ugc.append(el("div", "titel", "UGC"),
@@ -4256,15 +4355,29 @@ function markenFilterAktiv() {
 }
 
 function markenFilter(m) {
-  const ki = (snap.kerninfos || {})[m.quelle] || {};
-  const zahl = (x) => parseInt(x, 10) || 0;
+  // ki ueber kerninfosAktuell() statt roh aus dem Snapshot (Backlog 26,
+  // 18.09.): v125 hat das fuer das RATING geradegezogen, die drei Skalen
+  // daneben blieben am PC-Import haengen. Aendert Andrea "Brand Fit" in der
+  // App, wandert der Wert nach m.kerninfos - der Filter sah ihn nicht.
+  // DIESELBE Funktion, die die Detailansicht nutzt: eine Quelle, ein Wert.
+  //
+  // Zweiter Teil desselben Fundes: die Skalen wurden mit parseInt() gelesen.
+  // Andrea schreibt sie in manchen Books direkt als Symbole - am 18.09. in
+  // 10 von 62 Quellen. parseInt("⭐⭐⭐⭐") ist NaN, also 0: "Brand Fit >= 4"
+  // hat 6 Marken uebersehen, die 4 oder 5 stehen hatten.
+  // ratingStufe() (v92) rechnet Symbole und Ziffern seit jeher auf DIESELBE
+  // Stufe - dort hat die Word-gegen-Excel-Pruefung denselben Fall geloest.
+  // Keine zweite Zahl-Funktion daneben: genau so ist der Fehler entstanden.
+  const mv = (typeof datenstand !== "undefined" && datenstand)
+    ? markeZuName(m.name) : null;
+  const ki = kerninfosAktuell(mv, m.quelle);
   // m.rating kommt aus der App (v125), ki nur noch als Rueckfall fuer
   // Marken, die die App nie angefasst hat.
   const rating = m.rating || String(ki["Rating (A-D)"] || "").trim();
   return (!mf.rating || rating === mf.rating) &&
-    (!mf.fit || zahl(ki["Brand Fit"]) >= mf.fit) &&
-    (!mf.geist || zahl(ki["Begeisterung"]) >= mf.geist) &&
-    (!mf.chance || zahl(ki["Erfolgschance"]) >= mf.chance) &&
+    (!mf.fit || ratingStufe(ki["Brand Fit"]) >= mf.fit) &&
+    (!mf.geist || ratingStufe(ki["Begeisterung"]) >= mf.geist) &&
+    (!mf.chance || ratingStufe(ki["Erfolgschance"]) >= mf.chance) &&
     (!mf.antwort ||
       (mf.antwort === "positiv" ? m.positiv > 0 : m.antworten > 0));
 }
@@ -4322,6 +4435,8 @@ function renderUgc() {
   if (warnung) c.append(warnung);
   const wolke = wolkenWarnung();
   if (wolke) c.append(wolke);
+  const wahl = standWahlWarnung();
+  if (wahl) c.append(wahl);
   if (snap.zeitraeume.length > 1) c.append(chipZeile());
   // Pflicht-Hinweis (Briefing Abschnitt 5): Gefiltertes wird gezaehlt,
   // sonst haelt man die Ansicht fuer vollstaendig.
@@ -4763,7 +4878,15 @@ function erledigen(m, s, tage, standard) {
   // auf null zu setzen - mit dem Event, das gleich darunter entsteht.
   ruecknahmeEntwerten(m);
   datenstand.letzteAktion =
-    { name: m.name, aktion: s.aktion, zeit: jetzt, vorher: { ...m.pitchliste } };
+    { name: m.name, aktion: s.aktion, zeit: jetzt, vorher: { ...m.pitchliste },
+      // A7 (Audit 17.09.): merkt sich, dass gleich KEIN Ereignis entsteht.
+      // rueckgaengig() sucht sonst eines, findet keins und verweigert -
+      // der Punkt blieb als Leiche stehen. Siehe dort.
+      ohneEreignis: s.kontakt === false,
+      // datum mitfuehren, weil es ohne Ereignis nirgends sonst steht:
+      // rueckgaengig() braucht es, um die Zeile im Brand-Book wieder
+      // herauszunehmen. Der normale Weg holt es aus dem Ereignis.
+      datum: heute };
   // Kein Ereignis bei einem Nicht-Kontakt (16.09.): "Rückantworten
   // prüfen" soll weder in der Historie noch in der KPI auftauchen.
   // s.kontakt !== false statt s.kontakt: ein altes s ohne das Feld
@@ -5118,6 +5241,29 @@ function kundenauftragZurueck(m, grund, jetzt, datumIso) {
 }
 
 function rueckgaengig(m, la) {
+  // A7 (Audit 17.09.): "Rückantworten prüfen" erzeugt ABSICHTLICH kein
+  // Ereignis. Bis v134 legte erledigen() trotzdem einen Rücknahmepunkt an,
+  // den niemand einlösen konnte: die Suche unten fand nichts, meldete
+  // "geht nicht mehr" und liess den Punkt liegen. Zurückzunehmen gibt es
+  // hier trotzdem etwas - die fortgeschriebene Pitchliste.
+  // Steht ZWINGEND vor dem Herausziehen unten: ein älteres Ereignis mit
+  // derselben Aktion würde sonst gepoppt - ein Rückgängig, das ein fremdes
+  // Ereignis löscht, waere genau der Halbe-Sachen-Fehler, den v96 abstellte.
+  // Ein alter Rücknahmepunkt ohne das Feld faellt auf den bisherigen Weg
+  // zurueck (ehrliche Absage) statt still etwas anderes zu tun.
+  if (la.ohneEreignis) {
+    m.pitchliste = { ...la.vorher, geaendert: lokalIso() };
+    delete datenstand.letzteAktion;
+    listeVeraltet = true;
+    datenstandPersistieren();
+    // Ins Brand-Book hat erledigen() TROTZDEM geschrieben - bookHistorie-
+    // Melden() haengt dort nicht am Ereignis, sondern laeuft immer.
+    // Ohne diese Gegenbuchung saehe die App "nie passiert" und das Word
+    // weiterhin den Eintrag: zwei Stellen, die dasselbe anders sehen.
+    // Das ist der Fehler, den v96 fuer den normalen Weg abgestellt hat.
+    if (la.datum) bookHistorieMelden(m, la.datum, la.aktion, true);
+    return;
+  }
   const ev = m.events || [];
   const weg = ev.length && ev[ev.length - 1].aktion === la.aktion
     ? ev.pop() : null;
@@ -7637,6 +7783,56 @@ function datenstandPersistieren() {
   return persistKettenLauf(datenstandSchreibenEinmal);
 }
 
+// Backlog 33b (Tobias, 18.09.): *"Ich gehe mal davon aus, dass wenn wir Daten
+// auf OneDrive schreiben, es eine Art Handshake gibt, wo Informationen
+// getauscht werden. Das gleiche wie bei eTag und cTag."* Stimmt - MSAL haelt
+// das angemeldete Konto ohnehin, wir haben es nur nie mitgeschrieben.
+//
+// Genommen wird die homeAccountId, NICHT die Mailadresse: sie ist stabil,
+// auch wenn das Konto umbenannt wird. Der Name faehrt nur mit, damit die
+// Warnung unten sagen kann, WESSEN Stand da angetippt wurde - "gehoert zu
+// einem anderen Konto" ohne Namen laesst einen ratlos zurueck.
+function kontoKennung() {
+  const k = typeof OD !== "undefined" && OD.konto();
+  return k ? { id: k.homeAccountId, name: k.username || k.name || "" } : null;
+}
+
+// Setzt den Stempel auf den GLOBALEN Datenstand, nicht auf eine Kopie.
+// Zwei Aufrufer: der normale Schreibweg und "Jetzt sichern" - der geht an
+// datenstandSchreibenEinmal() vorbei und haette sonst ungestempelt
+// geschrieben. Ein Stempel, den nur einer der beiden Wege setzt, ist
+// schlechter als keiner: dann heisst "kein Stempel" mal alt und mal fremd.
+//
+// NICHT angemeldet -> alter Stempel bleibt stehen. Die Daten gehoeren
+// weiterhin dem, dem sie vorher gehoert haben; ihn hier zu loeschen wuerde
+// die Herkunft vernichten, genau wenn man sie am noetigsten braucht.
+// Gehoert ein geladener Datenstand zu einem FREMDEN Konto?
+// Gibt das fremde Konto zurueck, sonst null. Eigene Funktion, damit die
+// Entscheidung pruefbar ist - in backupLaden() steckt sie in einem
+// Dateidialog-Callback und liesse sich nur ueber den Quelltext erahnen.
+//
+// null (= durchlassen) in drei Faellen, und alle drei mit Absicht:
+//   1. nicht angemeldet       -> keine Vergleichsbasis. Eine Warnung, die
+//                                nur "weiss nicht" heisst, erzieht zum
+//                                Wegklicken.
+//   2. Datei ohne Stempel     -> vom PC-Werkzeug geschrieben oder aelter
+//                                als v135. Ein Abbruch wuerde hier JEDES
+//                                heute existierende Backup entwerten.
+//   3. gleiche Kennung        -> der Normalfall.
+// Verglichen wird die homeAccountId, nicht der Name: der kann sich aendern,
+// ohne dass es ein anderes Konto waere.
+function kontoFremd(d) {
+  const meins = kontoKennung();
+  const dessen = d && d.konto && d.konto.id ? d.konto : null;
+  if (!meins || !dessen) return null;
+  return dessen.id === meins.id ? null : dessen;
+}
+
+function kontoStempeln() {
+  const k = kontoKennung();
+  if (k && datenstand) datenstand.konto = k;
+}
+
 async function datenstandSchreibenEinmal() {
   // EINE Referenz für beide Schreibwege (Backlog 5, Codex 11.09.). Vorher
   // stand hier zweimal die globale `datenstand`, mit einem `await`
@@ -7646,6 +7842,7 @@ async function datenstandSchreibenEinmal() {
   // vergleicht dagegen und wuerde sonst einen fremden Stand durchlassen.
   datenstand.geaendert = lokalIso();
   datenstand.geaendert_von = "Cockpit-App";
+  kontoStempeln();
   // Dann eine KOPIE, nicht nur dieselbe Referenz (Codex 16.09., Fund 1):
   // `const` haelt die Referenz fest, nicht den Inhalt. Mutiert ein Aufrufer
   // das Objekt waehrend des Graph-PUT, hat IndexedDB laengst eine Kopie von
@@ -7738,6 +7935,209 @@ function idbSchreib(schluessel, wert) {
 // Speichern verloren. Deshalb steht die Prüfung jetzt UNMITTELBAR vor der
 // Zuweisung - hinter jedem await und damit für ALLE Aufrufer zugleich
 // (abgleichBeiRueckkehr, update/↻, Start). Test: tests/test_v108.js
+// ---------------------------------- Markenverlust beim Laden (v136)
+// Der Zeitstempel entscheidet, welcher Stand gewinnt - er sagt aber nichts
+// darueber, ob der Gewinner auch ALLES enthaelt. Ein Stand, der zwei Marken
+// weniger kennt, aber zehn Minuten juenger ist, hat die beiden bisher still
+// geschluckt. Ab v136 wird in genau diesem Fall gefragt.
+//
+// Ausloeser ist bewusst eng (Tobias 18.09.): NUR fehlende Marken, kein
+// Schwellwert, kein "irgendein Unterschied". Zwei Staende mit denselben
+// Marken, aber verschiedenen Ereignissen, werden NICHT erkannt - das ist die
+// bekannte Luecke, kein Versehen. Es wird auch nicht gemerged.
+
+// Welche Marken hat `b`, die `a` nicht hat? Zurueck kommen NAMEN, nicht
+// Schluessel: die Frage muss lesbar sein ("Kena, Onelife"). Verglichen wird
+// ueber schluessel() wie ueberall sonst - sonst ist "MyMüsli" eine andere
+// Marke als "myMuesli".
+function markenFehlen(a, b) {
+  const hat = new Set(((a && a.marken) || []).map((m) => schluessel(m.name)));
+  return ((b && b.marken) || []).map((m) => m.name)
+    .filter((n) => !hat.has(schluessel(n)));
+}
+
+// Gibt es unter den Verlierern einen, der dem Gewinner Marken voraus hat?
+// Rein (Liste rein, Befund raus), damit test_v136.js das ohne OneDrive und
+// ohne DOM pruefen kann.
+//
+// `verworfen` ist die Liste der Stempel, die schon einmal bewusst abgelehnt
+// wurden (einst.standVerworfen). Ohne sie faengt die Frage an zu pingpongen:
+// waehlt sie den aelteren Stand, wird der neu gestempelt und gewinnt - und
+// der eben verworfene taucht beim naechsten Laden als Verlierer mit eigenen
+// Marken wieder auf. Der Stempel ist der richtige Schluessel, nicht der
+// Dateiname: aendert sich der Stand wirklich, hat er einen neuen und die
+// Frage kommt von selbst zurueck.
+//
+// ponytail: es wird nur EIN Verlierer zurueckgegeben (der mit den meisten
+// fehlenden Marken), nicht alle. Zwei Fragen beim Start hintereinander sind
+// schlimmer als zwei Starts - der naechste Ladevorgang fragt nach dem
+// naechsten. Erst aufbohren, wenn drei Quellen wirklich dreifach auseinander
+// laufen.
+function verlustKandidat(kandidaten, verworfen) {
+  const weg = new Set(verworfen || []);
+  const gewinner = kandidaten && kandidaten[0];
+  if (!gewinner) return null;
+  const alle = [];
+  for (const paar of kandidaten.slice(1)) {
+    if (weg.has(String(paar[0].geaendert || ""))) continue;
+    const fehlt = markenFehlen(gewinner[0], paar[0]);
+    if (fehlt.length) alle.push({ verlierer: paar, fehlt: fehlt });
+  }
+  if (!alle.length) return null;
+  alle.sort((a, b) => b.fehlt.length - a.fehlt.length);
+  // Gefragt wird zur groessten Luecke - gesichert wird spaeter JEDER
+  // ungewaehlte Stand. Die erste Fassung gab nur den groessten Verlierer
+  // zurueck, in der Annahme, der naechste Ladevorgang frage nach dem
+  // naechsten. Falsch (Codex 18.09., Fund 1): nach dem Persistieren sind
+  // Geraet und Cloud schon ueberschrieben - der dritte Stand waere dann weg,
+  // ohne je gezeigt worden zu sein. Deshalb `alle`.
+  return { verlierer: alle[0].verlierer, fehlt: alle[0].fehlt, alle: alle };
+}
+
+// ponytail: der ZEIT-GEWINNER wird nie uebersprungen, auch wenn er schon
+// einmal abgelehnt wurde (Codex 18.09., Fund 3). Geht die PC-Uhr vor, bleibt
+// die Heimnetz-Datei ewig Gewinner und dieselbe Frage kommt bei jedem Laden
+// wieder - die App stempelt diese Datei ja nie neu. Erreichbar nur auf
+// Tobias' PC (Andreas Geraet hat gar keine Heimnetz-Datei) und nur bei
+// echtem Uhr-Versatz. Aufmachen, wenn es real auftritt: dann muss der
+// gewaehlte Stand auf gewinnerStempel+1s gestempelt werden, nicht auf jetzt.
+
+// Liegt eine unbeantwortete Frage an? Traegt die Warnkarte.
+let standWahlOffen = false;
+
+// Die Frage selbst. Rueckgabe: true = weiter im normalen Weg,
+// false = hier ist Schluss (uebernommen oder abgebrochen).
+//
+// BLOCKIEREND, und das ist der ganze Trick (Entwurf A): datenstandLaden()
+// wird von laden() awaited, laden() vom Start und von abgleichBeiRueckkehr().
+// Solange hier gewartet wird, ist noch nichts gezeichnet - es gibt also kein
+// render(), das der Nutzerin die Frage unter den Fingern wegreisst, und es
+// braucht keine Wache an drei Stellen.
+//
+// confirm() statt eigenem Sheet (Tobias 18.09.): derselbe Weg wie beim
+// Zurueckspielen eines Backups, und er blockiert von sich aus. Ein Sheet
+// koennte drei Staende auf einmal anbieten - der Fall ist bisher nie
+// aufgetreten.
+async function standWahlKlaeren(kandidaten) {
+  const fall = verlustKandidat(kandidaten, einst.standVerworfen);
+  if (!fall) { standWahlOffen = false; return true; }
+  const gewinner = kandidaten[0], aelter = fall.verlierer;
+  const standStempelVorher = String((datenstand && datenstand.geaendert) || "");
+  const zeile = (p) => p[1] + ", " +
+    String(p[0].geaendert || "?").replace("T", " ") + " · " +
+    ((p[0].marken || []).length) + " Marken";
+  // BEIDE Richtungen nennen (Codex 18.09., Fund 2). Die erste Fassung
+  // versprach "den AELTEREN mit allen Marken" - das stimmt nur, wenn der
+  // Unterschied einseitig ist. Hat der neuere Stand eigene Marken, nimmt
+  // die Wahl sie mit weg, und der Text haette das Gegenteil behauptet.
+  const fehltImAelteren = markenFehlen(aelter[0], gewinner[0]);
+  // Ein dritter Stand mit eigenen Marken wird nicht zur Wahl gestellt -
+  // aber er wird GENA"\n\n"T und gesichert, damit er nicht stillschweigend
+  // verschwindet.
+  const dritte = fall.alle.slice(1).map((x) =>
+    x.verlierer[1] + " (" + x.fehlt.join(", ") + ")");
+  logZeile("stand-verlust-gefragt", { quelle: aelter[1],
+    ...logMehr({ fehlt: fall.fehlt.join(", "), weitere: dritte.join(" · ") }) });
+  const nimmAelteren = confirm(
+    "Die Datenstände unterscheiden sich in den Marken." + "\n\n" +
+    "NEUER — " + zeile(gewinner) + "\n" +
+    "   hier fehlen: " + fall.fehlt.join(", ") + "\n\n" +
+    "ÄLTER — " + zeile(aelter) + "\n" +
+    "   hier fehlen: " +
+      (fehltImAelteren.length ? fehltImAelteren.join(", ") : "keine") + "\n\n" +
+    (dritte.length ? "Ein weiterer Stand hat eigene Marken: " +
+       dritte.join(" · ") + " — er wird gesichert, aber nicht übernommen." +
+       "\n\n" : "") +
+    "OK = den ÄLTEREN nehmen (" + aelter[1] + ")" + "\n" +
+    "Abbrechen = jetzt nicht entscheiden");
+  // Drei moegliche Antworten, aber confirm() kennt nur zwei - deshalb die
+  // zweite Frage NUR im Abbruchfall. Der haeufige Fall ("nimm den
+  // vollstaendigen") ist damit ein Fingertipp; wer nicht entscheiden will,
+  // wird einmal mehr gefragt, und das ist die richtige Richtung herum.
+  let gewaehlt = null;
+  if (nimmAelteren) {
+    gewaehlt = aelter;
+  } else if (confirm(
+      "Es wurde nichts übernommen." + "\n\n" +
+      "OK = den NEUEREN Stand behalten (" + zeile(gewinner) + ") und " +
+      "nicht mehr danach fragen" + "\n" +
+      "Abbrechen = später noch einmal fragen")) {
+    gewaehlt = gewinner;
+  } else {
+    // Vertagt: NICHTS uebernehmen, NICHTS schreiben (Tobias 18.09.). Die
+    // Warnkarte haelt die Frage offen, bis entschieden ist - ein stilles
+    // Weiterladen waere genau das Verhalten, das diese Frage abschaffen soll.
+    logZeile("stand-verlust-vertagt", { quelle: aelter[1] });
+    standWahlOffen = true;
+    return false;
+  }
+  // JEDER nicht gewaehlte Stand wird gesichert, BEVOR er ueberschrieben
+  // wird - ueber denselben Weg wie die Sicherheitskopie in backupLaden()
+  // (Backlog 33). Scheitert eine davon, wird nichts uebernommen: keine
+  // Entscheidung ohne Rueckfahrkarte (Tobias 18.09.).
+  //
+  // Sekunden UND Quelle im Dateinamen (Codex 18.09., Fund 5). Mit
+  // Minuten-Aufloesung allein haetten sich die Kopien dieses einen Laufs
+  // GEGENSEITIG ueberschrieben - eine Sicherung, die die vorige vernichtet,
+  // ist schlechter als keine.
+  const andere = kandidaten.filter((p) => p !== gewaehlt);
+  const zeitteil = lokalIso().slice(0, 19).replace("T", "-").replace(/:/g, "");
+  for (const p of andere) {
+    const kopie = "cockpit-verworfen-" + schluessel(p[1]) + "-" + zeitteil + ".json";
+    const ok = typeof OD !== "undefined" && await OD.graphPutLeise(
+      datenBasis() + "/" + kopie + ":/content", p[0]);
+    if (!ok) {
+      logZeile("stand-verlust-ungesichert", { quelle: p[1] });
+      banner("Der Stand „" + p[1] + "“ konnte nicht in OneDrive gesichert "
+             + "werden — es wurde NICHTS übernommen. Erst wieder verbinden.");
+      standWahlOffen = true;
+      return false;
+    }
+  }
+  // Ist waehrend der Uploads etwas eingetippt worden? (Codex 18.09., Fund 6)
+  // Dieselbe Frage, die datenstandUebernehmen() als Bremse 1 stellt - der
+  // Weg hier geht bewusst daran vorbei und muss sie deshalb selbst stellen.
+  // Ohne das ueberschreibt eine Wahl, die vor dem Upload getroffen wurde,
+  // eine Eingabe, die waehrend des Uploads kam.
+  if (String((datenstand && datenstand.geaendert) || "") !== standStempelVorher) {
+    logZeile("stand-verlust-abgebrochen",
+      { grund: "waehrend der Sicherung getippt" });
+    banner("Während der Sicherung wurde etwas eingetragen — es wurde nichts "
+           + "übernommen. Die Frage kommt gleich wieder.");
+    standWahlOffen = true;
+    return false;
+  }
+  const vorStempel = String(gewaehlt[0].geaendert || "");
+  if (nimmAelteren) {
+    // Den aelteren nehmen heisst: an Bremse 1 vorbei. datenstandUebernehmen()
+    // wuerde ihn wegen "nicht neuer" STILL ablehnen - die Wahl waere
+    // wirkungslos und niemand saehe warum. Deshalb hier direkt setzen und
+    // sofort neu stempeln (Entwurf B), damit der gewaehlte Stand auch
+    // gegenueber Geraet und Cloud gewinnt.
+    [datenstand, datenstandQuelle] = aelter;
+    await datenstandPersistieren();
+  }
+  // Gemerkt werden die Stempel ALLER abgelehnten Staende - aber niemals der
+  // eigene (Codex 18.09., Fund 4). lokalIso() loest nur auf Sekunden auf:
+  // faellt das Persistieren in dieselbe Sekunde wie ein abgelehnter Stempel,
+  // wuerde die Wahl sich selbst auf die Verworfen-Liste setzen und die
+  // Warnung beim naechsten Mal STILL ausfallen lassen.
+  const eigen = [vorStempel, String((datenstand && datenstand.geaendert) || "")];
+  einst.standVerworfen =
+    (Array.isArray(einst.standVerworfen) ? einst.standVerworfen : [])
+      .concat(andere.map((p) => String(p[0].geaendert || "")))
+      .filter((x) => x && eigen.indexOf(x) < 0)
+      .slice(-20);   // ponytail: Deckel bei 20 Stempeln
+  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+  standWahlOffen = false;
+  logZeile("stand-verlust-entschieden", { quelle: gewaehlt[1],
+    ...logMehr({ verworfen: andere.map((p) => p[1]).join(" · ") }) });
+  if (nimmAelteren) { versionsSicherung(); autoBackupPruefen(); }
+  // Gewinner bleibt Gewinner: der normale Weg macht weiter, er tut ohnehin
+  // genau das Richtige.
+  return !nimmAelteren;
+}
+
 function datenstandUebernehmen(paar) {
   const alt = datenstand && datenstand.geaendert;
   // Zweite Frage, gefunden vom Lasttest am 11.09. (Seed 31337, v109):
@@ -7806,6 +8206,11 @@ async function datenstandLaden() {
   if (!kandidaten.length) return;
   kandidaten.sort((a, b) =>
     String(b[0].geaendert || "").localeCompare(String(a[0].geaendert || "")));
+  // Wuerde der Zeit-Gewinner Marken verschlucken? Dann fragen, bevor
+  // irgendetwas angefasst wird (v136). Gibt false zurueck, wenn hier Schluss
+  // ist - entweder weil die Wahl schon umgesetzt wurde oder weil sie vertagt
+  // wurde. In beiden Faellen darf der normale Weg NICHT weiterlaufen.
+  if (!(await standWahlKlaeren(kandidaten))) return;
   // Ab hier wird das globale Objekt angefasst - erst fragen, ob das gerade
   // erlaubt ist (v108). Wird abgelehnt, NICHTS weiter tun: ein idbSchreib()
   // wuerde sonst den alten Stand als den neuen wegschreiben.
@@ -8053,6 +8458,7 @@ async function datenstandSichern(statusEl) {
   // Dritter Schreiber, auch er durch die Kette (v128). Andrea kann "Jetzt
   // sichern" druecken, waehrend ein Persistieren noch laeuft - dann waren es
   // bis v127 zwei PUTs auf dieselbe Datei.
+  kontoStempeln();
   const ok = typeof OD !== "undefined" &&
     await persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
   if (ok) {
@@ -8068,16 +8474,32 @@ async function datenstandSichern(statusEl) {
 // Backup-Datei in den Download-Ordner (Phase 4): ueberlebt auch das
 // Loeschen der Browserdaten. Wiederherstellen bei Bedarf von Hand
 // (Datei zurueck nach OneDrive/Apps/Cockpit legen).
-function datenstandBackup() {
-  if (!datenstand) { banner("Kein Datenstand geladen."); return; }
+// praefix (optional): eigener Dateiname-Anfang. Gebraucht von
+// backupLaden() fuer die Sicherheitskopie vor dem Zurueckspielen.
+// ACHTUNG typeof-Pruefung: der Knopf haengt als onclick direkt an dieser
+// Funktion und reicht ein MouseEvent als ersten Parameter durch. Ohne die
+// Pruefung stuende "[object MouseEvent]" im Dateinamen.
+// Gibt zurueck, OB die Kopie zustande kam. backupLaden() haengt daran:
+// dort ist sie die einzige Rueckfahrkarte, und ein stilles "hat nicht
+// geklappt" waere schlimmer als gar kein Versprechen.
+function datenstandBackup(praefix) {
+  if (!datenstand) { banner("Kein Datenstand geladen."); return false; }
+  const name = typeof praefix === "string" ? praefix : "cockpit-datenstand-";
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(
     [JSON.stringify(datenstand, null, 2)], { type: "application/json" }));
-  a.download = "cockpit-datenstand-" +
-    new Date().toISOString().slice(0, 10) + ".json";
+  // Uhrzeit MIT im Namen: zwei Rueckspielungen am selben Tag duerfen sich
+  // nicht gegenseitig ueberschreiben - sonst ist die Sicherheitskopie im
+  // zweiten Anlauf genau der Stand, vor dem sie schuetzen sollte.
+  // lokalIso() statt toISOString(): der Rest der App stempelt in Lokalzeit.
+  // Um 00:30 truege die Datei sonst das Datum von gestern - und man sucht
+  // im Ernstfall unter dem falschen Tag.
+  a.download = name +
+    lokalIso().slice(0, 16).replace("T", "-").replace(":", "") + ".json";
   a.click();
   URL.revokeObjectURL(a.href);
   banner("Backup liegt im Download-Ordner.");
+  return true;
 }
 
 // Snapshot aus zwei Quellen, die neuere gewinnt (Feld "erzeugt"):
