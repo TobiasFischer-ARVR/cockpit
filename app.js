@@ -495,7 +495,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v137"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v138"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4785,6 +4785,13 @@ function renderFehler() {
 
 // ------------------------------------------------------------------ Router
 
+// Die Unterseiten des UGC-Bereichs. Wer hier eine neue Ansicht anhaengt,
+// muss sie eintragen - sonst springt der Zurueck-Pfeil eine Ebene zu weit.
+// Genau so ist der Fehler vom 18.09. entstanden. test_invarianten vergleicht
+// diese Liste mit den Routen in render(); eine vergessene Ansicht macht den
+// Test rot, statt sich erst beim Tippen zu zeigen.
+const UGC_UNTER = ["#/pitchliste", "#/brandrating", "#/kundenauftraege"];
+
 function render() {
   sheetEntfernen(); // beim Ansichtswechsel darf kein Sheet haengenbleiben
   // Kennzahlen frisch aus dem Datenstand (v87). Hier statt an den
@@ -8831,11 +8838,18 @@ document.getElementById("einstellungen").onclick = sheetEinstellungen;
 document.getElementById("info").onclick = sheetInfo;
 
 document.getElementById("zurueck").onclick = () => {
-  // Eine Ebene hoch, nicht Browser-History: vorhersagbar bei Direktaufruf
+  // Eine Ebene hoch, nicht Browser-History: vorhersagbar bei Direktaufruf.
+  //
+  // Die Liste stand bis v137 hier als Bedingung ausgeschrieben - und
+  // #/kundenauftraege fehlte darin. Der Pfeil sprang aus den
+  // Kundenauftraegen ins Cockpit statt ins Dashboard (Tobias, 18.09.), eine
+  // Ebene zu weit. Nicht die Zeile war der Fehler, sondern die Bauart: eine
+  // Whitelist, an die man beim naechsten Bildschirm wieder denken muss.
+  // Jetzt steht sie oben bei den Routen und test_invarianten haelt sie mit
+  // render() im Gleichschritt.
   const h = location.hash;
   location.hash =
-    h.startsWith("#/ugc/") || h === "#/pitchliste" || h === "#/brandrating"
-      ? "#/ugc" : "#/";
+    h.startsWith("#/ugc/") || UGC_UNTER.indexOf(h) >= 0 ? "#/ugc" : "#/";
 };
 document.getElementById("update").onclick = update;
 window.addEventListener("hashchange", render);
