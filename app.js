@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v143"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v144"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6445,6 +6445,25 @@ function bookLesen(xml, parser) {
 //
 // driveId gehört dazu: eine Item-ID ist laut Microsoft nur innerhalb eines
 // Drives eindeutig. Ohne sie würde Tobias' Testkopie Andreas Book quittieren.
+// Version des LESERS, nicht der App. Hochzählen, sobald bookLesen() etwas
+// anders versteht als vorher - dann gelten alle bisherigen Importe als
+// ungeprüft und werden neu gelesen.
+//
+// WARUM ES DAS BRAUCHT (20.09., am eigenen Leib gelernt): v143 hat den
+// Leser korrigiert - Pitch-Ereignisse tragen jetzt `negativ` und
+// `bemerkung` wie im Datenstand. Nach dem Ausliefern meldete der Knopf
+// "Nichts zu tun". Natürlich: importFaellig() verglich nur den cTag, und
+// die Word-Dateien hatten sich nicht geändert. Die Korrektur wäre erst
+// wirksam geworden, wenn Andrea das jeweilige Book zufällig anfasst.
+//
+// Codex hatte genau das in der ersten Runde benannt - "Gültigkeit des
+// Vergleichs hängt mindestens an Book-ID, Word-Version, relevanter
+// App-Revision und Leser-/Vergleichsversion". Notiert und beim Bauen
+// liegengelassen.
+//
+// 1 = bis v142, 2 = ab v144 (negativ/bemerkung an allen Ereignissen)
+const LESER_VERSION = 2;
+
 function importMerkerLies(m) {
   const i = m && m.bookImport;
   return i && i.itemId ? i : null;
@@ -6463,6 +6482,10 @@ function importFaellig(m, datei) {
   if (!i) return true;                            // nie gelesen
   if (i.driveId !== datei.driveId) return true;   // anderes Konto/Drive
   if (i.itemId !== datei.itemId) return true;     // andere Datei (umbenannt?)
+  // Neuer Leser = alles ungeprüft. Ohne diese Zeile ist eine Korrektur am
+  // Leser nicht auslieferbar: sie wirkt erst, wenn das Book aus einem
+  // anderen Grund noch einmal angefasst wird.
+  if (Number(i.leser || 1) !== LESER_VERSION) return true;
   return i.cTag !== datei.cTag;                   // verändert
 }
 
@@ -6544,7 +6567,8 @@ function importMerkerWeiter(m, datei, plan, gespeichert) {
   if (!gespeichert) return false;
   if (!datei || !datei.itemId) return false;
   m.bookImport = { driveId: datei.driveId || "", itemId: datei.itemId,
-                   cTag: datei.cTag || "", zeit: lokalIso() };
+                   cTag: datei.cTag || "", leser: LESER_VERSION,
+                   zeit: lokalIso() };
   return true;
 }
 
