@@ -266,10 +266,10 @@ function kpiNachrechnen() {
     z.gesamt = gesamt;
     z.marken = marken;
   });
-  // ponytail: neue MONATE legt die Rechnung nicht an. Läuft der Monat um,
-  // ohne dass am PC exportiert wurde, fehlt die Monatskachel - die Zahl
-  // steckt dann in "Gesamt", geht also nicht verloren. Beim nächsten
-  // PC-Export ist der Monat da. Erst bauen, wenn das je stört.
+  // Neue Monate legt diese Rechnung nicht an - das macht seit S1
+  // zeitraeumeAusDatenstand(), aufgerufen in laden(). Bis dahin galt:
+  // läuft der Monat um, ohne dass am PC exportiert wurde, fehlt die
+  // Monatskachel.
 }
 
 // Sortierzahl (JJJJMMTT) zurück ins deutsche Datum - Gegenstück zu
@@ -277,6 +277,59 @@ function kpiNachrechnen() {
 function isoZuDe(wert) {
   const t = String(wert);
   return t.slice(6, 8) + "." + t.slice(4, 6) + "." + t.slice(0, 4);
+}
+
+// ---------------------------------------------------------------- S1
+// Die Monatsliste aus dem DATENSTAND ableiten statt aus snapshot.json.
+//
+// Spiegel von export_snapshot.monats_zeitraeume(): "Gesamt" plus ein
+// Zeitraum je Kalendermonat vom fruehesten bis zum spaetesten Ereignis.
+// Die Zahlen bleiben leer - die traegt kpiNachrechnen() gleich danach ein,
+// fuer abgeleitete wie fuer importierte Zeitraeume derselbe Weg.
+//
+// Damit faellt die letzte Sonderrolle des Snapshots weg: alles andere, was
+// er enthielt (Historie, Kerninfos), liegt laengst im Datenstand und wird
+// dort ohnehin als Overlay darueber gelegt.
+//
+// Ungueltige Daten bleiben draussen: eventDatum() gibt bei unlesbarem Text
+// null zurueck statt der 1e12 aus datumWert(). Ohne das erzeugte ein
+// vertipptes Jahr Chips bis ins Jahr 33658 (Codex, 19.09.).
+const MONATE = ["Jan", "Feb", "Mrz", "Apr", "Mai", "Jun",
+                "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+
+function zeitraeumeAusDatenstand(marken) {
+  let min = 0, max = 0;
+  for (const m of marken || []) {
+    for (const e of (m && m.events) || []) {
+      const d = eventDatum(e);
+      if (!d) continue;
+      if (!min || d < min) min = d;
+      if (d > max) max = d;
+    }
+  }
+  if (!min) return [];   // kein einziges lesbares Datum -> nichts ableitbar
+  const leer = () => ({ gesamt: {}, marken: [] });
+  const liste = [{ label: "Gesamt", start: isoZuDe(min), ende: isoZuDe(max),
+                   ...leer() }];
+  let jahr = Math.floor(min / 10000), monat = Math.floor(min / 100) % 100;
+  const endJahr = Math.floor(max / 10000), endMonat = Math.floor(max / 100) % 100;
+  // Kappung bei 36 Monaten, wie am PC: ein Jahres-Tippfehler (2028 statt
+  // 2026) soll keine hunderte leeren Chips erzeugen.
+  for (let n = 0; n < 36; n++) {
+    const mm = String(monat).padStart(2, "0");
+    // Tag 0 des Folgemonats = letzter Tag dieses Monats. Kennt Schaltjahre.
+    const letzter = String(new Date(jahr, monat, 0).getDate()).padStart(2, "0");
+    liste.push({
+      label: MONATE[monat - 1] + " " + jahr,
+      start: "01." + mm + "." + jahr,
+      ende: letzter + "." + mm + "." + jahr,
+      ...leer(),
+    });
+    if (jahr > endJahr || (jahr === endJahr && monat >= endMonat)) break;
+    monat++;
+    if (monat > 12) { jahr++; monat = 1; }
+  }
+  return liste;
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -495,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v140"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v141"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6009,6 +6062,543 @@ function bestandDateiBefunde(marken, dateien) {
 // aus den Kerninfos + die vier Rating-Werte aus dem Brand Rating. Die
 // Schluessel sind die Labels aus der Kerninfos-Tabelle, weil der Platzhalter
 // im Template {{Label}} heisst (siehe template_platzhalter.py).
+// ================================================================ S3
+// WORD-LESER ÜBER DOMParser
+//
+// Gegenstück zu ugc_core.extract_events() / extract_kerninfos(), damit die
+// App die Brand-Books selbst lesen kann und der PC aus der Schleife fällt.
+//
+// WARUM DOMParser und nicht die vorhandenen Regex-Helfer (wordZeilen/
+// wordZellen/wordText): wordText() setzt zwischen Word-Runs ein Leerzeichen.
+// Word zerlegt Text ständig in Runs - im echten Bestand steht das Datum
+// FÜNFMAL IN VIER BOOKS zerlegt ("3"·"1."·"08."·"2026"), und die Regex-Lesart
+// macht daraus "3 1. 08. 2026" -> geparst 01.08. statt 31.08. Vier von vier
+// falsch, ohne jede Meldung. Heute schaltet das nicht durch, weil der
+// SCHREIBweg über historieSchluessel() vergleicht und Punkte wie Leerzeichen
+// wegwirft. Beim LESEN entsteht der Fehler sofort.
+//
+// DOMParser ist im Browser eingebaut - keine Bibliothek, kein Build. Im Test
+// stellt jsdom denselben DOMParser. EIN Leser, zwei Wirte.
+//
+// Die Regex-Helfer bleiben, wo sie sind: der Schreibweg braucht die
+// Original-XML als Text, weil er sie per replace() zurückschreibt.
+
+// Spiegel von ugc_core.klassifiziere_aktion().
+//
+// REIHENFOLGE BEACHTET: Python prüft "creatorpool" VOR "follow",
+// naechsterSchritt() in dieser Datei umgekehrt. Bei "Creatorpool Follow-up"
+// liefert Python 'Creatorpool', naechsterSchritt 'FollowUp' - eine der fünf
+// bekannten Abweichungen (17.09., im Bestand 0 Treffer). Der Leser folgt
+// PYTHON, weil Python die Referenz des Paritätstests ist.
+function klassifiziereAktion(aktion) {
+  const a = String(aktion == null ? "" : aktion).toLowerCase();
+  if (a.includes("creatorpool")) return "Creatorpool";
+  return a.includes("follow") ? "FollowUp" : "Pitch";
+}
+
+// Namensraum von WordprocessingML. Geprüft wird die URI, NICHT das Präfix
+// (Codex 19.09.): `nodeName === "w:tbl"` verlässt sich darauf, dass Word
+// immer "w:" schreibt. Tut es heute in allen 64 Books - aber ein Dokument
+// aus einem anderen Werkzeug darf deswegen nicht stillschweigend als leer
+// gelten. python-docx löst über qualifizierte Namen auf, nicht über Text.
+const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+function istW(el, name) {
+  return !!el && el.localName === name && el.namespaceURI === W_NS;
+}
+
+// Direkte Kindelemente mit diesem lokalen Namen - NICHT getElementsByTagName().
+// tbl.tr_lst, tr.tc_lst und cell.paragraphs sind bei python-docx direkte
+// Kinder; getElementsByTagName() liefe in verschachtelte Tabellen hinein und
+// läse deren Zeilen als eigene.
+//
+// ACHTUNG, KEINE VOLLE PARITÄT: `row.cells` bei python-docx ist NICHT
+// tr.tc_lst - es expandiert gridSpan und zieht bei vMerge den Wert der
+// Ursprungszelle nach. Verbundene Zellen werden hier deshalb nicht
+// unterstützt, sondern ERKANNT UND GEMELDET (siehe domVerbunden).
+function domKinder(el, name) {
+  const raus = [];
+  for (let k = el && el.firstElementChild; k; k = k.nextElementSibling) {
+    if (istW(k, name)) raus.push(k);
+  }
+  return raus;
+}
+
+// Ist in dieser Zeile eine Zelle verbunden? Dann stimmt die Spaltenzuordnung
+// nicht mehr, und "Bemerkung" kann als Negativ-Kreuz gelesen werden -
+// nachgemessen am 19.09. Im echten Bestand 0 von 64 Books; trotzdem gemeldet
+// statt geraten.
+function domVerbunden(tr) {
+  for (const tc of domKinder(tr, "tc")) {
+    for (const pr of domKinder(tc, "tcPr")) {
+      for (let k = pr.firstElementChild; k; k = k.nextElementSibling) {
+        if (istW(k, "gridSpan") || istW(k, "vMerge")) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Text EINES Runs, wortgleich zu python-docx CT_R.text:
+//   "".join(str(e) for e in xpath("w:br | w:cr | w:noBreakHyphen | w:ptab
+//                                  | w:t | w:tab"))
+// Die Umsetzungen stammen aus den __str__-Methoden von python-docx 1.2.0,
+// nicht aus dem Gedächtnis - w:br ist nur bei textWrapping ein Umbruch,
+// Spalten- und Seitenumbrüche liefern "".
+function domLaufText(r) {
+  let t = "";
+  for (let k = r.firstElementChild; k; k = k.nextElementSibling) {
+    if (k.namespaceURI !== W_NS) continue;
+    switch (k.localName) {
+      case "t": t += k.textContent; break;
+      case "tab": case "ptab": t += "\t"; break;
+      case "noBreakHyphen": t += "-"; break;
+      case "cr": t += "\n"; break;
+      case "br": {
+        // Nur der Zeilenumbruch ist ein \n. Spalten- und Seitenumbruch
+        // liefern "" (python-docx CT_Br.__str__).
+        const typ = k.getAttributeNS(W_NS, "type") || k.getAttribute("w:type");
+        if (!typ || typ === "textWrapping") t += "\n";
+        break;
+      }
+    }
+  }
+  return t;
+}
+
+// Text eines Absatzes, wortgleich zu python-docx CT_P.text:
+//   "".join(e.text for e in xpath("w:r | w:hyperlink"))
+//
+// HYPERLINKS ZÄHLEN MIT. Das war im ersten Entwurf falsch herum, und der
+// Paritätslauf hat es gefunden: 14 Abweichungen in 13 Books, alle an
+// verlinkten Websites und E-Mail-Adressen. Bei "Manufaktur X NS" stand die
+// Instagram-Adresse als Hyperlink im ersten Absatz und der Rest als
+// gewöhnlicher Run im zweiten - Python las den Link, der Entwurf den Rest.
+// Ein sauberer Beleg dafür, warum echte Books geprüft werden und nicht nur
+// nachgebaute XML.
+function domAbsatzText(p) {
+  let t = "";
+  for (let k = p.firstElementChild; k; k = k.nextElementSibling) {
+    if (istW(k, "r")) t += domLaufText(k);
+    else if (istW(k, "hyperlink")) {
+      for (const r of domKinder(k, "r")) t += domLaufText(r);
+    }
+  }
+  return t;
+}
+
+// Zellentext wie python-docx _Cell.text: Absätze mit \n verbunden.
+function domZellText(tc) {
+  return domKinder(tc, "p").map(domAbsatzText).join("\n");
+}
+
+function domZeilen(tbl) { return domKinder(tbl, "tr"); }
+function domZellen(tr) { return domKinder(tr, "tc"); }
+
+// Kopfzeile prüfen wie _ist_pitch_tabelle() / _ist_antwort_tabelle():
+// erste Zelle enthält "datum", zweite enthält das erwartete Wort.
+function domKopfPasst(tbl, zweites) {
+  const zeilen = domZeilen(tbl);
+  if (!zeilen.length) return false;
+  const z = domZellen(zeilen[0]);
+  if (z.length < 2) return false;
+  return domZellText(z[0]).trim().toLowerCase().includes("datum") &&
+         domZellText(z[1]).trim().toLowerCase().includes(zweites);
+}
+
+// Ein Brand-Book lesen. Gibt IMMER ein Ergebnis zurück, nie null.
+//
+// Der Rückgabewert unterscheidet VIER Lagen je Tabellenart:
+//   "fehlt"           - keine solche Tabelle gefunden. NICHT leer, unbekannt
+//   "leer"            - Tabelle da, keine Datenzeilen. GÜLTIG leer
+//   "gelesen"         - Tabelle da, Datenzeilen gelesen
+//   "unvollstaendig"  - etwas stand da, das nicht gelesen werden konnte
+// Dazu ok=false, wenn die XML gar nicht erst geparst werden konnte.
+//
+// Daran hängt der Löschfall: ein blankes [] darf nicht gleichzeitig
+// "Andrea hat alles gelöscht" und "wir konnten nicht lesen" heißen.
+//
+// WARUM DIE VIERTE LAGE (Codex 19.09., beide nachgemessen):
+//   - Eine Zeile MIT Inhalt, aber ohne Datum, wurde übersprungen und die
+//     Tabelle galt als "leer". Ein Import hätte daraus Löschen abgeleitet.
+//   - Verbundene Zellen verschieben die Spalten: eine Bemerkung landete als
+//     Negativ-Kreuz. Im Bestand 0 von 64 Books - trotzdem gemeldet.
+//
+// AGGREGIERT, NICHT ÜBERSCHRIEBEN: Bei zwei Antwort-Tabellen gewann vorher
+// die letzte. Eine gefüllte gefolgt von einer leeren ergab ein Ereignis UND
+// den Status "leer" - gemessen am 19.09. Jetzt gewinnt die höhere Lage,
+// und Unvollständigkeit sticht alles.
+const LAGE_RANG = { fehlt: 0, leer: 1, gelesen: 2, unvollstaendig: 3 };
+
+function lageHoeher(bisher, neu) {
+  return LAGE_RANG[neu] > LAGE_RANG[bisher] ? neu : bisher;
+}
+
+function bookLesen(xml, parser) {
+  const leer = { ok: false, grund: "", events: [], kerninfos: {},
+                 kerninfosLeer: [], befunde: [],
+                 tabellen: { pitch: "fehlt", antwort: "fehlt",
+                             kerninfos: "fehlt" } };
+  const P = parser || (typeof DOMParser !== "undefined" ? new DOMParser() : null);
+  if (!P) return { ...leer, grund: "kein DOMParser" };
+
+  let doc;
+  try { doc = P.parseFromString(String(xml == null ? "" : xml), "application/xml"); }
+  catch (fehler) { return { ...leer, grund: "XML nicht lesbar: " + fehler.message }; }
+  if (!doc || !doc.documentElement ||
+      doc.getElementsByTagName("parsererror").length) {
+    return { ...leer, grund: "XML nicht lesbar" };
+  }
+
+  // Nur Tabellen der OBERSTEN Ebene, wie doc.tables bei python-docx.
+  const body = domKinder(doc.documentElement, "body")[0];
+  if (!body) return { ...leer, grund: "keine w:body" };
+  const tabellen = domKinder(body, "tbl");
+
+  const erg = { ok: true, grund: null, events: [], kerninfos: {},
+                kerninfosLeer: [], befunde: [],
+                tabellen: { pitch: "fehlt", antwort: "fehlt",
+                            kerninfos: "fehlt" } };
+  const setze = (art, lage) => {
+    erg.tabellen[art] = lageHoeher(erg.tabellen[art], lage);
+  };
+  const melde = (art, code, wo, text) => {
+    erg.befunde.push({ art, code, zeile: wo, text });
+    setze(art, "unvollstaendig");
+  };
+  // Eine übersprungene Zeile ist nur dann harmlos, wenn sie WIRKLICH leer
+  // ist. Steht Text drin, den wir nicht zuordnen können, darf daraus kein
+  // "gültig leer" werden.
+  const zeileHatText = (tr) =>
+    domZellen(tr).some((tc) => domZellText(tc).trim());
+
+  for (const tbl of tabellen) {
+    const zeilen = domZeilen(tbl);
+    const istPitch = domKopfPasst(tbl, "aktion");
+    const istAntwort = !istPitch && domKopfPasst(tbl, "positiv");
+
+    if (istPitch || istAntwort) {
+      const art = istPitch ? "pitch" : "antwort";
+      let n = 0;
+      for (let i = 1; i < zeilen.length; i++) {
+        const tr = zeilen[i];
+        const z = domZellen(tr);
+        if (domVerbunden(tr)) {
+          melde(art, "verbundene-zelle", i,
+                "Zeile hat verbundene Zellen - Spalten nicht zuverlässig");
+          continue;
+        }
+        if (z.length < 2) {
+          if (zeileHatText(tr)) melde(art, "zu-wenig-spalten", i,
+            "Zeile mit Text, aber weniger als zwei Zellen");
+          continue;
+        }
+        const datum = domZellText(z[0]);          // ROHTEXT, nicht getrimmt
+        if (!datum.trim()) {
+          if (zeileHatText(tr)) melde(art, "kein-datum", i,
+            "Zeile mit Inhalt, aber ohne Datum");
+          continue;
+        }
+        if (istPitch) {
+          const aktion = domZellText(z[1]).trim();
+          erg.events.push({ typ: klassifiziereAktion(aktion), datum,
+                            aktion, positiv: "" });
+        } else {
+          erg.events.push({
+            typ: "Antwort", datum, aktion: "",
+            positiv: domZellText(z[1]).trim().toUpperCase(),
+            // Ältere Books haben nur zwei Spalten - eine fehlende Spalte ist
+            // kein Fehler, sondern "". Länge einzeln geprüft, wie in Python.
+            negativ: z.length > 2 ? domZellText(z[2]).trim().toUpperCase() : "",
+            bemerkung: z.length > 3 ? domZellText(z[3]).trim() : "",
+          });
+        }
+        n++;
+      }
+      setze(art, n ? "gelesen" : "leer");
+      continue;
+    }
+
+    // Kerninfos: erste 2-Spalten-Tabelle, deren erste Zelle "name" enthält.
+    // Erkannt wird über den INHALT, nicht über die Position - die kann sich
+    // in Word verschieben.
+    if (erg.tabellen.kerninfos !== "fehlt") continue;
+    if (!zeilen.length) continue;
+    const kopf = domZellen(zeilen[0]);
+    if (kopf.length < 2) continue;
+    if (!domZellText(kopf[0]).trim().toLowerCase().includes("name")) continue;
+
+    let n = 0;
+    for (let i = 0; i < zeilen.length; i++) {
+      const tr = zeilen[i];
+      const z = domZellen(tr);
+      if (domVerbunden(tr)) {
+        melde("kerninfos", "verbundene-zelle", i,
+              "Zeile hat verbundene Zellen - Label/Wert nicht zuverlässig");
+        continue;
+      }
+      if (z.length < 2) {
+        if (zeileHatText(tr)) melde("kerninfos", "zu-wenig-spalten", i,
+          "Zeile mit Text, aber weniger als zwei Zellen");
+        continue;
+      }
+      const label = domZellText(z[0]).trim().replace(/:+$/, "").trim();
+      // Bei mehrzeiligen Zellen zählt die erste NICHT-LEERE Zeile.
+      const wert = domZellText(z[1]).split("\n")
+        .map((s) => s.trim()).find((s) => s) || "";
+      // Nicht ersetzter Template-Platzhalter ist KEIN Wert.
+      const platzhalter = wert.startsWith("{{") && wert.endsWith("}}");
+      if (!label) continue;
+      if (wert && !platzhalter) { erg.kerninfos[label] = wert; n++; continue; }
+      // "Label da, Wert ausdrücklich leer" ist etwas anderes als "Label gar
+      // nicht vorhanden" - S4 braucht die Unterscheidung für den Löschfall
+      // einzelner Felder (Codex 19.09.). In `kerninfos` taucht beides nicht
+      // auf, deshalb die zweite Liste.
+      erg.kerninfosLeer.push(label);
+    }
+    setze("kerninfos", n ? "gelesen" : "leer");
+  }
+
+  return erg;
+}
+
+// ================================================================ S4
+// ABGLEICH-ENTSCHEIDUNG UND IMPORT-MERKER
+//
+// WAS S4 NICHT TUT: importieren, schreiben, etwas verändern. Das ist S5.
+// Hier steht nur, WAS bei einem Leseergebnis passieren DARF - als reine
+// Funktionen ohne Netz und ohne DOM, damit der Test sie ohne OneDrive prüft.
+//
+// Die drei Zusagen, die S4 einlösen muss (Codex, 19.09.):
+//   1. "selbst geschrieben" heißt NICHT "vollständig importiert"
+//   2. unvollständig gelesen sperrt Löschungen
+//   3. unbekannt heißt ungeprüft - nicht still als Basis setzen
+
+// ---------------------------------------------------------------- Merker
+//
+// ZWEI GETRENNTE MERKER, und das ist der Kern:
+//
+//   bookMerker (localStorage, v123/v130)  "diese Änderung war ich selbst"
+//   m.bookImport (Datenstand, NEU)        "so weit habe ich gelesen"
+//
+// Warum getrennt: Die App lädt beim Schreiben die GANZE Datei herunter -
+// samt einer Änderung, die Andrea gerade im Word gemacht hat. Danach setzt
+// bookMerkerSetzen() den neuen cTag als "eigene Änderung". Wäre das
+// derselbe Merker, gälte ihre Änderung als gesehen, ohne je gelesen worden
+// zu sein. Genau der Fall, den Andreas Alltag täglich erzeugt: sie klebt
+// die Kundenantwort ins Word, die App trägt kurz darauf eine Zeile nach.
+//
+// Der Import-Merker wird deshalb AUSSCHLIESSLICH von einer vollständigen,
+// dauerhaft gespeicherten Übernahme fortgeschrieben - nie von einem
+// Schreibvorgang.
+//
+// driveId gehört dazu: eine Item-ID ist laut Microsoft nur innerhalb eines
+// Drives eindeutig. Ohne sie würde Tobias' Testkopie Andreas Book quittieren.
+function importMerkerLies(m) {
+  const i = m && m.bookImport;
+  return i && i.itemId ? i : null;
+}
+
+// Muss dieses Book gelesen werden? UNBEKANNT HEISST JA.
+//
+// Die v123-Regel "beim ersten Lauf die Basis still setzen" darf hier NICHT
+// gelten. Sie war für eine Anzeige gedacht ("in Word geändert"), und dort
+// ist ein stiller Erstlauf richtig. Für den Import wäre sie ein Datenverlust
+// mit Ansage: ein frisches Handy oder ein geleerter Browserspeicher
+// erklärte 62 ungelesene Books zu "schon gesehen".
+function importFaellig(m, datei) {
+  if (!datei || !datei.itemId) return false;     // keine Datei -> nichts zu lesen
+  const i = importMerkerLies(m);
+  if (!i) return true;                            // nie gelesen
+  if (i.driveId !== datei.driveId) return true;   // anderes Konto/Drive
+  if (i.itemId !== datei.itemId) return true;     // andere Datei (umbenannt?)
+  return i.cTag !== datei.cTag;                   // verändert
+}
+
+// ------------------------------------------------------- Abgleich-Plan
+//
+// Eine reine Funktion: Leseergebnis + Marke + Warteliste rein, Plan raus.
+// Vier Ausgänge, nach Sperrkraft geordnet - der erste, der greift, gewinnt.
+const ABGLEICH_AUSGAENGE = ["nicht-gelesen", "befund", "zurueckstellen",
+                            "uebernehmen"];
+
+// Ereignisse dieser Art, die im Datenstand stehen. Gebraucht für die Regel
+// "Tabelle verschwunden ist kein Löschauftrag".
+function hatEreignisArt(m, art) {
+  const evs = (m && m.events) || [];
+  return art === "antwort"
+    ? evs.some((e) => e.typ === "Antwort")
+    : evs.some((e) => e.typ !== "Antwort");
+}
+
+function offeneAuftraege(m, ausstehend) {
+  const name = schluessel((m && m.name) || "");
+  return (ausstehend || []).filter(
+    (e) => schluessel(e.marke || "") === name);
+}
+
+function abgleichPlan(lese, m, ausstehend) {
+  const befunde = [];
+  const nein = (tun, grund) => ({ tun, grund, befunde,
+                                  darfLoeschen: false, merkerWeiter: false });
+
+  // 1. Gar nicht gelesen. Bisherigen Bestand behalten, nichts ableiten.
+  if (!lese || !lese.ok) {
+    return nein("nicht-gelesen", (lese && lese.grund) || "kein Leseergebnis");
+  }
+
+  // 2. Unvollständig gelesen -> sperrt ALLES, auch das Übernehmen.
+  //    Ein Teilbestand sähe wie eine Löschung aus.
+  for (const art of ["pitch", "antwort", "kerninfos"]) {
+    if (lese.tabellen[art] === "unvollstaendig") {
+      befunde.push({ art, code: "unvollstaendig",
+                     text: "Tabelle konnte nicht vollständig gelesen werden" });
+    }
+  }
+  // 3. Tabelle weg, aber im Datenstand stehen Ereignisse dieser Art.
+  //    Daraus KEINE Löschabsicht ableiten (Codex): eine fehlende Tabelle
+  //    ist genauso gut ein umgebautes Dokument.
+  for (const art of ["pitch", "antwort"]) {
+    if (lese.tabellen[art] === "fehlt" && hatEreignisArt(m, art)) {
+      befunde.push({ art, code: "tabelle-verschwunden",
+                     text: "Tabelle fehlt, im Datenstand stehen Ereignisse" });
+    }
+  }
+  if (befunde.length) {
+    return nein("befund", "Befund offen - erst klären");
+  }
+
+  // 4. Offene Schreibaufträge: die App will noch etwas ins Book, das dort
+  //    noch nicht steht. Der gelesene Stand ist also absichtlich älter.
+  //    Marke zurückstellen statt einen Konfliktlöser zu bauen.
+  const offen = offeneAuftraege(m, ausstehend);
+  if (offen.length) {
+    return nein("zurueckstellen",
+                offen.length + " offene(r) Schreibauftrag/-aufträge");
+  }
+
+  // 5. Sauber gelesen, nichts offen: übernehmen. NUR HIER darf gelöscht
+  //    und nur hier darf der Import-Merker weiterrücken.
+  return { tun: "uebernehmen", grund: "vollständig gelesen", befunde: [],
+           darfLoeschen: true, merkerWeiter: true };
+}
+
+// Der Merker darf NUR nach einer dauerhaft gespeicherten Übernahme weiter.
+// Getrennte Funktion, damit die Reihenfolge erzwingbar ist: erst der
+// Bestand und die Befunde in den Datenstand, DANN der Merker. Ein Absturz
+// dazwischen kostet höchstens eine Wiederholungsprüfung - andersherum
+// kostet er eine Änderung von Andrea.
+function importMerkerWeiter(m, datei, plan, gespeichert) {
+  if (!plan || !plan.merkerWeiter) return false;
+  if (!gespeichert) return false;
+  if (!datei || !datei.itemId) return false;
+  m.bookImport = { driveId: datei.driveId || "", itemId: datei.itemId,
+                   cTag: datei.cTag || "", zeit: lokalIso() };
+  return true;
+}
+
+// ================================================================ S5
+// DEN GELESENEN WORD-BESTAND ÜBERNEHMEN
+//
+// Der erste Schritt, der den Datenstand tatsächlich verändert - deshalb
+// hier als REINE Funktion: Marke rein, geänderte Marke raus. Kein Netz,
+// kein Speichern, kein DOM. Wer speichert, entscheidet der Aufrufer.
+//
+// Das Zustandsmodell (Bauplan, bestätigt von Codex am 17.09.):
+//
+//   Angezeigte Kontakte/Antworten
+//     = letzter erfolgreich gelesener Word-Bestand
+//     + die noch offenen App-Änderungen (Outbox)
+//
+// Word hat also Hoheit über ALLES, was auch im Book steht. Damit fallen
+// Hinzufügen, Korrigieren und Löschen in EINE Operation - es braucht keine
+// stabile Identität je Tabellenzeile und keine Tombstones.
+//
+// Der zweite Summand steht hier nicht drin, und das ist Absicht:
+// abgleichPlan() stellt eine Marke mit offenen Aufträgen zurück. Wo
+// übernommen wird, IST die Outbox leer.
+
+// Felder, die NIE aus Word kommen. Spiegelbild von APP_FELDER in
+// werkzeuge/datenstand.py - läuft das auseinander, löscht entweder der
+// Import oder der nächste --merge etwas weg.
+const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
+                     "kundenauftrag", "kundenauftragHistorie", "intervalle",
+                     "bookordner", "bookCTag", "bookImport", "erstellt",
+                     "name", "quelle", "gruppe"];
+
+// Was hat sich geändert? Für die Anzeige und fürs Log - und damit ein
+// Import, der nichts ändert, auch nichts schreibt.
+function importUnterschied(m, lese) {
+  const alt = (m && m.events) || [];
+  const neu = lese.events || [];
+  const zeile = (e) => [e.typ, e.datum, e.aktion, e.positiv,
+                        e.negativ || "", e.bemerkung || ""].join("|");
+  const altZ = alt.map(zeile), neuZ = neu.map(zeile);
+
+  // Mehrfachvorkommen zählen mit: zwei gleiche Zeilen sind zwei Zeilen.
+  // Ein Mengenvergleich würde genau die Kollision verschlucken, um die es
+  // beim Löschfall geht.
+  const zaehl = (liste) => liste.reduce((acc, z) => {
+    acc[z] = (acc[z] || 0) + 1; return acc;
+  }, {});
+  const a = zaehl(altZ), b = zaehl(neuZ);
+  let dazu = 0, weg = 0;
+  for (const z of new Set([...altZ, ...neuZ])) {
+    const d = (b[z] || 0) - (a[z] || 0);
+    if (d > 0) dazu += d; else if (d < 0) weg += -d;
+  }
+
+  const kAlt = (m && m.kerninfos) || {}, kNeu = lese.kerninfos || {};
+  const felder = [];
+  for (const label of new Set([...Object.keys(kAlt), ...Object.keys(kNeu)])) {
+    if (String(kAlt[label] || "") !== String(kNeu[label] || "")) {
+      felder.push({ label, vorher: kAlt[label], nachher: kNeu[label] });
+    }
+  }
+  return { dazu, weg, felder, etwas: !!(dazu || weg || felder.length) };
+}
+
+// Den Plan ausführen. Gibt IMMER ein Ergebnis zurück.
+//
+// `marke` ist eine KOPIE - die Vorlage bleibt unangetastet, damit der
+// Aufrufer bei einem Fehler beim alten Stand bleibt und nicht bei einem
+// halb umgebauten.
+function importAnwenden(m, lese, plan) {
+  const nichts = (grund) => ({ getan: false, grund, marke: m,
+                               unterschied: null });
+  if (!plan || plan.tun !== "uebernehmen") {
+    return nichts((plan && plan.grund) || "kein Übernahme-Plan");
+  }
+  if (!lese || !lese.ok) return nichts("nicht gelesen");
+
+  const unterschied = importUnterschied(m, lese);
+  // Kein Schreibvorgang ohne echte Änderung. Dieselbe Regel wie beim
+  // Book-Upload (v121): ein Speichern, das nichts ändert, erzeugt nur
+  // einen neuen Zeitstempel und eine Frage beim nächsten Vergleich.
+  if (!unterschied.etwas) {
+    return { getan: false, grund: "keine Änderung", marke: m, unterschied };
+  }
+
+  // Kopie mit ALLEN Feldern, dann werden GENAU ZWEI ersetzt. Alles andere
+  // ist damit automatisch unangetastet - die App-eigenen Felder aus
+  // IMPORT_TABU brauchen keine eigene Rettungsschleife.
+  //
+  // (Hier stand eine. Die Mutationsprobe vom 19.09. hat sie als wirkungslos
+  // entlarvt: sie holte zurück, was Object.assign nie weggenommen hatte.
+  // Was bleibt, ist IMPORT_TABU als niedergeschriebener Vertrag - test_s5
+  // prüft damit, dass er sich nicht von APP_FELDER entfernt.)
+  const neu = Object.assign({}, m);
+
+  // ERSETZEN, nicht zusammenführen. Das ist der Löschfall: eine Zeile oder
+  // ein Kerninfos-Label, das im Word nicht mehr steht, ist weg.
+  // abgleichPlan() hat vorher geprüft, dass vollständig gelesen wurde -
+  // ohne das wäre dieser Schritt der gefährlichste im ganzen Projekt.
+  neu.events = (lese.events || []).map((e) => Object.assign({}, e));
+  neu.kerninfos = Object.assign({}, lese.kerninfos || {});
+
+  return { getan: true, grund: "übernommen", marke: neu, unterschied };
+}
+
 function bookWerte(m) {
   const br = m.brandrating || {};
   const k = kerninfosAktuell(m, quelleZuName(m.name));
@@ -8888,14 +9478,37 @@ async function laden() {
   try { geraet = await idbLies("snapshot"); } catch (_) {}
   const beste = [lokal, cloud, geraet].filter(Boolean).sort(
     (a, b) => String(b.erzeugt || "").localeCompare(String(a.erzeugt || "")))[0];
-  if (!beste) throw new Error(lokalFehler);
   await datenstandFertig; // Overlay (Phase 5) braucht den Datenstand vor dem Rendern
-  if (beste !== geraet) {
+
+  // ------------------------------------------------------------- S1
+  // Die Zeitraeume kommen ab hier IMMER aus dem Datenstand, auch wenn ein
+  // Snapshot da ist. Zwei Gruende: der Datenstand kennt auch die in der App
+  // eingetragenen Ereignisse, und ein neuer Monat erscheint sofort statt
+  // erst nach dem naechsten PC-Lauf.
+  const abgeleitet = zeitraeumeAusDatenstand(datenstand && datenstand.marken);
+
+  // Gewaehlten Zeitraum ueber das LABEL merken, nicht ueber den Index: die
+  // Liste waechst jetzt von allein, und "Index 3" ist danach ein anderer
+  // Monat als vorher (Codex, 19.09.).
+  const zuvor = (snap && snap.zeitraeume && snap.zeitraeume[zi]
+                 && snap.zeitraeume[zi].label) || "";
+
+  // Ohne Snapshot laeuft die App weiter, solange Ereignisse im Datenstand
+  // stehen. Historie und Kerninfos liegen dort ohnehin; der Snapshot war
+  // zuletzt nur noch Kalender. Fehlt BEIDES, ist wirklich nichts da.
+  if (!beste && !abgeleitet.length) throw new Error(lokalFehler);
+  if (beste && beste !== geraet) {
     try { await idbSchreib("snapshot", beste); } catch (_) {}
   }
-  snap = beste;
+  snap = beste || {
+    erzeugt: (datenstand && datenstand.geaendert) || "",
+    quelldateien: (datenstand && datenstand.marken || []).length,
+    historie: {}, kerninfos: {}, zeitraeume: [],
+  };
+  if (abgeleitet.length) snap.zeitraeume = abgeleitet;
   ladefehler = null;
-  if (zi >= snap.zeitraeume.length) zi = 0; // Snapshot kann kuerzer geworden sein
+  const wieder = snap.zeitraeume.findIndex((z) => z.label === zuvor);
+  zi = wieder >= 0 ? wieder : 0;
 }
 
 async function update() {
