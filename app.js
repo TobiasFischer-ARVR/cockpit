@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v142"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v143"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6342,8 +6342,18 @@ function bookLesen(xml, parser) {
         }
         if (istPitch) {
           const aktion = domZellText(z[1]).trim();
+          // negativ und bemerkung sind hier IMMER leer - aber sie gehören
+          // trotzdem hin. werkzeuge/datenstand.py hängt sie an JEDES
+          // Ereignis, auch an Pitches. Ohne sie hätte jeder PC-Lauf die
+          // Schlüssel ergänzt und jeder App-Import sie wieder entfernt:
+          // zwei Schreiber, zwei Formen derselben Daten, und bei jedem
+          // Wechsel ein "geändert", das keins ist.
+          //
+          // Gefunden am 20.09. beim Löschtest an Loonas: die Zeile wurde
+          // sauber entfernt, die Kennzahlen stimmten wieder - nur der
+          // Fingerabdruck sprang nicht auf den Ausgangswert zurück.
           erg.events.push({ typ: klassifiziereAktion(aktion), datum,
-                            aktion, positiv: "" });
+                            aktion, positiv: "", negativ: "", bemerkung: "" });
         } else {
           erg.events.push({
             typ: "Antwort", datum, aktion: "",
