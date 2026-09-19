@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v141"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v142"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -597,6 +597,10 @@ const REITER = {
   // Die Pruefung vergleicht Book gegen Excel, also Daten gegen Daten -
   // sie gehoert zu den Pfaden, nicht zur Sicherung (v92).
   "Daten prüfen": "OneDrive",
+  // S5b: liest die Brand-Books und uebernimmt sie. Steht neben "Daten
+  // pruefen", weil beides dasselbe Bild betrifft - die eine Seite meldet
+  // Unterschiede, die andere holt den Word-Stand.
+  "Aus Brand-Books aktualisieren": "OneDrive",
   "Pfad Brand-Books": "OneDrive",
   "Pfad Datenbank": "OneDrive",
   // Warteliste (v103). Im Einstellungs-Sheet ein eigener Reiter; das
@@ -1173,6 +1177,43 @@ function sheetEinstellungen() {
   pKnopf.onclick = pruefen;
   pZeile.append(pKnopf);
   wrap.append(abschnitt("Daten prüfen", pStatus, pZeile));
+
+  // ------------------------------------------------ S5b: Books einlesen
+  //
+  // Der Weg Word -> App, ohne PC. Bewusst ein KNOPF und kein Automatismus:
+  // der erste Lauf soll unter Aufsicht passieren. Von selbst macht es
+  // spaeter S6.
+  const iStatus = el("div", "stand",
+    "Liest die Brand-Books und übernimmt, was Andrea in Word geändert hat. " +
+    "Geladen wird nur, was sich seit dem letzten Mal geändert hat.");
+  const iZeile = el("div", "chips");
+  const iKnopf = el("button", "chip", "⭳ Aus Brand-Books aktualisieren");
+  iKnopf.onclick = async () => {
+    // disabled reicht nicht gegen einen zweiten Aufruf aus dem Code -
+    // die eigentliche Sperre sitzt in importLauf() (importLaeuft).
+    iKnopf.disabled = true;
+    iStatus.textContent = "Ordner werden gelesen …";
+    try {
+      const b = await importLauf((wieviel, von, name) => {
+        iStatus.textContent = `Lese ${wieviel} von ${von}: ${name}`;
+      });
+      iStatus.textContent = importBericht(b);
+      if (b && (b.uebernommen || b.befunde.length)) {
+        render();                      // Kacheln und Listen neu zeichnen
+        sheetEinstellungen();          // Sheet mit frischem Stand neu aufbauen
+      }
+    } catch (fehler) {
+      iStatus.textContent = "✗ Abgebrochen: " + (fehler && fehler.message);
+    } finally {
+      iKnopf.disabled = false;
+    }
+  };
+  iZeile.append(iKnopf);
+  wrap.append(abschnitt("Aus Brand-Books aktualisieren", iStatus, iZeile,
+    el("div", "stand",
+      "Word hat Vorrang bei Ereignissen und Kerninfos. Marken mit einem " +
+      "wartenden Eintrag in der Warteliste werden übersprungen, bis der " +
+      "durch ist — dort ist die App weiter als das Word.")));
 
   // Datenbank- und Brand-Books-Pfad: seit v86 wird der Pfad NICHT mehr
   // getippt, sondern durchgeklickt (Tobias 06.09.). Beide Abschnitte
@@ -6599,6 +6640,286 @@ function importAnwenden(m, lese, plan) {
   return { getan: true, grund: "übernommen", marke: neu, unterschied };
 }
 
+// ================================================================ S5b
+// DER RUNDLAUF: Books lesen und übernehmen
+//
+// Hier laufen S3 (bookLesen), S4 (abgleichPlan, Merker) und S5
+// (importAnwenden) zum ersten Mal zusammen — und zum ersten Mal wird in
+// Andreas Datenstand geschrieben.
+//
+// DREI REGELN, die aus der Gegenprüfung stammen und die man beim Umbauen
+// nicht verletzen darf:
+//
+//   1. Zwischen dem letzten `await` und dem Einsetzen der Marke steht NICHTS.
+//      Der erste Entwurf sammelte fertige Markenkopien und setzte sie danach
+//      ein. Gegenbeispiel von Codex: Import kopiert die Marke, die Kette wird
+//      frei, die Outbox trägt ein Ereignis nach — und das Einsetzen macht es
+//      wieder weg. Dasselbe trifft eine Prio-Änderung während des Downloads.
+//
+//   2. Der cTag aus dem Listing belegt NICHT die heruntergeladenen Bytes.
+//      Nach dem Download werden die Metadaten über die Item-ID nachgelesen;
+//      nur bei unverändertem cTag wird übernommen.
+//
+//   3. Der Merker rückt auch dann weiter, wenn sich NICHTS geändert hat.
+//      Sonst bliebe jedes unveränderte Book für immer fällig und würde bei
+//      jedem Lauf neu geladen.
+
+// Alle Book-Dateien mit Item-ID und cTag — je Gruppenordner, wie der
+// v123-Wächter. `bookBasis():/children` allein liefert nur die vier Ordner,
+// nicht die Books (Codex, 20.09.).
+async function bookListe() {
+  const ordner = new Map();       // "A" -> Map(dateiname -> {itemId, cTag, driveId})
+  const fehlt = [];
+  for (const o of BOOK_ORDNER) {
+    const map = new Map();
+    let pfad = `${bookBasis()}/${o} Brands:/children` +
+               "?$select=name,id,cTag,file,parentReference&$top=200";
+    let gelesen = false;
+    // nextLink abarbeiten. 200 je Seite, 20 Seiten wären 4000 Dateien -
+    // heute sind es 62, aber eine stille Obergrenze wäre eine Zeitbombe.
+    for (let seite = 0; seite < 20 && pfad; seite++) {
+      const r = await OD.graphRoh(pfad);
+      if (!r || !r.ok) break;
+      let d;
+      try { d = await r.json(); } catch (_) { break; }
+      for (const x of d.value || []) {
+        if (!x.file) continue;                     // Unterordner ignorieren
+        map.set(String(x.name), {
+          itemId: String(x.id || ""),
+          cTag: String(x.cTag || ""),
+          driveId: String((x.parentReference || {}).driveId || ""),
+        });
+      }
+      gelesen = true;
+      const weiter = d["@odata.nextLink"];
+      pfad = weiter
+        ? String(weiter).replace("https://graph.microsoft.com/v1.0", "")
+        : null;
+    }
+    // Ein nicht lesbarer Ordner ist NICHT "keine Books" - sonst gälten seine
+    // Marken als gelesen-und-leer. Gleiche Regel wie im Wächter.
+    if (gelesen) ordner.set(o, map); else fehlt.push(o);
+  }
+  return { ordner, fehlt };
+}
+
+// EIN Book. Läuft ausschließlich innerhalb von bookKettig(), damit sich
+// Import und Outbox nicht überholen.
+async function importEinBook(m, datei) {
+  const r = await OD.graphRoh("/me/drive/items/" +
+                              encodeURIComponent(datei.itemId) + "/content");
+  if (!r) return { lage: "offline" };
+  if (r.status === 404) return { lage: "datei-weg" };
+  if (!r.ok) return { lage: "graph-fehler", status: r.status };
+
+  let xml = null;
+  try {
+    const zip = await JSZip.loadAsync(await r.arrayBuffer());
+    const d = zip.file("word/document.xml");
+    if (d) xml = await d.async("string");
+  } catch (_) { /* kaputtes ZIP */ }
+  if (xml === null) return { lage: "kein-docx" };
+
+  // Regel 2: hat sich die Datei zwischen Listing und Download geändert?
+  const meta = await OD.graphRoh("/me/drive/items/" +
+                                 encodeURIComponent(datei.itemId) + "?$select=id,cTag");
+  if (!meta || !meta.ok) return { lage: "unbestaetigt" };
+  let jetzt = "";
+  try { jetzt = String((await meta.json()).cTag || ""); }
+  catch (_) { return { lage: "unbestaetigt" }; }
+  if (jetzt !== datei.cTag) return { lage: "waehrenddessen-geaendert" };
+
+  // ------------------------------------------------------------------
+  // AB HIER KEIN await MEHR. Regel 1.
+  // ------------------------------------------------------------------
+  const k = schluessel(m.name);
+  const stelle = datenstand.marken.findIndex((x) => schluessel(x.name) === k);
+  if (stelle < 0) return { lage: "marke-weg" };
+  const frisch = datenstand.marken[stelle];
+
+  const lese = bookLesen(xml);
+  const plan = abgleichPlan(lese, frisch, (datenstand && datenstand.ausstehend) || []);
+  const erg = importAnwenden(frisch, lese, plan);
+  if (erg.getan) datenstand.marken[stelle] = erg.marke;
+
+  return { lage: "gelesen", plan, erg,
+           marke: datenstand.marken[stelle], datei };
+}
+
+// Was der Lauf gebracht hat, in einem Satz. Bewusst ausführlich bei
+// Problemen und knapp bei Erfolg: ein Bericht, der jedes Mal gleich lang
+// ist, wird nach drei Tagen nicht mehr gelesen.
+function importBericht(b) {
+  if (!b) return "Nichts passiert.";
+  if (b.fehler) return "✗ " + b.fehler;
+  if (!b.faellig) {
+    return "✓ Nichts zu tun — alle Brand-Books sind auf dem Stand der App."
+      + (b.ordnerFehlt.length
+         ? ` ⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")}.` : "");
+  }
+  const teile = [];
+  if (b.uebernommen) teile.push(`${b.uebernommen} übernommen`);
+  if (b.unveraendert) teile.push(`${b.unveraendert} unverändert`);
+  if (b.zurueckgestellt.length) {
+    teile.push(`${b.zurueckgestellt.length} zurückgestellt ` +
+               `(${b.zurueckgestellt.map((x) => x.marke).join(", ")})`);
+  }
+  let text = `${b.faellig} geändert · ` + (teile.join(" · ") || "nichts");
+
+  // Befunde zuerst und mit Namen: das ist der Teil, bei dem Andrea etwas
+  // entscheiden muss.
+  if (b.befunde.length) {
+    text = `⚠ ${b.befunde.length} Marke(n) brauchen einen Blick: ` +
+      b.befunde.map((x) => x.marke).join(", ") + ". " + text;
+  }
+  if (b.probleme.length) {
+    const arten = {};
+    for (const p of b.probleme) arten[p.lage] = (arten[p.lage] || 0) + 1;
+    text += " · nicht gelesen: " +
+      Object.entries(arten).map(([a, k]) => `${k}× ${a}`).join(", ");
+  }
+  if (b.ordnerFehlt.length) {
+    text += ` · ⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")}`;
+  }
+  if (b.fremd.length) {
+    text += ` · ${b.fremd.length} Datei(en) ohne Marke: ` +
+      b.fremd.slice(0, 3).join(", ") + (b.fremd.length > 3 ? " …" : "");
+  }
+  return text;
+}
+
+let importLaeuft = false;
+
+// Der ganze Lauf. Gibt einen Bericht zurück, schreibt zweimal:
+// erst den Bestand, dann die Merker (Codex: niemals umgekehrt).
+async function importLauf(fortschritt, abbrechen) {
+  if (importLaeuft) return { fehler: "läuft bereits" };
+  if (typeof OD === "undefined" || !OD.konto()) return { fehler: "nicht angemeldet" };
+  if (typeof JSZip === "undefined") return { fehler: "JSZip noch nicht geladen" };
+  if (!datenstand || !Array.isArray(datenstand.marken)) {
+    return { fehler: "kein Datenstand" };
+  }
+  importLaeuft = true;
+  const b = { faellig: 0, gelesen: 0, uebernommen: 0, unveraendert: 0,
+              befunde: [], zurueckgestellt: [], probleme: [], fremd: [],
+              ordnerFehlt: [], merker: 0 };
+  try {
+    const liste = await bookListe();
+    b.ordnerFehlt = liste.fehlt;
+
+    // Zuordnen. Eine Datei ohne Marke wird nur GEMELDET - "unbekannt"
+    // beweist keine neue Marke, es kann eine Kopie oder eine Umbenennung
+    // sein (Codex, 20.09.).
+    const benutzt = new Set();
+    const arbeit = [];
+    for (const m of datenstand.marken) {
+      const map = liste.ordner.get(bookOrdner(m));
+      if (!map) continue;                       // Ordner nicht gelesen
+      const name = `Brand-Book ${m.name}.docx`;
+      const datei = map.get(name);
+      if (!datei) continue;                     // kein Book - nicht hier klären
+      benutzt.add(bookOrdner(m) + "/" + name);
+      if (importFaellig(m, datei)) arbeit.push([m, datei]);
+    }
+    for (const [o, map] of liste.ordner) {
+      for (const name of map.keys()) {
+        if (name.startsWith("Template ")) continue;
+        if (!benutzt.has(o + "/" + name)) b.fremd.push(o + "/" + name);
+      }
+    }
+    b.faellig = arbeit.length;
+
+    const merkerAufgaben = [];
+    let i = 0;
+    for (const [m, datei] of arbeit) {
+      // Kontrolliert aussteigen. Der automatische Lauf bricht ab, sobald
+      // ein Sheet aufgeht: der Import ERSETZT Markenobjekte, und ein
+      // offenes Sheet haelt seine Marke per Closure fest - das ist die
+      // v95-Falle, an der datenstandLaden() schon einmal Eintraege
+      // verloren hat. Was bis hierher uebernommen wurde, bleibt gueltig
+      // und wird unten normal gespeichert.
+      if (typeof abbrechen === "function" && abbrechen()) {
+        b.abgebrochen = arbeit.length - i;
+        break;
+      }
+      if (typeof fortschritt === "function") fortschritt(++i, arbeit.length, m.name);
+      const e = await bookKettig(m, () => importEinBook(m, datei));
+      if (e.lage !== "gelesen") {
+        b.probleme.push({ marke: m.name, lage: e.lage, status: e.status });
+        continue;
+      }
+      b.gelesen++;
+      if (e.plan.tun === "befund") {
+        b.befunde.push({ marke: m.name, befunde: e.plan.befunde });
+      } else if (e.plan.tun === "zurueckstellen") {
+        b.zurueckgestellt.push({ marke: m.name, grund: e.plan.grund });
+      }
+      if (e.erg.getan) b.uebernommen++;
+      else if (e.plan.tun === "uebernehmen") b.unveraendert++;
+      // Regel 3: auch ohne DATENänderung darf der Merker weiter, sonst
+      // bleibt das Book für immer fällig. Ob er DARF, entscheidet allein
+      // importMerkerWeiter() anhand von plan.merkerWeiter - hier wird
+      // bewusst nicht ein zweites Mal gefiltert. Zwei Stellen mit derselben
+      // Bedingung sind zwei Stellen, die auseinanderlaufen können.
+      merkerAufgaben.push([e.marke, e.datei, e.plan]);
+    }
+
+    // Erst der Bestand ...
+    if (b.uebernommen || b.befunde.length) {
+      // STRIKT auf true prüfen, nicht auf "nicht falsch". Ein undefined
+      // wäre genau der stille Fehlschlag, den wir hier ausschließen wollen -
+      // und bis heute gab datenstandSchreibenEinmal() genau das zurück.
+      const ok = await datenstandPersistieren();
+      if (ok !== true) {
+        b.fehler = "Speichern fehlgeschlagen - keine Merker gesetzt";
+        return b;                     // Merker NICHT setzen (Codex)
+      }
+    }
+    // ... dann die Merker.
+    for (const [marke, datei, plan] of merkerAufgaben) {
+      if (importMerkerWeiter(marke, datei, plan, true)) b.merker++;
+    }
+    if (b.merker) await datenstandPersistieren();
+    return b;
+  } finally {
+    importLaeuft = false;
+  }
+}
+
+// ================================================================ S6
+// DER WÄCHTER LÖST DEN IMPORT SELBST AUS
+//
+// Ausgelöst wird bei der Rückkehr in die App (visibilitychange). Das ist
+// genau der Moment, in dem Andrea aus Word kommt - und es ist der einzige
+// verlässliche Auslöser, den eine PWA hat: es gibt keinen Hintergrunddienst,
+// keinen Timer in einer geschlossenen App und ohne öffentlichen Endpunkt
+// auch keine Graph-Benachrichtigung.
+//
+// STILL, solange nichts passiert. Ein Banner bei jeder Rückkehr wäre nach
+// drei Tagen Tapete - dieselbe Lehre wie beim Sicherungsbanner am 04.09.
+//
+// Läuft ein Sheet, wird gar nicht erst angefangen und mittendrin abgebrochen.
+async function importAutomatisch() {
+  if (typeof document !== "undefined" && document.getElementById("schleier")) {
+    return null;
+  }
+  if (typeof OD === "undefined" || !OD.konto()) return null;
+  if (typeof JSZip === "undefined") return null;
+
+  const sheetOffen = () =>
+    typeof document !== "undefined" && !!document.getElementById("schleier");
+  const b = await importLauf(null, sheetOffen);
+  if (!b || b.fehler) return b;
+
+  // Nur melden, wenn es etwas zu melden gibt.
+  if (b.uebernommen || b.befunde.length) {
+    banner(importBericht(b));
+    if (!sheetOffen()) { listeVeraltet = false; render(); }
+    else listeVeraltet = true;
+  }
+  return b;
+}
+
 function bookWerte(m) {
   const br = m.brandrating || {};
   const k = kerninfosAktuell(m, quelleZuName(m.name));
@@ -8816,6 +9137,18 @@ async function datenstandSchreibenEinmal() {
                   + "Datenbank-Ordner in den Einstellungen prüfen."
     : "⚠ NICHT gespeichert — weder auf dem Gerät noch in OneDrive. "
       + "Bitte den Eintrag merken und die App neu laden.");
+  // Ehrliche Rueckmeldung fuer Aufrufer, die auf dem Erfolg AUFBAUEN
+  // (S5b, 20.09.). Bis dahin gab die Funktion nichts zurueck - der
+  // Import haette seinen Merker auch nach einem gescheiterten Speichern
+  // gesetzt und das Book als erledigt abgehakt. Codex hatte genau davor
+  // gewarnt: "await datenstandPersistieren() muss bestaetigten Erfolg
+  // bedeuten".
+  //
+  // Gemeldet wird `ok`, also ONEDRIVE - nicht der Geraetespeicher. Der
+  // Merker behauptet "diese Fassung ist importiert"; das gilt nur, wenn
+  // der Datenstand dort liegt, wo ihn alle lesen. Nur-auf-dem-Geraet
+  // waere eine Behauptung ueber einen Stand, den sonst niemand sieht.
+  return ok;
 }
 
 // IndexedDB-Minimum: eine DB "cockpit", ein Key-Value-Store "kv".
@@ -9739,6 +10072,22 @@ async function abgleichBeiRueckkehr() {
     listeVeraltet = false;
     render();
   });
+  // S6: den Word-Stand von selbst holen. Ebenfalls ohne await - die Rückkehr
+  // soll nicht darauf warten. Läuft NACH outboxAbarbeiten(), damit wartende
+  // App-Einträge zuerst ins Book gehen; überschneiden sich beide trotzdem,
+  // serialisiert bookKettig() je Marke, und eine Marke mit offenem Auftrag
+  // stellt abgleichPlan() ohnehin zurück.
+  //
+  // ABSICHTLICH STILLGELEGT IN v142 (Tobias, 20.09.): importAutomatisch()
+  // ist gebaut und in test_s5b.js geprüft, aber der ganze Weg - echtes
+  // Graph, echte Word-Dateien, echtes MSAL - ist bisher nur gegen Attrappen
+  // gelaufen. Erst wird der KNOPF in den Einstellungen erprobt; wenn der
+  // sauber durchläuft, wird diese eine Zeile wieder scharf geschaltet.
+  //
+  // Der Unterschied ist die Tragweite: den Knopf drückt jemand bewusst,
+  // diese Zeile läuft bei JEDER Rückkehr in die App - beim ersten Mal über
+  // alle 62 Books.
+  // importAutomatisch();
   if (datenstand && datenstand.geaendert !== vorher) {
     listeVeraltet = true;
     banner("Neuerer Stand von einem anderen Gerät geladen.");
