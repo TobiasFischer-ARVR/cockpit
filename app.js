@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v146"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v147"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -573,6 +573,10 @@ const REITER = {
   "Wiedervorlage": "Aktion",
   "Startdatum": "Aktion",
   "Antwort eintragen": "Aktion",
+  // Eigener Abschnitt seit v147 (vorher am Ende von "Antwort
+  // eintragen"): erst getrennt lassen sich die Bloecke einzeln
+  // anordnen, und genau das wollte Andrea am 20.09.
+  "In Kundenaufträge": "Aktion",
   "Kundenauftrag": "Aktion",
   // Bereichswechsel, keine Kontaktereignisse - steht trotzdem bei der
   // Historie, weil es dort gesucht wird.
@@ -2114,9 +2118,16 @@ function bereichHistorie(m, quelle) {
   return frag;
 }
 
-function markenDetails(quelle, ohneRating, m, kontaktKnopf) {
+// ohneBook (v147): Der Book-Knopf hier haengt in KEINEM abschnitt() -
+// zuReitern() schlaegt ihn deshalb dem zuletzt gesehenen Abschnitt zu,
+// im Pitch-Sheet also der Historie. Dort gehoert er nicht hin; genau
+// darum steht seit 16.09. ein zweiter in "Antwort eintragen". Statt den
+// gemeinsamen Helfer zu aendern (er bedient DREI Sheets, zwei davon
+// haben keinen zweiten Knopf) wird er nur dort unterdrueckt, wo er
+// doppelt ist.
+function markenDetails(quelle, ohneRating, m, kontaktKnopf, ohneBook) {
   const frag = document.createDocumentFragment();
-  const oeffnen = bookOeffnenZeile(bookName(quelle, m), m);
+  const oeffnen = ohneBook ? null : bookOeffnenZeile(bookName(quelle, m), m);
   if (oeffnen) frag.append(oeffnen);
   // Kerninfos aus dem Brand-Book (Name weggelassen - steht im Sheet-Titel)
   frag.append(bereichKontakt(m, quelle, ohneRating, kontaktKnopf),
@@ -2207,6 +2218,35 @@ function quelleZuName(name) {
 // Phase 5: Erledigt-Knopf (Ablauf 6+8) — trägt die fällige Aktion als
 // Event + fortgeschriebene Pitchlisten-Felder in den Datenstand ein;
 // Rückgängig stellt exakt den Stand davor wieder her.
+// ---------------------------------------- Blockreihenfolge (v147)
+// Die Bausteine des Reiters "Aktion" im Marken-Sheet. Bis v146 war ihre
+// Reihenfolge die Reihenfolge der append()-Aufrufe; wer sie aendern wollte,
+// musste Codebloecke verschieben - samt ihrer Formulare und Bedingungen.
+// Jetzt ist sie eine LISTE VON NAMEN, und das Zeichnen laeuft darueber.
+//
+// Die Voreinstellung ist ANDREAS Reihenfolge (20.09.): "Naechster Schritt"
+// steht vor "Antwort eintragen". Sie muss dafuer nichts einstellen - eine
+// Abweichung in einst wuerde nur auf DIESEM Geraet gelten.
+const SHEET_BLOCK_STD = ["wiedervorlage", "kundenauftrag", "startdatum",
+                         "erledigen", "antwort", "auftragwechsel"];
+
+// Eigene Reihenfolge NUR in den Geraete-Einstellungen (localStorage), nie im
+// datenstand.json: sonst wandert sie ueber ein Backup zu Andrea. Dieselbe
+// Lehre wie beim Book-Ordner (v56) und beim cTag-Merker (v130).
+//
+// Zwei Absicherungen, beide aus Schaden gelernt:
+//   1. Array.isArray statt "|| []" - Vorbild einst.standVerworfen. Ein
+//      String im Feld wuerde sonst zeichenweise durchlaufen.
+//   2. Unbekannte Namen fliegen raus, FEHLENDE kommen hinten dazu. Ein in
+//      einer spaeteren Version ergaenzter Block darf nicht unsichtbar
+//      bleiben, nur weil eine alte gespeicherte Liste ihn nicht kennt.
+function sheetBlockReihenfolge() {
+  const eigen = Array.isArray(einst.blockReihenfolge)
+    ? einst.blockReihenfolge.filter((id) => SHEET_BLOCK_STD.includes(id))
+    : [];
+  return [...eigen, ...SHEET_BLOCK_STD.filter((id) => !eigen.includes(id))];
+}
+
 function sheetPitch(p) {
   const wrap = el("div");
   const mv = datenstand ? markeZuName(p.name) : null;
@@ -2265,10 +2305,22 @@ function sheetPitch(p) {
     // Terminquellen nebeneinander waeren genau die Doppeldeutigkeit, die
     // vermieden werden soll.
     const imAuftrag = !!(mv && mv.kundenauftrag);
-    wrap.append(abschnitt("Wiedervorlage", tab),
-                bereichKundenauftrag(), bereichStartdatum(q),
-                bereichAntwort(q));
-    if (!imAuftrag) wrap.append(bereichErledigen(q));
+    // Ein Name je Baustein, die Reihenfolge steht in sheetBlockReihenfolge().
+    // Jeder Eintrag bringt seine eigene Bedingung mit: "erledigen" faellt im
+    // Kundenauftrag aus, die uebrigen entscheiden selbst und geben dann
+    // nichts oder ein leeres Fragment zurueck.
+    const bausteine = {
+      wiedervorlage:  () => abschnitt("Wiedervorlage", tab),
+      kundenauftrag:  () => bereichKundenauftrag(),
+      startdatum:     () => bereichStartdatum(q),
+      erledigen:      () => (imAuftrag ? null : bereichErledigen(q)),
+      antwort:        () => bereichAntwort(q),
+      auftragwechsel: () => bereichAuftragWechsel(q),
+    };
+    for (const id of sheetBlockReihenfolge()) {
+      const block = bausteine[id] && bausteine[id]();
+      if (block) wrap.append(block);
+    }
     wrap.append(bereichAuftragsverlauf());
 
     // EIN Bauplan fuer beide Herkuenfte (Tobias 03.09.): ob die Brand aus
@@ -2278,7 +2330,11 @@ function sheetPitch(p) {
     // ohneRating=true wie im Brand-Rating-Sheet: die vier Werte stehen
     // oben in der Wiedervorlage-Tabelle, unter "Kontakt" gehoeren nur
     // Website, Ansprechpartner, E-Mail und Social Media.
-    wrap.append(markenDetails(quelleZuName(p.name), true, mv, kontaktKnopf));
+    // ohneBook=true: der Book-Knopf steht in diesem Sheet schon bei
+    // "Antwort eintragen" (16.09.) - zweimal derselbe Knopf war ein
+    // Versehen, nicht Absicht (Tobias, 20.09.).
+    wrap.append(markenDetails(quelleZuName(p.name), true, mv,
+                              kontaktKnopf, true));
     wrap.append(bereichSonstiges(mv, bau));
 
     if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
@@ -2608,44 +2664,58 @@ function sheetPitch(p) {
     const bz = bookOeffnenZeile(quelleZuName(p.name), m);
     if (bz) frag.append(bz);
 
-    // "in Kundenauftraege verschieben" (Release 6, Schritt 17). Der Knopf
-    // bleibt AUCH ohne Zusage sichtbar, nur ausgegraut und mit Begruendung
-    // daneben - ein Knopf, der einfach fehlt, sieht aus wie eine fehlende
-    // Funktion. Die eigentliche Sperre sitzt in kundenauftragVerschieben();
-    // hier steht nur die Anzeige davon.
-    // Der Fall "steht schon im Auftrag" ist oben abgefangen und kommt hier
-    // nicht mehr an.
-    {
-      const kaZeile = el("div", "chips");
-      // Dieselbe Funktion, die auch das Verschieben selbst absichert -
-      // nicht eine zweite Abfrage von q.positivBeantwortet (Fall 27/29).
-      const erlaubt = verschiebenErlaubt(m);
-      const kaKnopf = el("button", erlaubt ? "chip aktiv" : "chip",
-        "→ in Kundenaufträge verschieben");
-      if (!erlaubt) {
-        kaKnopf.disabled = true;
-      } else {
-        kaKnopf.onclick = () => {
-          if (!confirm(`„${m.name}“ in die Kundenaufträge verschieben?\n\n` +
-              "Die Marke verschwindet aus der Pitchliste. Die Pitchdaten " +
-              "bleiben erhalten — zurückschieben geht jederzeit.")) return;
-          if (!kundenauftragVerschieben(m, lokalIso())) {
-            banner("Das ging nicht — bitte die Liste einmal neu laden.");
-            return;
-          }
-          banner("In die Kundenaufträge verschoben.");
-          bau();
-        };
-      }
-      kaZeile.append(kaKnopf);
-      frag.append(kaZeile);
-      if (!erlaubt) {
-        frag.append(el("div", "stand",
-          "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
-          "entsteht aus der Zusage, nicht aus dem Knopf."));
-      }
-    }
     return abschnitt("Antwort eintragen", frag);
+  }
+
+  // "in Kundenauftraege verschieben" (Release 6, Schritt 17), seit v147
+  // ein EIGENER Abschnitt. Vorher stand der Knopf am Ende von "Antwort
+  // eintragen" - dadurch liessen sich die drei Bloecke nicht getrennt
+  // anordnen, und genau das wollte Andrea (20.09.).
+  //
+  // Der Rumpf ist unveraendert uebernommen: der Knopf bleibt AUCH ohne
+  // Zusage sichtbar, nur ausgegraut und mit Begruendung daneben - ein
+  // Knopf, der einfach fehlt, sieht aus wie eine fehlende Funktion. Die
+  // eigentliche Sperre sitzt in kundenauftragVerschieben().
+  function bereichAuftragWechsel(q) {
+    const m = datenstand ? markeZuName(p.name) : null;
+    // Dieselben Tore wie bei der Antwort, plus: wer schon im Auftrag
+    // steht, wechselt nicht noch einmal hinein - der Weg zurueck steht
+    // im Abschnitt "Kundenauftrag". Vor v147 kam dieser Fall hier nicht
+    // an, weil der Knopf hinter dem Kundenauftrag-Zweig der Antwort lag;
+    // jetzt entscheidet der Block selbst.
+    if (!m || !m.pitchliste || !q.letzter_kontakt || m.kundenauftrag) {
+      return null;
+    }
+    const frag = document.createDocumentFragment();
+    const kaZeile = el("div", "chips");
+    // Dieselbe Funktion, die auch das Verschieben selbst absichert -
+    // nicht eine zweite Abfrage von q.positivBeantwortet (Fall 27/29).
+    const erlaubt = verschiebenErlaubt(m);
+    const kaKnopf = el("button", erlaubt ? "chip aktiv" : "chip",
+      "→ in Kundenaufträge verschieben");
+    if (!erlaubt) {
+      kaKnopf.disabled = true;
+    } else {
+      kaKnopf.onclick = () => {
+        if (!confirm(`„${m.name}“ in die Kundenaufträge verschieben?\n\n` +
+            "Die Marke verschwindet aus der Pitchliste. Die Pitchdaten " +
+            "bleiben erhalten — zurückschieben geht jederzeit.")) return;
+        if (!kundenauftragVerschieben(m, lokalIso())) {
+          banner("Das ging nicht — bitte die Liste einmal neu laden.");
+          return;
+        }
+        banner("In die Kundenaufträge verschoben.");
+        bau();
+      };
+    }
+    kaZeile.append(kaKnopf);
+    frag.append(kaZeile);
+    if (!erlaubt) {
+      frag.append(el("div", "stand",
+        "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
+        "entsteht aus der Zusage, nicht aus dem Knopf."));
+    }
+    return abschnitt("In Kundenaufträge", frag);
   }
 
   function bereichErledigen(q) {

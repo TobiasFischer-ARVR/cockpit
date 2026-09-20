@@ -555,6 +555,17 @@ main {
 }
 .abschnitt:first-of-type { margin-top: 4px; }
 
+/* Sichtbare Grenze zwischen zwei Abschnitten (v147, Tobias 20.09.):
+   die Ueberschrift allein trug die Trennung nicht - im Marken-Sheet
+   lasen sich vier Bloecke wie eine lange Liste. Nur ZWISCHEN Bloecken,
+   nie vor dem ersten: eine Linie direkt unter den Reitern saehe aus
+   wie ein Fehler. */
+.block + .block {
+  border-top: 1px solid var(--rand);
+  margin-top: 18px;
+  padding-top: 4px;
+}
+
 /* Reiter im Detail-Sheet (v58): drei gleich breite Chips statt einer
    scrollenden Leiste - bei drei Reitern passt das auf jedes Handy, und
    der Daumen trifft breite Ziele. Scrollen bewusst NICHT sticky
