@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v145"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v146"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6735,7 +6735,9 @@ async function bookListe() {
     // nextLink abarbeiten. 200 je Seite, 20 Seiten wären 4000 Dateien -
     // heute sind es 62, aber eine stille Obergrenze wäre eine Zeitbombe.
     for (let seite = 0; seite < 20 && pfad; seite++) {
-      const r = await OD.graphRoh(pfad);
+      // Auch hier mit Warteschleife (R4): ein gedrosseltes Listing macht den
+      // GANZEN Ordner unlesbar - alle seine Marken fallen aus dem Lauf.
+      const r = await graphMitWarten(pfad);
       if (!r || !r.ok) break;
       let d;
       try { d = await r.json(); } catch (_) { break; }
@@ -6760,11 +6762,34 @@ async function bookListe() {
   return { ordner, fehlt };
 }
 
+// Ein Graph-Abruf MIT Warteschleife (R4, 20.09.).
+//
+// Der Schreibweg wiederholt seit v102 bei "wartet" (423 Sperre, 429
+// Drosselung, 5xx) - der Leseweg tat es nie. Ein Import holt 62 Books in
+// Folge; genau dort ist eine Drosselung wahrscheinlich, und bisher kam sie
+// als "graph-fehler" zurueck und die Marke fiel still aus dem Lauf.
+//
+// Dieselbe Einstufung (schreibStatus) und dieselben Abstaende
+// (BOOK_WARTEN_MS) wie beim Schreiben. Zwei Regeln fuer dieselbe Frage
+// waeren zwei Regeln, die auseinanderlaufen.
+//
+// ABSICHTLICH NICHT wiederholt wird der Fall "kein r": kein Netz, kein
+// Token. Das ist keine Drosselung, sondern der Offline-Fall - und ihn zu
+// wiederholen hiesse, 62-mal 22 Sekunden zu warten, bevor der Lauf merkt,
+// dass er gar nicht online ist.
+async function graphMitWarten(pfad) {
+  for (let i = 0; ; i++) {
+    const r = await OD.graphRoh(pfad);
+    if (!r || schreibStatus(r) !== "wartet" || i >= BOOK_WARTEN_MS.length) return r;
+    await pause(BOOK_WARTEN_MS[i]);
+  }
+}
+
 // EIN Book. Läuft ausschließlich innerhalb von bookKettig(), damit sich
 // Import und Outbox nicht überholen.
 async function importEinBook(m, datei) {
-  const r = await OD.graphRoh("/me/drive/items/" +
-                              encodeURIComponent(datei.itemId) + "/content");
+  const r = await graphMitWarten("/me/drive/items/" +
+                                 encodeURIComponent(datei.itemId) + "/content");
   if (!r) return { lage: "offline" };
   if (r.status === 404) return { lage: "datei-weg" };
   if (!r.ok) return { lage: "graph-fehler", status: r.status };
@@ -6778,8 +6803,8 @@ async function importEinBook(m, datei) {
   if (xml === null) return { lage: "kein-docx" };
 
   // Regel 2: hat sich die Datei zwischen Listing und Download geändert?
-  const meta = await OD.graphRoh("/me/drive/items/" +
-                                 encodeURIComponent(datei.itemId) + "?$select=id,cTag");
+  const meta = await graphMitWarten("/me/drive/items/" +
+                                    encodeURIComponent(datei.itemId) + "?$select=id,cTag");
   if (!meta || !meta.ok) return { lage: "unbestaetigt" };
   let jetzt = "";
   try { jetzt = String((await meta.json()).cTag || ""); }
