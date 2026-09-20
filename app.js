@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v144"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v145"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6511,6 +6511,29 @@ function offeneAuftraege(m, ausstehend) {
     (e) => schluessel(e.marke || "") === name);
 }
 
+// Offene Aufträge PLUS die Klick-Schreibvorgänge, die gerade unterwegs sind.
+//
+// Das Loch, das diese Funktion stopft (Codex 20.09., nachgemessen):
+// Ein Klick auf "Erledigt" legt das Ereignis ZUERST in den Datenstand
+// (app.js 5213) und schickt es DANN Richtung Word (5266). Ein Auftrag in der
+// Warteliste entsteht aber erst, wenn dieser Weg fehlschlägt
+// (outboxAufnehmen() steht nur in den Fehlerzweigen, 8875/8888). Dazwischen
+// liegt ein Fenster, in dem das Ereignis im Datenstand steht, im Word noch
+// nicht, und in KEINER Liste. Läuft in genau diesem Fenster ein Import über
+// dieselbe Marke, sieht Guard 4 nichts Offenes und ersetzt die Ereignisse
+// durch den älteren Word-Stand - Andreas frischer Eintrag verschwindet aus
+// der App, bis der nächste Import ihn aus dem Word zurückholt.
+//
+// Bewusst KEIN zweiter Guard in abgleichPlan(): der laufende Vorgang wird
+// als Auftrag verkleidet und geht durch dieselbe Prüfung wie alle anderen.
+// Zwei Stellen mit derselben Bedingung sind zwei Stellen, die auseinander-
+// laufen können.
+function auftraegeMitFlug(name, ausstehend, imFlug) {
+  const liste = ausstehend || [];
+  if (!imFlug || !imFlug.has(schluessel(name || ""))) return liste;
+  return liste.concat([{ marke: name, grund: "im-flug" }]);
+}
+
 function abgleichPlan(lese, m, ausstehend) {
   const befunde = [];
   const nein = (tun, grund) => ({ tun, grund, befunde,
@@ -6772,7 +6795,8 @@ async function importEinBook(m, datei) {
   const frisch = datenstand.marken[stelle];
 
   const lese = bookLesen(xml);
-  const plan = abgleichPlan(lese, frisch, (datenstand && datenstand.ausstehend) || []);
+  const plan = abgleichPlan(lese, frisch, auftraegeMitFlug(
+    frisch.name, (datenstand && datenstand.ausstehend) || [], bookImFlug));
   const erg = importAnwenden(frisch, lese, plan);
   if (erg.getan) datenstand.marken[stelle] = erg.marke;
 
@@ -6910,9 +6934,34 @@ async function importLauf(fortschritt, abbrechen) {
       }
     }
     // ... dann die Merker.
+    //
+    // ZWEI Merker, und beide muessen hier weiter (R8, 20.09.):
+    //
+    //  1. m.bookImport - "dieses Book habe ich in dieser Fassung gelesen".
+    //     Steuert, ob das Book beim naechsten Lauf nochmal geholt wird.
+    //  2. der cTag-Merker des WAECHTERS (localStorage, v130) - er steuert
+    //     das ✎ "in Word geaendert" an der Marke.
+    //
+    // Bis v144 fasste der Import nur den ersten an. Der zweite wurde allein
+    // durch einen frischen PC-Snapshot zurueckgesetzt (basisNeu in
+    // bookAenderungenPruefen) - und seit v141 gibt es den PC nicht mehr im
+    // Alltag. Das ✎ blieb damit nach dem Import stehen, dauerhaft. Ein
+    // Hinweis, der nie erlischt, wird nach drei Tagen nicht mehr gelesen;
+    // genau so ist das Sicherungsbanner am 04.09. gestorben.
+    //
+    // Der cTag ist an dieser Stelle belegt: er wurde nach dem Download ueber
+    // die Item-ID nachgelesen und gegen das Listing geprueft (Regel 2 oben).
+    // Gesetzt wird nur, wenn importMerkerWeiter() das Uebernehmen bestaetigt
+    // hat - dieselbe Bedingung, keine zweite daneben.
+    let waechterNeu = false;
     for (const [marke, datei, plan] of merkerAufgaben) {
-      if (importMerkerWeiter(marke, datei, plan, true)) b.merker++;
+      if (!importMerkerWeiter(marke, datei, plan, true)) continue;
+      b.merker++;
+      merkerSetz(marke.name, datei.cTag || "");
+      bookGeaendert.delete(marke.name);   // ✎ sofort weg, nicht erst beim naechsten Lauf
+      waechterNeu = true;
     }
+    if (waechterNeu) merkerSichern();
     if (b.merker) await datenstandPersistieren();
     return b;
   } finally {
@@ -8320,7 +8369,7 @@ function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
   const daten = { positiv: !!positiv, negativ: !!negativ,
                   bemerkung: bemerkung || "" };
   const k = outboxSchluessel(m, datum, aktion, false, "antwort");
-  bookKettig(m, async () => {
+  bookImFlugKettig(m, async () => {
     const s = await bookAntwort(m, datum, positiv, negativ, bemerkung);
     if (s === "ok") {
       outboxWeg(k);
@@ -8471,7 +8520,7 @@ async function bookKerninfos(m) {
 // Laeuft NEBEN dem Speichern (kein await): der Speichern-Knopf soll nicht
 // auf einen Word-Upload warten - genauso wie beim Erledigt-Knopf.
 function bookKerninfosMelden(m) {
-  bookKettig(m, async () => {
+  bookImFlugKettig(m, async () => {
     const s = await bookKerninfos(m);
     const k = outboxSchluessel(m, "", KERNINFOS_AKTION, false, "kerninfos");
     if (s === "ok") {
@@ -8848,11 +8897,36 @@ function bookKettig(m, tun) {
   return lauf;
 }
 
+// Markenname -> Anzahl laufender KLICK-Schreibvorgaenge. Gezaehlt, nicht
+// nur gesetzt: ein Erledigt-Klick und ein Kerninfos-Nachzug koennen auf
+// derselben Marke gleichzeitig unterwegs sein, und der erste, der fertig
+// wird, darf den zweiten nicht abmelden.
+//
+// Nur fuer die DIREKTEN Wege (Klick). Die Nacharbeit in outboxAbarbeiten()
+// braucht das nicht: dort steht der Auftrag bereits in der Warteliste und
+// wird von Guard 4 ohnehin gesehen.
+const bookImFlug = new Map();
+
+function bookImFlugKettig(m, tun) {
+  const k = schluessel(m.name);
+  bookImFlug.set(k, (bookImFlug.get(k) || 0) + 1);
+  // Der Merker faellt, sobald der Word-Vorgang durch ist - egal ob er
+  // geklappt hat. Beim Fehlschlag uebernimmt die Warteliste (outboxAufnehmen
+  // in den Fehlerzweigen), und ab da sieht Guard 4 den Auftrag regulaer.
+  const ab = () => {
+    const n = (bookImFlug.get(k) || 1) - 1;
+    if (n > 0) bookImFlug.set(k, n); else bookImFlug.delete(k);
+  };
+  const lauf = bookKettig(m, tun);
+  lauf.then(ab, ab);   // kein .finally: diese Datei bleibt bewusst konservativ
+  return lauf;
+}
+
 // Ereignis nachtragen und nur dann etwas sagen, wenn es etwas zu sagen
 // gibt. Laeuft absichtlich NEBEN dem Speichern (kein await): der Erledigt-
 // Knopf soll nicht auf den Word-Upload warten.
 function bookHistorieMelden(m, datum, aktion, entfernen) {
-  bookKettig(m, async () => {
+  bookImFlugKettig(m, async () => {
     const s = await bookHistorie(m, datum, aktion, entfernen);
     if (s === "ok") {
       outboxWeg(outboxSchluessel(m, datum, aktion, entfernen));
