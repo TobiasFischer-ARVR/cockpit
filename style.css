@@ -14,7 +14,21 @@
   --blau: #4b7bd4;
   --gruen: #3fa971;
   --grau: #5b6577;
+  /* v148: bis hierher standen diese vier hart im Stylesheet - ein Design
+     konnte sie deshalb nicht mitnehmen. */
+  --link: #90b3f0;
+  --warnton: #ff9a83;
+  --tief: #141c2d;
+  /* Ecken als drei Stufen statt acht Einzelwerten. Ein Design, das eckig
+     sein will, setzt alle drei auf 0-2px. */
+  --radius-s: 9px;
+  --radius-m: 13px;
+  --radius-pill: 20px;
+  /* Leer = Systemschrift, wie bisher. Ein Design darf sie ersetzen. */
+  --font: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
 }
+
+body { font-family: var(--font); }
 
 * { box-sizing: border-box; }
 
@@ -58,7 +72,7 @@ header button {
   min-height: 44px;
   background: var(--panel-hoch);
   border: 1px solid var(--rand);
-  border-radius: 8px;
+  border-radius: var(--radius-s);
   color: var(--text);
   font-size: 19px;
   cursor: pointer;
@@ -141,7 +155,7 @@ main {
 .kachel {
   background: var(--panel);
   border: 1px solid var(--rand);
-  border-radius: 14px;
+  border-radius: var(--radius-m);
   padding: 12px 14px 14px;
   border-top: 3px solid var(--blau);
 }
@@ -194,8 +208,8 @@ main {
 }
 
 .karte {
-  background: linear-gradient(160deg, var(--panel-hoch), #141c2d);
-  border-radius: 14px;
+  background: linear-gradient(160deg, var(--panel-hoch), var(--tief));
+  border-radius: var(--radius-m);
   box-shadow: 12px 14px 26px rgba(0,0,0,.45);
   padding: 13px 15px;
   min-height: 100px;
@@ -260,7 +274,7 @@ main {
 
 .pill {
   border: 1px solid var(--rand);
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   padding: 2px 9px;
   color: var(--text-leise);
 }
@@ -268,15 +282,15 @@ main {
 .badge {
   background: rgba(75, 123, 212, .18);
   border: 1px solid rgba(75, 123, 212, .5);
-  color: #90b3f0;
-  border-radius: 9px;
+  color: var(--link);
+  border-radius: var(--radius-s);
   padding: 1px 7px;
   font-weight: 600;
 }
 .badge.voll {
   background: rgba(242, 102, 76, .18);
   border-color: rgba(242, 102, 76, .5);
-  color: #ff9a83;
+  color: var(--warnton);
 }
 
 .menue-karte {
@@ -313,7 +327,7 @@ main {
   flex: 0 0 auto;
   min-height: 44px;
   padding: 0 14px;
-  border-radius: 20px;
+  border-radius: var(--radius-pill);
   border: 1px solid var(--rand);
   background: var(--panel);
   color: var(--text-leise);
@@ -324,7 +338,7 @@ main {
 .chip.aktiv {
   background: rgba(75, 123, 212, .18);
   border-color: rgba(75, 123, 212, .5);
-  color: #90b3f0;
+  color: var(--link);
   font-weight: 600;
 }
 
@@ -335,7 +349,7 @@ main {
   min-height: 44px;
   padding: 0 14px;
   margin-bottom: 10px;
-  border-radius: 12px;
+  border-radius: var(--radius-m);
   border: 1px solid var(--rand);
   background: var(--panel);
   color: var(--text);
@@ -351,7 +365,7 @@ main {
   min-height: 36px;
   margin: 0 4px;
   padding: 0 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-s);
   border: 1px solid var(--rand);
   background: var(--panel);
   color: var(--text);
@@ -369,7 +383,7 @@ main {
   min-height: 40px;
   margin: 2px 0 10px;
   padding: 0 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-s);
   border: 1px solid var(--rand);
   background: var(--panel);
   color: var(--text);
@@ -402,7 +416,7 @@ main {
   background: var(--panel);
   border: 1px solid var(--rand);
   border-bottom: none;
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--radius-m) var(--radius-m) 0 0;
   width: min(560px, 100%);
   max-height: 90vh;
   display: flex;
@@ -434,7 +448,7 @@ main {
 .sheet-fuss button {
   min-height: 44px;
   width: 100%;
-  border-radius: 8px;
+  border-radius: var(--radius-s);
   border: 1px solid var(--rand);
   background: var(--panel-hoch);
   color: var(--text);
@@ -481,7 +495,7 @@ main {
    nicht", damit man es nicht fuer eine normale Kachel haelt. */
 .karte.warnung {
   border: 1px solid var(--coral);
-  background: linear-gradient(160deg, rgba(224,122,95,.14), #141c2d);
+  background: linear-gradient(160deg, rgba(224,122,95,.14), var(--tief));
   margin-bottom: 12px;
 }
 .karte.warnung .pill { border-color: var(--coral); color: var(--coral); }
@@ -497,7 +511,7 @@ main {
   overscroll-behavior: contain;
   margin: 8px 0;
   border: 1px solid var(--rand);
-  border-radius: 12px;
+  border-radius: var(--radius-m);
   padding: 6px;
 }
 .ordner {
@@ -507,7 +521,7 @@ main {
   text-align: left;
   padding: 0 10px;
   border: none;
-  border-radius: 9px;
+  border-radius: var(--radius-s);
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -534,7 +548,7 @@ main {
 .sonst-kachel {
   background: var(--panel);
   border: 1px solid var(--rand);
-  border-radius: 12px;
+  border-radius: var(--radius-m);
   padding: 9px 11px 2px;
   min-width: 0;                 /* sonst sprengt ein langes Feld das Gitter */
 }
@@ -584,7 +598,7 @@ main {
   text-align: center;
 }
 /* Link-Farbe = blauer Hervorhebungstext aus dem Design-System */
-.link { color: #90b3f0; word-break: break-all; text-decoration: underline; }
+.link { color: var(--link); word-break: break-all; text-decoration: underline; }
 .tabelle .zeile a.link { text-align: right; }
 .punkt-pitch { background: var(--blau); }
 .punkt-followup { background: var(--gelb); }
@@ -619,7 +633,7 @@ main {
   max-width: min(360px, calc(100vw - 32px));
   background: var(--panel);
   border: 1px solid var(--coral);
-  border-radius: 8px;
+  border-radius: var(--radius-s);
   padding: 10px 14px;
   font-size: 12.5px;
   box-shadow: 0 24px 70px rgba(0,0,0,.6);
@@ -654,7 +668,7 @@ main {
 .fgruppe[open] > summary::after { transform: rotate(90deg); }
 /* Der aktive Wert braucht eine eigene Auszeichnung, sonst liest er sich wie
    Teil der Ueberschrift ("Brand Fit  >= 4" statt "Brand Fit: >= 4"). */
-.fgruppe > summary .fwert { color: #90b3f0; font-weight: 600; }
+.fgruppe > summary .fwert { color: var(--link); font-weight: 600; }
 .fgruppe > summary .fwert:not(:empty)::before {
   content: "·";            /* Mittelpunkt */
   color: var(--text-leise);
@@ -677,10 +691,108 @@ main {
   flex-wrap: wrap;
   background: var(--panel-hoch);
   border: 1px solid var(--blau);
-  border-radius: 10px;
+  border-radius: var(--radius-s);
   padding: 10px 14px;
   font-size: 12.5px;
   box-shadow: 0 24px 70px rgba(0,0,0,.6);
 }
 .updateleiste > span { flex: 1 1 auto; }
 .updateleiste .chip { min-height: 38px; }
+
+/* ======================================================= Designs (v148)
+   Ein Design ueberschreibt nur Variablen - keine Regel kennt ein Design.
+   Deshalb kostet ein weiteres etwa 12 Zeilen und kann nichts kaputt
+   machen, was heute funktioniert.
+
+   ACHTUNG bei jedem neuen Design: --coral, --gelb und --gruen tragen
+   BEDEUTUNG (Ampel: ueberfaellig / bald / ok). Sie muessen auf dem
+   jeweiligen Grund unterscheidbar bleiben - ein huebsches Design, dessen
+   Ampel man nicht mehr lesen kann, ist ein Rueckschritt. */
+
+body.design-hell {
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --panel-hoch: #eef1f7;
+  --rand: #d3d9e4;
+  --text: #1b2130;
+  --text-leise: #5d6779;
+  --tief: #e7ebf3;
+  --link: #1f5bb5;
+  --warnton: #b03a22;
+  /* Ampelfarben abgedunkelt: die dunklen Toene haben auf Weiss zu wenig
+     Kontrast, das Signal waere verloren. */
+  --coral: #c4462c;
+  --coral-dunkel: #9d3520;
+  --gelb: #8a6410;
+  --blau: #2c5eb8;
+  --gruen: #1f7a4d;
+  --grau: #6b7484;
+}
+
+body.design-kontrast {
+  --bg: #000000;
+  --panel: #0e0e0e;
+  --panel-hoch: #191919;
+  --rand: #6a6a6a;
+  --text: #ffffff;
+  --text-leise: #c8c8c8;
+  --tief: #0e0e0e;
+  --link: #79b4ff;
+  --warnton: #ff9c86;
+  --coral: #ff6a4d;
+  --gelb: #ffc23d;
+  --gruen: #35d488;
+  /* Eckig: bei hohem Kontrast zaehlt die Kante, nicht die Rundung. */
+  --radius-s: 2px;
+  --radius-m: 2px;
+  --radius-pill: 4px;
+}
+
+body.design-warm {
+  --bg: #1b1410;
+  --panel: #241b16;
+  --panel-hoch: #2e231c;
+  --rand: #43332a;
+  --text: #f3e9e1;
+  --text-leise: #a89282;
+  --tief: #1f1712;
+  --link: #e0a877;
+  --warnton: #ff9a83;
+  --gruen: #78a86a;
+  --blau: #8a9bd4;
+}
+
+body.design-eckig {
+  /* Dieselben Farben wie die Voreinstellung, nur ohne Rundungen. */
+  --radius-s: 2px;
+  --radius-m: 3px;
+  --radius-pill: 4px;
+}
+
+body.design-serif {
+  --font: Georgia, "Times New Roman", serif;
+}
+
+/* ============================================== Uebergaenge (v148, 3b)
+   NUR beim Reiterwechsel per Fingertipp. Der Grund steht in zuReitern():
+   einsetzen() laeuft auch beim Hoehenmessen und bei jedem bau() - waere
+   die Animation an das Einfuegen gebunden, floege das ganze Sheet nach
+   jedem Knopfdruck neu ein. 160ms passt zu den .15s, die es schon gibt. */
+@keyframes reiter-ein {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.buehne.wechsel { animation: reiter-ein .16s ease-out; }
+
+/* ================================ Begruendungstexte ausblenden (v148, 2)
+   Nicht jeder Infotext, sondern nur die Sorte "warum funktioniert das so".
+   Bedienhinweise und Zustandsmeldungen bleiben immer sichtbar - sie tragen
+   die Klasse `stand` ohne `begruendung`. */
+body.ohne-begruendung .stand.begruendung { display: none; }
+
+/* Wer am Geraet weniger Bewegung eingestellt hat, bekommt keine. Das ist
+   keine Geschmacksfrage. */
+@media (prefers-reduced-motion: reduce) {
+  .buehne.wechsel { animation: none; }
+  * { transition: none !important; }
+}

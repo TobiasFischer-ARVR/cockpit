@@ -548,11 +548,26 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v147"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v148"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
 try { einst = JSON.parse(localStorage.getItem(EINST_KEY) || "{}"); } catch (_) {}
+
+// Designs (v148). Erster Eintrag = Voreinstellung, wie bei LOG_STUFEN.
+// Ein Design setzt nur CSS-Variablen; die Liste hier ist die einzige
+// Stelle, die von einem neuen Design wissen muss.
+const DESIGNS = [["", "Dunkel"], ["hell", "Hell"],
+                 ["kontrast", "Hoher Kontrast"], ["warm", "Warm"],
+                 ["eckig", "Dunkel eckig"], ["serif", "Serifen"]];
+
+// Uebergang beim Reiterwechsel. Aus ist die Voreinstellung: erst am Geraet
+// ansehen, dann entscheiden, ob Andrea es bekommt.
+const UEBERGAENGE = [["", "aus"], ["an", "an"]];
+
+// Begruendungstexte ("warum funktioniert das so") ausblenden. Bedienhinweise
+// und Zustandsmeldungen bleiben, die sind nicht gemeint (Tobias, 20.09.).
+const HILFETEXTE = [["", "alle Texte"], ["knapp", "ohne Begründungen"]];
 
 const EINST_GROESSEN = [["0.9", "Klein"], ["", "Normal"],
                         ["1.1", "Groß"], ["1.2", "Sehr groß"]];
@@ -645,7 +660,7 @@ function zuReitern(wrap, merker) {
   wrap.innerHTML = "";               // loest die Knoten nur aus dem DOM,
   wrap.append(...kopf);              // die Referenzen oben bleiben gueltig
   const leiste = el("div", "chips reiter");
-  const buehne = el("div");
+  const buehne = el("div", "buehne");
   const namen = [...gruppen.keys()];
   let aktiv = null;
   const einsetzen = (name) => {
@@ -655,14 +670,23 @@ function zuReitern(wrap, merker) {
     [...leiste.children].forEach((c, i) =>
       c.classList.toggle("aktiv", namen[i] === name));
   };
-  const zeigen = (name) => {
+  // animieren=true kommt AUSSCHLIESSLICH vom Fingertipp auf einen Reiter.
+  // Nicht von einsetzen(): das laeuft auch beim Hoehenmessen (drei Durchgaenge
+  // pro Sheet-Aufbau) und beim ersten zeigen() nach jedem bau(). Waere die
+  // Animation daran gebunden, floege das Sheet nach JEDEM Knopfdruck neu ein.
+  const zeigen = (name, animieren) => {
     einsetzen(name);
+    if (animieren && einst.anim === "an") {
+      buehne.classList.remove("wechsel");
+      void buehne.offsetWidth;        // erzwingt den Neustart der Animation
+      buehne.classList.add("wechsel");
+    }
     einst[merker] = name;
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
   };
   for (const name of namen) {
     const c = el("button", "chip", name);
-    c.onclick = () => zeigen(name);
+    c.onclick = () => zeigen(name, true);
     leiste.append(c);
   }
   wrap.append(leiste, buehne);
@@ -705,6 +729,15 @@ function einstAnwenden() {
   // Android kann es. Upgrade auf rem-Basis nur, falls je ein Zielbrowser
   // ohne zoom dazukommt.
   document.body.style.zoom = einst.groesse || "";
+  // Design und Textumfang als Klassen am body (v148). classList.toggle je
+  // Eintrag statt className=, damit die Klassen sich nicht gegenseitig
+  // ausloeschen - es koennen Design UND "ohne Begruendungen" gelten.
+  for (const [wert] of DESIGNS) {
+    if (wert) {
+      document.body.classList.toggle("design-" + wert, einst.design === wert);
+    }
+  }
+  document.body.classList.toggle("ohne-begruendung", einst.hilfe === "knapp");
 }
 
 function einstZeile(titel, paare, feld) {
@@ -951,6 +984,13 @@ function sheetEinstellungen() {
   const wrap = el("div");
   wrap.append(abschnitt("Darstellung",
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
+    einstZeile("Design", DESIGNS, "design"),
+    einstZeile("Übergang beim Reiterwechsel", UEBERGAENGE, "anim"),
+    einstZeile("Infotexte", HILFETEXTE, "hilfe"),
+    el("div", "stand",
+      "„ohne Begründungen“ blendet die Erklärtexte aus, die nur sagen " +
+      "WARUM etwas so funktioniert. Bedienhinweise und Zustandsmeldungen " +
+      "bleiben stehen."),
     el("div", "stand", "Gilt nur für dieses Gerät.")));
   // Datenstand-Sicherung (Tobias 30.08.): hier statt im OneDrive-Sheet -
   // das Zahnrad ist auch im UGC Dashboard immer erreichbar
@@ -2711,7 +2751,7 @@ function sheetPitch(p) {
     kaZeile.append(kaKnopf);
     frag.append(kaZeile);
     if (!erlaubt) {
-      frag.append(el("div", "stand",
+      frag.append(el("div", "stand begruendung",
         "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
         "entsteht aus der Zusage, nicht aus dem Knopf."));
     }
@@ -4114,7 +4154,7 @@ function kontaktFormular(m, fertig) {
     };
     sz.append(b);
   }
-  wrap.append(sz, sHinweis, el("div", "stand",
+  wrap.append(sz, sHinweis, el("div", "stand begruendung",
     "Geraten aus der Website — gibt es die Seite nicht, kommt eine " +
     "Fehlermeldung der Marke. Prüfen können wir das vorher nicht."));
 
@@ -4155,7 +4195,7 @@ function bereichLoeschen(m) {
     history.back(); // Sheet zu, popstate zeichnet die Liste frisch
   };
   lz.append(lk);
-  frag.append(abschnitt("Verwaltung", lz, el("div", "stand",
+  frag.append(abschnitt("Verwaltung", lz, el("div", "stand begruendung",
     "Nur möglich, weil diese Brand in der App angelegt wurde.")));
   return frag;
 }
