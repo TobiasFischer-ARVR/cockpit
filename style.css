@@ -17,6 +17,12 @@
   /* v148: bis hierher standen diese vier hart im Stylesheet - ein Design
      konnte sie deshalb nicht mitnehmen. */
   --link: #90b3f0;
+  /* v150: die blaue Akzentflaeche stand fuenfmal hart als rgba im
+     Stylesheet (Badge, aktiver Chip, angetippter Ordner) - ein Design
+     konnte sie deshalb nicht mitnehmen. Gleicher Grund wie bei den vier
+     Werten aus v148 direkt darunter. */
+  --akzent-flaeche: rgba(75, 123, 212, .18);
+  --akzent-rand: rgba(75, 123, 212, .5);
   --warnton: #ff9a83;
   --tief: #141c2d;
   /* Ecken als drei Stufen statt acht Einzelwerten. Ein Design, das eckig
@@ -81,8 +87,6 @@ header button:disabled { opacity: .5; }
 
 .stand {
   font-size: 11.5px;
-  line-height: 1.65;   /* v150: 1.45 aus dem body war fuer die langen
-                          Erklaertexte in den Einstellungen zu eng */
   color: var(--text-leise);
   margin-bottom: 14px;
 }
@@ -282,8 +286,8 @@ main {
 }
 
 .badge {
-  background: rgba(75, 123, 212, .18);
-  border: 1px solid rgba(75, 123, 212, .5);
+  background: var(--akzent-flaeche);
+  border: 1px solid var(--akzent-rand);
   color: var(--link);
   border-radius: var(--radius-s);
   padding: 1px 7px;
@@ -338,8 +342,8 @@ main {
   cursor: pointer;
 }
 .chip.aktiv {
-  background: rgba(75, 123, 212, .18);
-  border-color: rgba(75, 123, 212, .5);
+  background: var(--akzent-flaeche);
+  border-color: var(--akzent-rand);
   color: var(--link);
   font-weight: 600;
 }
@@ -533,7 +537,7 @@ main {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ordner:active { background: rgba(75, 123, 212, .18); }
+.ordner:active { background: var(--akzent-flaeche); }
 /* Verknuepfung auf ein fremdes OneDrive: sichtbar, aber nicht begehbar */
 .ordner.gesperrt { color: var(--text-leise); font-style: italic; }
 
@@ -567,7 +571,7 @@ main {
   text-transform: uppercase;
   letter-spacing: .6px;
   color: var(--text-leise);
-  margin: 16px 0 6px;
+  margin: 16px 0 2px;
 }
 .abschnitt:first-of-type { margin-top: 4px; }
 
@@ -576,15 +580,12 @@ main {
    lasen sich vier Bloecke wie eine lange Liste. Nur ZWISCHEN Bloecken,
    nie vor dem ersten: eine Linie direkt unter den Reitern saehe aus
    wie ein Fehler. */
-   v150 (Tobias, 21.09.): 1px trug die Trennung immer noch nicht - im
-   Marken-Sheet lasen sich "Antwort eintragen" und "Naechster Schritt" wie
-   ein Formular, in den Einstellungen sass alles aufeinander. Jetzt dicker
-   UND mit Luft; beides zusammen, weil eine dickere Linie ohne Abstand nur
-   enger wirkt. */
+   v150 kurzzeitig 3px/30px/16px - am Geraet zu wuchtig, von Tobias noch
+   am selben Abend zurueckgenommen. */
 .block + .block {
-  border-top: 3px solid var(--rand);
-  margin-top: 30px;
-  padding-top: 16px;
+  border-top: 1px solid var(--rand);
+  margin-top: 18px;
+  padding-top: 4px;
 }
 
 /* Reiter im Detail-Sheet (v58): drei gleich breite Chips statt einer
@@ -778,20 +779,20 @@ body.design-eckig {
 
 /* "Kupfer" (v150) - hiess bis v149 "Serifen" und war farblich Wort fuer
    Wort die Voreinstellung, nur mit anderer Schrift (Tobias, 21.09.: "das
-   gleiche wie dunkel"). Jetzt eigener warmer Grund mit Kupferakzent.
+   gleiche wie dunkel"). Der erste Versuch gab ihm einen eigenen warmen
+   Grund - zu viel: Tobias will den gewohnten dunklen Grund und NUR die
+   Akzente in Orange. Also bleibt alles bei der Voreinstellung ausser
+   Schrift, Linkfarbe und Akzentflaeche.
+
    Die Ampel bleibt unangetastet: --coral / --gelb / --gruen und das
-   neutrale --blau (.karte.ampel-neutral) tragen Bedeutung und muessen
-   auch auf warmem Grund auseinanderzuhalten sein. */
+   neutrale --blau (.karte.ampel-neutral, .punkt.aktiv) tragen Bedeutung.
+   Orange sitzt deshalb nur dort, wo nichts gemeldet wird - Links, Badges,
+   aktiver Chip, angetippter Ordner. */
 body.design-kupfer {
   --font: Georgia, "Times New Roman", serif;
-  --bg: #17110c;
-  --panel: #221a13;
-  --panel-hoch: #2d2218;
-  --rand: #4a3524;
-  --text: #f5ece2;
-  --text-leise: #b3957a;
-  --tief: #1b150f;
-  --link: #e8944e;
+  --link: #f0913f;
+  --akzent-flaeche: rgba(240, 145, 63, .18);
+  --akzent-rand: rgba(240, 145, 63, .55);
 }
 
 /* ============================================== Uebergaenge (v148, 3b)
