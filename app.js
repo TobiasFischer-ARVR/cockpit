@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v148"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v149"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -578,7 +578,53 @@ function abschnitt(titel, ...inhalt) {
   const d = el("div", "block");
   d.dataset.titel = titel;
   d.append(el("div", "abschnitt", titel), ...inhalt.filter(Boolean));
+  return erklaerungenAnsEnde(d);
+}
+
+// ------------------------------------ Erklaertexte ans Formularende (L1)
+//
+// Tobias, 20.09.: die Begruendungen sollen nicht mehr ZWISCHEN den Feldern
+// stehen, sondern gesammelt am Fuss - als Tabelle "Feld -> Erklaerung".
+// Ausblenden allein reichte nicht: der Schalter machte sie unsichtbar, im
+// Formular standen sie trotzdem noch mittendrin.
+//
+// Ein Erklaertext begruendet, WARUM etwas so ist. Feldbeschriftungen,
+// Bedienhinweise und Zustandsmeldungen bleiben, wo sie sind - beim
+// Durchsortieren aller 80 Infotexte (21.09.) blieben davon genau 14 uebrig.
+function erklaerung(feld, text) {
+  const d = el("div", "stand begruendung", text);
+  d.dataset.feld = feld;
   return d;
+}
+
+// Sammelt alle Erklaertexte eines Blocks ein und haengt sie als
+// Zwei-Spalten-Tabelle hinten an. Benutzt das Tabellenmuster, das es in
+// dieser Datei schon dreimal gibt (div.tabelle > div.zeile > span.leise) -
+// kein neuer Baustein.
+//
+// Dass hier NACHTRAEGLICH umgehaengt wird statt an den 14 Aufrufstellen
+// sauber einzusortieren, ist Absicht: so bleibt jeder Text im Quelltext
+// dort stehen, wo er hingehoert, und liest sich im Zusammenhang. Nur die
+// Anzeige wandert.
+//
+// Nebenwirkung, die wir WOLLEN: Texte, die erst zur Laufzeit entstehen
+// (die Statuszeile von "Daten pruefen" baut sich bei jedem Lauf neu auf),
+// gibt es zu diesem Zeitpunkt noch nicht und bleiben deshalb von allein
+// an Ort und Stelle. Genau dort gehoeren sie auch hin - sie erklaeren ein
+// Ergebnis, kein Feld.
+function erklaerungenAnsEnde(wurzel) {
+  const texte = wurzel.querySelectorAll(".stand.begruendung");
+  if (!texte.length) return wurzel;
+  const tab = el("div", "tabelle erklaerungen");
+  for (const t of texte) {
+    const z = el("div", "zeile");
+    z.append(el("span", "leise", t.dataset.feld || ""),
+             el("span", "", t.textContent));
+    tab.append(z);
+    t.remove();
+  }
+  wurzel.append(tab);
+  return wurzel;
 }
 
 // Welcher Abschnitt in welchen Reiter gehoert (Tobias 03.09. abends,
@@ -919,7 +965,7 @@ function pfadAbschnitt(titel, schluessel, standard, basis, pruefer, hilfe) {
     zeigeStand();
   }
   normal();
-  return abschnitt(titel, koerper, stand, ergebnis, el("div", "stand", hilfe));
+  return abschnitt(titel, koerper, stand, ergebnis, erklaerung(titel, hilfe));
 }
 
 // Der Ordner allein reicht nicht: ohne snapshot.json bleibt das
@@ -991,7 +1037,7 @@ function sheetEinstellungen() {
       "„ohne Begründungen“ blendet die Erklärtexte aus, die nur sagen " +
       "WARUM etwas so funktioniert. Bedienhinweise und Zustandsmeldungen " +
       "bleiben stehen."),
-    el("div", "stand", "Gilt nur für dieses Gerät.")));
+    erklaerung("Darstellung", "Gilt nur für dieses Gerät.")));
   // Datenstand-Sicherung (Tobias 30.08.): hier statt im OneDrive-Sheet -
   // das Zahnrad ist auch im UGC Dashboard immer erreichbar
   const sStatus = el("div", "stand", sicherungsText());
@@ -1013,7 +1059,7 @@ function sheetEinstellungen() {
     // Button in die Settings."* Stand bisher nur in der Sammelmappe fuer
     // Andrea - also an einer Stelle, die sie im Ernstfall nicht offen hat.
     // Hier steht er da, wo der Knopf ist.
-    el("div", "stand",
+    erklaerung("Backup laden",
       "⚠ Grenze: „Backup laden“ stellt nur die Daten der App wieder her — " +
       "NICHT die Word-Dokumente. Wurde zwischenzeitlich z. B. ein Rating " +
       "geändert, steht danach in der App wieder der alte Wert, im " +
@@ -1254,7 +1300,7 @@ function sheetEinstellungen() {
   };
   iZeile.append(iKnopf);
   wrap.append(abschnitt("Aus Brand-Books aktualisieren", iStatus, iZeile,
-    el("div", "stand",
+    erklaerung("Aus Brand-Books aktualisieren",
       "Word hat Vorrang bei Ereignissen und Kerninfos. Marken mit einem " +
       "wartenden Eintrag in der Warteliste werden übersprungen, bis der " +
       "durch ist — dort ist die App weiter als das Word.")));
@@ -1305,7 +1351,7 @@ function sheetEinstellungen() {
   };
   wrap.append(abschnitt("Automatisches Backup",
     el("div", "stand", "Alle wie viel Tage sichern? (0 = aus)"),
-    aFeld, aStand, el("div", "stand",
+    aFeld, aStand, erklaerung("Automatisches Backup",
       "Legt beim Öffnen der App eine datierte Kopie im Sicherungs-Ordner " +
       "an (cockpit-datenstand-JJJJ-MM-TT.json), die du oben mit „Backup " +
       "laden“ zurückholst. Anders als „Jetzt sichern“, das immer " +
@@ -1314,7 +1360,7 @@ function sheetEinstellungen() {
     // das taegliche Backup an ist. Sichtbar, damit ein dauerhaft
     // fehlschlagender Upload nicht still bleibt.
     el("div", "stand", versionsSicherungText()),
-    el("div", "stand",
+    erklaerung("Sicherung je App-Version",
       "Zusätzlich legt die App beim ersten Start jeder neuen Version " +
       "eine Kopie an (cockpit-vor-VERSION-JJJJ-MM-TT.json) — die " +
       "Rückfahrkarte, falls ein Update schiefgeht. Läuft unabhängig " +
@@ -2404,7 +2450,7 @@ function sheetPitch(p) {
       bau();
     };
     z.append(d, ok);
-    frag.append(abschnitt("Startdatum", z, el("div", "stand",
+    frag.append(abschnitt("Startdatum", z, erklaerung("Startdatum",
       "Ab diesem Datum ist der Pitch fällig — erst damit beginnt die " +
       "5/5/10/90-Kadenz.")));
     return frag;
@@ -2751,7 +2797,7 @@ function sheetPitch(p) {
     kaZeile.append(kaKnopf);
     frag.append(kaZeile);
     if (!erlaubt) {
-      frag.append(el("div", "stand begruendung",
+      frag.append(erklaerung("In Kundenaufträge verschieben",
         "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
         "entsteht aus der Zusage, nicht aus dem Knopf."));
     }
@@ -2962,7 +3008,7 @@ function sheetPitch(p) {
       el("div", "stand", "Termin:"), tDatum,
       el("div", "stand", "… oder ab heute in Tagen:"), tPlus,
       tZeile,
-      el("div", "stand",
+      erklaerung("Termin ändern",
         "Gilt einmalig. Der Abstand für die folgenden Termine bleibt, wie " +
         "er ist — und dieser Termin wird als „von Hand gesetzt“ vermerkt, " +
         "damit ihn keine Nachrechnung überschreibt."));
@@ -4154,7 +4200,7 @@ function kontaktFormular(m, fertig) {
     };
     sz.append(b);
   }
-  wrap.append(sz, sHinweis, el("div", "stand begruendung",
+  wrap.append(sz, sHinweis, erklaerung("Seiten der Marke direkt öffnen",
     "Geraten aus der Website — gibt es die Seite nicht, kommt eine " +
     "Fehlermeldung der Marke. Prüfen können wir das vorher nicht."));
 
@@ -4172,10 +4218,11 @@ function kontaktFormular(m, fertig) {
   const ab = el("button", "chip", "Abbrechen");
   ab.onclick = fertig;
   okZ.append(ok, ab);
-  wrap.append(okZ, el("div", "stand",
+  wrap.append(okZ, erklaerung("Kontaktdaten",
     "Landet beim „Brand-Book erstellen“ im Word. Steht das Book schon, " +
     "wird die Änderung dort sofort nachgetragen."));
-  return wrap;
+  // Dieses Formular geht nicht durch abschnitt() - also selbst einsammeln.
+  return erklaerungenAnsEnde(wrap);
 }
 
 // Löschen nur für App-angelegte Brands (erstellt-Marker) - Andreas
@@ -4195,7 +4242,7 @@ function bereichLoeschen(m) {
     history.back(); // Sheet zu, popstate zeichnet die Liste frisch
   };
   lz.append(lk);
-  frag.append(abschnitt("Verwaltung", lz, el("div", "stand begruendung",
+  frag.append(abschnitt("Verwaltung", lz, erklaerung("Brand löschen",
     "Nur möglich, weil diese Brand in der App angelegt wurde.")));
   return frag;
 }
@@ -4373,7 +4420,7 @@ function bereichSonstiges(m, fertig) {
   };
   okZ.append(ok);
   wrap.append(okZ);
-  frag.append(abschnitt("Sonstiges", wrap, el("div", "stand",
+  frag.append(abschnitt("Sonstiges", wrap, erklaerung("Sonstiges",
     "Die Excel-Spalten ohne eigenes Formular. Landet beim nächsten " +
     "„Excel erzeugen“ in der jeweiligen Spalte.")));
   return frag;
@@ -5769,11 +5816,11 @@ function sheetNeueBrand() {
     history.back(); // Sheet zu, popstate zeichnet die Liste frisch
   };
   okZ.append(ok);
-  wrap.append(okZ, el("div", "stand",
+  wrap.append(okZ, erklaerung("Brand anlegen",
     "Landet im Brand Rating. In die Pitchliste kommt die Brand erst " +
     "über „Brand-Book erstellen“ + „Brand-Book befüllt“. Löschen: in " +
     "der Detailansicht der Brand."));
-  sheetOeffnen("Neue Brand", wrap);
+  sheetOeffnen("Neue Brand", erklaerungenAnsEnde(wrap));   // kein abschnitt()
 }
 
 // ------------------------------------ Website-Vorschlag (Andrea 02.09.)

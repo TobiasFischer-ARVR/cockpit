@@ -784,10 +784,41 @@ body.design-serif {
 }
 .buehne.wechsel { animation: reiter-ein .16s ease-out; }
 
-/* ================================ Begruendungstexte ausblenden (v148, 2)
+/* ============================== Erklaertexte am Formularfuss (v149, L1)
    Nicht jeder Infotext, sondern nur die Sorte "warum funktioniert das so".
-   Bedienhinweise und Zustandsmeldungen bleiben immer sichtbar - sie tragen
-   die Klasse `stand` ohne `begruendung`. */
+   Bedienhinweise, Feldbeschriftungen und Zustandsmeldungen bleiben immer
+   sichtbar und an ihrem Platz - sie tragen `stand` ohne `begruendung`.
+
+   erklaerungenAnsEnde() haengt die Erklaerungen als Tabelle "Feld ->
+   Erklaerung" an den Blockfuss. Sie sind dort bewusst leiser gesetzt als
+   der uebrige Text: wer sie sucht, findet sie; wer arbeitet, liest ueber
+   sie hinweg. Genau das war der Grund fuer den Umbau (Tobias, 20.09.) -
+   Ausblenden allein hat die Bloecke nicht aus dem Formular geholt. */
+.erklaerungen {
+  margin-top: 14px;
+  padding-top: 4px;
+  border-top: 1px solid var(--rand);
+}
+.erklaerungen .zeile {
+  align-items: flex-start;
+  color: var(--text-leise);
+  font-size: 11.5px;
+  border-bottom: none;
+  padding: 5px 0;
+}
+/* Der Feldname traegt die Zuordnung - er darf nicht umbrechen, sonst
+   franst die linke Spalte aus und die Tabelle liest sich als Fliesstext. */
+.erklaerungen .leise {
+  flex: 0 0 34%;
+  font-weight: 600;
+}
+
+/* Der Schalter nimmt jetzt den GANZEN Fussblock weg, nicht mehr die drei
+   einzeln markierten Texte: seit v149 sitzen alle Erklaerungen darin. */
+body.ohne-begruendung .erklaerungen { display: none; }
+/* Uebergangsweise stehen lassen: faende sich doch noch ein Erklaertext
+   ausserhalb eines eingesammelten Blocks, bliebe er sonst trotz Schalter
+   sichtbar. */
 body.ohne-begruendung .stand.begruendung { display: none; }
 
 /* Wer am Geraet weniger Bewegung eingestellt hat, bekommt keine. Das ist
