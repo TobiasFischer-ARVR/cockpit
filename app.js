@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v149"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v150"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -559,7 +559,7 @@ try { einst = JSON.parse(localStorage.getItem(EINST_KEY) || "{}"); } catch (_) {
 // Stelle, die von einem neuen Design wissen muss.
 const DESIGNS = [["", "Dunkel"], ["hell", "Hell"],
                  ["kontrast", "Hoher Kontrast"], ["warm", "Warm"],
-                 ["eckig", "Dunkel eckig"], ["serif", "Serifen"]];
+                 ["eckig", "Dunkel eckig"], ["kupfer", "Kupfer"]];
 
 // Uebergang beim Reiterwechsel. Aus ist die Voreinstellung: erst am Geraet
 // ansehen, dann entscheiden, ob Andrea es bekommt.
@@ -766,6 +766,14 @@ if (einst.zu || einst.zuStand !== undefined || einst.intro !== undefined) {
   delete einst.zu;        // Aufklapp-Variante (v56/v57)
   delete einst.zuStand;
   delete einst.intro;     // "Logo beim Start" - Intro gibt es nicht mehr (v64)
+  localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+}
+
+// "Serifen" heisst seit v150 "Kupfer" und hat eigene Farben. Ohne diese
+// Zeile faende ein Geraet mit der alten Einstellung sein Design nicht mehr
+// und saesse wieder auf Dunkel.
+if (einst.design === "serif") {
+  einst.design = "kupfer";
   localStorage.setItem(EINST_KEY, JSON.stringify(einst));
 }
 

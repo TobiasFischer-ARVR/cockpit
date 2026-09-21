@@ -81,6 +81,8 @@ header button:disabled { opacity: .5; }
 
 .stand {
   font-size: 11.5px;
+  line-height: 1.65;   /* v150: 1.45 aus dem body war fuer die langen
+                          Erklaertexte in den Einstellungen zu eng */
   color: var(--text-leise);
   margin-bottom: 14px;
 }
@@ -565,7 +567,7 @@ main {
   text-transform: uppercase;
   letter-spacing: .6px;
   color: var(--text-leise);
-  margin: 16px 0 2px;
+  margin: 16px 0 6px;
 }
 .abschnitt:first-of-type { margin-top: 4px; }
 
@@ -574,10 +576,15 @@ main {
    lasen sich vier Bloecke wie eine lange Liste. Nur ZWISCHEN Bloecken,
    nie vor dem ersten: eine Linie direkt unter den Reitern saehe aus
    wie ein Fehler. */
+   v150 (Tobias, 21.09.): 1px trug die Trennung immer noch nicht - im
+   Marken-Sheet lasen sich "Antwort eintragen" und "Naechster Schritt" wie
+   ein Formular, in den Einstellungen sass alles aufeinander. Jetzt dicker
+   UND mit Luft; beides zusammen, weil eine dickere Linie ohne Abstand nur
+   enger wirkt. */
 .block + .block {
-  border-top: 1px solid var(--rand);
-  margin-top: 18px;
-  padding-top: 4px;
+  border-top: 3px solid var(--rand);
+  margin-top: 30px;
+  padding-top: 16px;
 }
 
 /* Reiter im Detail-Sheet (v58): drei gleich breite Chips statt einer
@@ -769,8 +776,22 @@ body.design-eckig {
   --radius-pill: 4px;
 }
 
-body.design-serif {
+/* "Kupfer" (v150) - hiess bis v149 "Serifen" und war farblich Wort fuer
+   Wort die Voreinstellung, nur mit anderer Schrift (Tobias, 21.09.: "das
+   gleiche wie dunkel"). Jetzt eigener warmer Grund mit Kupferakzent.
+   Die Ampel bleibt unangetastet: --coral / --gelb / --gruen und das
+   neutrale --blau (.karte.ampel-neutral) tragen Bedeutung und muessen
+   auch auf warmem Grund auseinanderzuhalten sein. */
+body.design-kupfer {
   --font: Georgia, "Times New Roman", serif;
+  --bg: #17110c;
+  --panel: #221a13;
+  --panel-hoch: #2d2218;
+  --rand: #4a3524;
+  --text: #f5ece2;
+  --text-leise: #b3957a;
+  --tief: #1b150f;
+  --link: #e8944e;
 }
 
 /* ============================================== Uebergaenge (v148, 3b)
