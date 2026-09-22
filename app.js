@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v151"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v152"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -678,6 +678,8 @@ const REITER = {
   "Nichts offen": "Warteliste",
   "Braucht dich": "Warteliste",
   "Wartet aufs Brand-Book": "Warteliste",
+  // Laufende Uebertragungen, kein Rueckstand (A5-Fix, 22.09.)
+  "Wird gerade übertragen": "Warteliste",
 };
 
 // Fertig gebautes Sheet in Reiter aufteilen. Bewusst HINTERHER statt in
@@ -1094,9 +1096,13 @@ function sheetEinstellungen() {
   // unterwegs ist, ohne auf einen Banner zu warten.
   const wOffen = ((datenstand && datenstand.ausstehend) || []);
   const wDringend = wOffen.filter((e) => e.grund === "braucht-dich").length;
+  // Laufende Uebertragungen zaehlen nicht als Rueckstand (A5-Fix, 22.09.):
+  // sonst stuende bei jedem Klick kurz eine Zahl am Knopf, die nichts
+  // bedeutet.
+  const wRueckstand = wOffen.filter((e) => e.grund !== "laeuft").length;
   const wZeile = el("div", "chips");
   const wKnopf = el("button", "chip",
-    "Warteliste öffnen" + (wOffen.length ? " (" + wOffen.length + ")" : ""));
+    "Warteliste öffnen" + (wRueckstand ? " (" + wRueckstand + ")" : ""));
   wKnopf.onclick = sheetWarteliste;
   wZeile.append(wKnopf);
   wrap.append(abschnitt("Warteliste",
@@ -5426,9 +5432,14 @@ function erledigen(m, s, tage, standard) {
     });
   }
   listeVeraltet = true;
-  datenstandPersistieren();
+  // Reihenfolge ist Absicht (A5-Fix, 22.09.): bookHistorieMelden() legt
+  // SYNCHRON den Nachholauftrag an. Steht er vor dem Persistieren, traegt
+  // schon der erste Schreibvorgang Ereignis UND Auftrag. Andersherum liefe
+  // ein Stand "Ereignis ohne Auftrag" auf die Platte, und stirbt die App
+  // genau dann, ist das Loch wieder offen - nur schmaler.
   // Punkt 4 im Brand-Book sofort mitschreiben (Andrea 02.09.)
   bookHistorieMelden(m, heute, s.aktion);
+  datenstandPersistieren();
 }
 
 // Rücksprung auf Pitch nach einer Absage ODER nach dem Zurückschieben aus
@@ -7029,6 +7040,18 @@ function importBericht(b) {
   if (b.ordnerFehlt.length) {
     text += ` · ⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")}`;
   }
+  // Zuerst die Marken ohne Datei: sie sind die Haelfte, die bisher fehlte,
+  // und die einzige mit Folgen - so eine Marke wird nie wieder importiert
+  // (R3, 22.09.).
+  // `|| []` weil importBericht() auch auf aelteren Berichten laeuft - in
+  // den Pruefstaenden werden sie von Hand gebaut (R3, 22.09.).
+  const bookFehlt = b.bookFehlt || [];
+  if (bookFehlt.length) {
+    text += ` · ⚠ ${bookFehlt.length} Marke(n) mit Book-Haken, aber ohne ` +
+      `Datei: ` + bookFehlt.slice(0, 3).map((x) => x.marke).join(", ") +
+      (bookFehlt.length > 3 ? " …" : "") +
+      (b.fremd.length ? " — umbenannt?" : "");
+  }
   if (b.fremd.length) {
     text += ` · ${b.fremd.length} Datei(en) ohne Marke: ` +
       b.fremd.slice(0, 3).join(", ") + (b.fremd.length > 3 ? " …" : "");
@@ -7050,7 +7073,7 @@ async function importLauf(fortschritt, abbrechen) {
   importLaeuft = true;
   const b = { faellig: 0, gelesen: 0, uebernommen: 0, unveraendert: 0,
               befunde: [], zurueckgestellt: [], probleme: [], fremd: [],
-              ordnerFehlt: [], merker: 0 };
+              ordnerFehlt: [], bookFehlt: [], merker: 0 };
   try {
     const liste = await bookListe();
     b.ordnerFehlt = liste.fehlt;
@@ -7065,7 +7088,22 @@ async function importLauf(fortschritt, abbrechen) {
       if (!map) continue;                       // Ordner nicht gelesen
       const name = `Brand-Book ${m.name}.docx`;
       const datei = map.get(name);
-      if (!datei) continue;                     // kein Book - nicht hier klären
+      if (!datei) {
+        // R3 (22.09.): Bis hierher wurde JEDE Marke ohne passende Datei
+        // still uebersprungen - auch die, die laut Datenstand ein Book
+        // HAT. Wurde die Datei in OneDrive umbenannt, stand danach
+        // dieselbe Tatsache zweimal halb im Bericht: die Marke fehlte
+        // lautlos in der Arbeitsliste, die Datei tauchte unter "ohne
+        // Marke" auf, und niemand verband die beiden. Der Import lief
+        // gruen durch, waehrend die Marke dauerhaft aussen vor blieb.
+        //
+        // Zugeordnet wird NICHT automatisch: eine Datei ohne Marke kann
+        // eine Kopie, ein Entwurf oder eine fremde Umbenennung sein
+        // (Codex, 20.09.). Geraten waere schlimmer als gemeldet.
+        if (m.brandrating && m.brandrating.brandbook)
+          b.bookFehlt.push({ marke: m.name, erwartet: bookOrdner(m) + "/" + name });
+        continue;                               // kein Book - nicht hier klären
+      }
       benutzt.add(bookOrdner(m) + "/" + name);
       if (importFaellig(m, datei)) arbeit.push([m, datei]);
     }
@@ -8559,17 +8597,38 @@ function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
   const daten = { positiv: !!positiv, negativ: !!negativ,
                   bemerkung: bemerkung || "" };
   const k = outboxSchluessel(m, datum, aktion, false, "antwort");
+  // A5-Fix (22.09.): Der Nachholauftrag entsteht HIER - VOR dem ersten
+  // Netzzugriff - und nicht mehr nur im Fehlerzweig. Vorher galt: stirbt
+  // die App zwischen Speichern und Word-PUT, ueberspringt sie den
+  // Fehlerzweig, und es gab kein Ereignis, das den Nachtrag ausloest.
+  // Datenstand und Word liefen dauerhaft auseinander, unbemerkt
+  // (A5/24.6, 9 von 9 Laeufen belegt).
+  //
+  // "laeuft" statt "wartet": outboxAbarbeiten() greift nur "wartet" auf,
+  // waehrend dieser Vorgang schreibt, soll kein zweiter Schreiber auf
+  // dieselbe Zeile los. Beim naechsten App-Start wird daraus "wartet"
+  // (datenstandLaden) - genau das ist der Nachholauftrag nach einem Tod.
+  //
+  // outboxAufnehmen() persistiert selbst. Weil der Aufrufer seine
+  // Aenderung vorher synchron in denselben Datenstand geschrieben hat,
+  // traegt EIN Schreibvorgang beides.
+  const rev = outboxAufnehmen(m, datum, aktion, false, "laeuft",
+                              "antwort", daten);
   bookImFlugKettig(m, async () => {
+    // Erst den eigenen Stand sichern, dann ins Word (A11, 22.09.):
+    // sonst kann die Zeile im Book stehen, waehrend die App nichts davon
+    // weiss. Kostet keinen zusaetzlichen Schreibvorgang.
+    await persistRuhe();
     const s = await bookAntwort(m, datum, positiv, negativ, bemerkung);
     if (s === "ok") {
-      outboxWeg(k);
+      outboxWeg(k, rev);
       banner("Antwort auch in die Antwort-Tabelle im Brand-Book eingetragen.");
       outboxAbarbeiten();        // Book war frei - Rest gleich mitnehmen
     } else if (s === "dublette") {
       // Bewusst gemeldet statt still uebergangen: Andrea soll wissen, dass
       // ihr Klick nichts geschrieben hat - und warum. Der haeufigste gute
       // Ausgang ist, dass sie die Zeile selbst ins Word getippt hat.
-      outboxWeg(k);
+      outboxWeg(k, rev);
       banner("Die Antwort vom " + datum + " stand schon im Brand-Book — " +
         "nicht doppelt eingetragen.");
     } else if (s === "wartet" || s === "nicht-bereit") {
@@ -8586,8 +8645,9 @@ function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
       if (wartelisteZeigen()) return;
       banner("Brand-Book konnte nicht nachgetragen werden — " +
              "die Antwort-Tabelle dort bitte von Hand ergänzen.");
+    } else if (s === "kein-book") {
+      outboxWeg(k, rev);   // kein Book, kein Auftrag (A5-Fix, 22.09.)
     }
-    // "kein-book": die Marke hat gar keins. Normaler Zustand, still.
   });
 }
 
@@ -8710,15 +8770,36 @@ async function bookKerninfos(m) {
 // Laeuft NEBEN dem Speichern (kein await): der Speichern-Knopf soll nicht
 // auf einen Word-Upload warten - genauso wie beim Erledigt-Knopf.
 function bookKerninfosMelden(m) {
+  // A5-Fix (22.09.): Der Nachholauftrag entsteht HIER - VOR dem ersten
+  // Netzzugriff - und nicht mehr nur im Fehlerzweig. Vorher galt: stirbt
+  // die App zwischen Speichern und Word-PUT, ueberspringt sie den
+  // Fehlerzweig, und es gab kein Ereignis, das den Nachtrag ausloest.
+  // Datenstand und Word liefen dauerhaft auseinander, unbemerkt
+  // (A5/24.6, 9 von 9 Laeufen belegt).
+  //
+  // "laeuft" statt "wartet": outboxAbarbeiten() greift nur "wartet" auf,
+  // waehrend dieser Vorgang schreibt, soll kein zweiter Schreiber auf
+  // dieselbe Zeile los. Beim naechsten App-Start wird daraus "wartet"
+  // (datenstandLaden) - genau das ist der Nachholauftrag nach einem Tod.
+  //
+  // outboxAufnehmen() persistiert selbst. Weil der Aufrufer seine
+  // Aenderung vorher synchron in denselben Datenstand geschrieben hat,
+  // traegt EIN Schreibvorgang beides.
+  const k = outboxSchluessel(m, "", KERNINFOS_AKTION, false, "kerninfos");
+  const rev = outboxAufnehmen(m, deDatum(isoInTagen(0)), KERNINFOS_AKTION,
+                              false, "laeuft", "kerninfos");
   bookImFlugKettig(m, async () => {
+    // Erst den eigenen Stand sichern, dann ins Word (A11, 22.09.):
+    // sonst kann die Zeile im Book stehen, waehrend die App nichts davon
+    // weiss. Kostet keinen zusaetzlichen Schreibvorgang.
+    await persistRuhe();
     const s = await bookKerninfos(m);
-    const k = outboxSchluessel(m, "", KERNINFOS_AKTION, false, "kerninfos");
     if (s === "ok") {
-      outboxWeg(k);
+      outboxWeg(k, rev);
       banner("Änderung auch im Brand-Book nachgetragen.");
       outboxAbarbeiten();          // Book war frei - Rest gleich mitnehmen
     } else if (s === "gleich") {
-      outboxWeg(k);                // im Book stand es schon richtig
+      outboxWeg(k, rev);           // im Book stand es schon richtig
     } else if (s === "wartet" || s === "nicht-bereit") {
       // Beide Male gilt: nichts zurueckrollen, der Auftrag wartet. `grund`
       // ist bewusst "wartet" - das ist der Wert, den outboxAbarbeiten()
@@ -8736,8 +8817,9 @@ function bookKerninfosMelden(m) {
       if (wartelisteZeigen()) return;
       banner("Brand-Book konnte nicht nachgetragen werden — " +
              "die Kerninfos dort bitte von Hand ändern.");
+    } else if (s === "kein-book") {
+      outboxWeg(k, rev);   // kein Book, kein Auftrag (A5-Fix, 22.09.)
     }
-    // "kein-book": die Marke hat gar keins. Normaler Zustand, still.
   });
 }
 
@@ -8800,7 +8882,17 @@ function outboxAufnehmen(m, datum, aktion, entfernen, grund, art, daten) {
   // Falle wie bei der Aufraeumregel in v105.
   if (entfernen) {
     const hin = outboxSchluessel(m, datum, aktion, false);
-    if (outbox().some((e) => e.k === hin)) {
+    // "laeuft" wird hier NICHT gestrichen (A5-Fix, 22.09.). Seit der
+    // Schreibauftrag VORHER angelegt wird, steht er auch waehrend eines
+    // ganz normal laufenden Uploads in der Liste - die Paarstreichung
+    // wuerde dann einen Vorgang aufheben, der gerade schreibt. Ergebnis
+    // waere: Zeile im Word, kein Auftrag, niemand raeumt sie weg. Genau
+    // der Schaden, den A5 beschreibt, nur an anderer Stelle.
+    // Stattdessen bleiben beide stehen; die Warteliste haelt die
+    // Reihenfolge (hin wurde zuerst eingereiht), und das Entfernen laeuft
+    // hinter dem Schreiben her.
+    const laeuft = outbox().some((e) => e.k === hin && e.grund === "laeuft");
+    if (!laeuft && outbox().some((e) => e.k === hin)) {
       logZeile("warteliste-aufgehoben", { marke: m.name, aktion, datum,
         warum: "Ruecknahme traf den noch offenen Schreibvorgang" });
       outboxWeg(hin);          // persistiert bereits
@@ -8818,19 +8910,43 @@ function outboxAufnehmen(m, datum, aktion, entfernen, grund, art, daten) {
   // Korrektur von positiv auf negativ blieb die Beschriftung stehen, und
   // die Warteliste zeigte "Antwort positiv", waehrend die Nutzlast laengst
   // negativ war - also genau das Gegenteil des ausstehenden Auftrags.
-  if (da) { da.versuche = (da.versuche || 1) + 1; da.grund = grund;
+  // `rev` zaehlt die FASSUNGEN eines Auftrags, nicht die Versuche
+  // (A5-Fix, 22.09.). Bei Antwort und Kerninfos bleibt der Schluessel
+  // gleich, waehrend sich die Nutzlast aendert: korrigiert Andrea ihre
+  // Antwort, waehrend der erste Upload noch laeuft, wuerde dessen Erfolg
+  // sonst mit outboxWeg(k) den NEUEN Auftrag loeschen - und stirbt die App
+  // vor dessen Upload, ist die Korrektur weg. Wer abschliesst, nennt
+  // deshalb die Fassung, die er bearbeitet hat.
+  //
+  // versuche wird beim Uebergang laeuft -> Fehlergrund NICHT erhoeht: das
+  // ist derselbe Versuch, nur sein Ausgang. Sonst stuende nach einem
+  // einzigen Anlauf "2 Versuche" in der Warteliste.
+  if (da) { if (da.grund !== "laeuft") da.versuche = (da.versuche || 1) + 1;
+            da.rev = (da.rev || 1) + 1; da.grund = grund;
             da.datum = datum; da.aktion = aktion;
             if (daten) da.daten = daten; }
   else outbox().push({ k, marke: m.name, datum, aktion,
                        entfernen: !!entfernen, art, seit: lokalIso(),
-                       versuche: 1, grund, ...(daten ? { daten } : {}) });
+                       versuche: 1, rev: 1, grund,
+                       ...(daten ? { daten } : {}) });
   logZeile("warteliste-auf", { marke: m.name, aktion, datum,
     entfernen: !!entfernen, grund, versuche: (da && da.versuche) || 1 });
   datenstandPersistieren();
+  // Der Aufrufer braucht die Fassung, um sie spaeter abzuschliessen.
+  return da ? da.rev : 1;
 }
 
-function outboxWeg(k) {
+// rev (optional): nur diese Fassung entfernen. Hat Andrea waehrend des
+// Uploads nachgebessert, steht unter demselben Schluessel ein neuerer
+// Auftrag - der bleibt dann stehen und wird regulaer nachgetragen.
+// Ohne rev (Abhaken von Hand) wird entfernt, was da ist.
+function outboxWeg(k, rev) {
   const i = outbox().findIndex((e) => e.k === k);
+  if (i >= 0 && rev !== undefined && (outbox()[i].rev || 1) !== rev) {
+    logZeile("warteliste-behalten", { eintrag: outbox()[i],
+      warum: "neuere Fassung, abgeschlossen wurde rev " + rev });
+    return;
+  }
   if (i >= 0) {
     logZeile("warteliste-ab", { eintrag: outbox()[i] });
     outbox().splice(i, 1);
@@ -8895,7 +9011,10 @@ async function outboxAbarbeiten(still) {
       if (s === "zurueckgenommen") continue;
       if (s === "ok" || s === "dublette" || s === "kein-book" ||
           s === "gleich") {
-        outboxWeg(e.k); fertig++;
+        // e ist ein Schnappschuss von vor der Schleife: hat Andrea
+        // waehrenddessen nachgebessert, steht unter demselben Schluessel
+        // eine neuere Fassung. Die bleibt stehen (A5-Fix, 22.09.).
+        outboxWeg(e.k, e.rev); fertig++;
       } else if (s === "nicht-bereit") {
         // Nicht angemeldet: an diesem Eintrag ist nichts passiert, und am
         // Rest der Schlange wird genauso nichts passieren. Abbrechen statt
@@ -8999,7 +9118,9 @@ function wartelisteZeile(e, abhaken) {
 function sheetWarteliste() {
   const alle = outbox();
   const dringend = alle.filter((e) => e.grund === "braucht-dich");
-  const wartend = alle.filter((e) => e.grund !== "braucht-dich");
+  const laufend = alle.filter((e) => e.grund === "laeuft");
+  const wartend = alle.filter((e) =>
+    e.grund !== "braucht-dich" && e.grund !== "laeuft");
   const wrap = el("div");
 
   if (!alle.length) {
@@ -9015,6 +9136,18 @@ function sheetWarteliste() {
         + "Brand-Book oder die Pitch-Historie-Tabelle darin. Bitte im Word "
         + "von Hand eintragen und hier abhaken."),
       ...dringend.map((e) => wartelisteZeile(e, true))));
+  }
+  // Eigener Abschnitt, nicht unter "Wartet" (A5-Fix, 22.09.): diese
+  // Eintraege sind KEIN Rueckstand, sie werden gerade geschrieben. Unter
+  // der Ueberschrift "Das Brand-Book ist in Word geoeffnet" stuende bei
+  // jedem normalen Klick fuer zwei Netz-Runden eine falsche Erklaerung.
+  if (laufend.length) {
+    wrap.append(abschnitt("Wird gerade übertragen",
+      el("div", "stand",
+        "Diese Einträge sind gerade auf dem Weg ins Brand-Book. Wenn die "
+        + "App dabei geschlossen wird, holt sie es beim nächsten Öffnen "
+        + "automatisch nach."),
+      ...laufend.map((e) => wartelisteZeile(e, false))));
   }
   if (wartend.length) {
     const nachtragen = el("button", "chip", "Jetzt nachtragen");
@@ -9116,10 +9249,31 @@ function bookImFlugKettig(m, tun) {
 // gibt. Laeuft absichtlich NEBEN dem Speichern (kein await): der Erledigt-
 // Knopf soll nicht auf den Word-Upload warten.
 function bookHistorieMelden(m, datum, aktion, entfernen) {
+  // A5-Fix (22.09.): Der Nachholauftrag entsteht HIER - VOR dem ersten
+  // Netzzugriff - und nicht mehr nur im Fehlerzweig. Vorher galt: stirbt
+  // die App zwischen Speichern und Word-PUT, ueberspringt sie den
+  // Fehlerzweig, und es gab kein Ereignis, das den Nachtrag ausloest.
+  // Datenstand und Word liefen dauerhaft auseinander, unbemerkt
+  // (A5/24.6, 9 von 9 Laeufen belegt).
+  //
+  // "laeuft" statt "wartet": outboxAbarbeiten() greift nur "wartet" auf,
+  // waehrend dieser Vorgang schreibt, soll kein zweiter Schreiber auf
+  // dieselbe Zeile los. Beim naechsten App-Start wird daraus "wartet"
+  // (datenstandLaden) - genau das ist der Nachholauftrag nach einem Tod.
+  //
+  // outboxAufnehmen() persistiert selbst. Weil der Aufrufer seine
+  // Aenderung vorher synchron in denselben Datenstand geschrieben hat,
+  // traegt EIN Schreibvorgang beides.
+  const k = outboxSchluessel(m, datum, aktion, entfernen);
+  const rev = outboxAufnehmen(m, datum, aktion, entfernen, "laeuft");
   bookImFlugKettig(m, async () => {
+    // Erst den eigenen Stand sichern, dann ins Word (A11, 22.09.):
+    // sonst kann die Zeile im Book stehen, waehrend die App nichts davon
+    // weiss. Kostet keinen zusaetzlichen Schreibvorgang.
+    await persistRuhe();
     const s = await bookHistorie(m, datum, aktion, entfernen);
     if (s === "ok") {
-      outboxWeg(outboxSchluessel(m, datum, aktion, entfernen));
+      outboxWeg(k, rev);
       banner(entfernen
         ? "„" + aktion + "“ auch im Brand-Book wieder entfernt."
         : "„" + aktion + "“ auch in die Pitch-Historie im Brand-Book eingetragen.");
@@ -9129,7 +9283,7 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
     } else if (s === "dublette") {
       // Bewusst gemeldet statt still uebergangen: der Nutzer soll wissen,
       // dass sein Klick nichts geschrieben hat - und warum.
-      outboxWeg(outboxSchluessel(m, datum, aktion, entfernen));
+      outboxWeg(k, rev);
       banner("„" + aktion + "“ stand am " + datum + " schon im Brand-Book — " +
         "nicht doppelt eingetragen.");
     } else if (s === "wartet" || s === "nicht-bereit") {
@@ -9158,9 +9312,12 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
           "dort bitte von Hand entfernen."
         : "Brand-Book konnte nicht nachgetragen werden — " +
           "die Pitch-Historie dort bitte von Hand ergänzen.");
+    } else if (s === "kein-book") {
+      // Die Marke hat gar kein Book. Weiter still - das ist ein normaler
+      // Zustand, kein Fehler. Der Vorab-Auftrag muss aber weg, sonst
+      // stuende er fuer immer in der Warteliste (A5-Fix, 22.09.).
+      outboxWeg(k, rev);
     }
-    // "kein-book": die Marke hat gar kein Book. Weiter still - das ist
-    // ein normaler Zustand, kein Fehler.
   });
 }
 
@@ -9327,6 +9484,25 @@ function persistKettenLauf(fn) {
 
 function datenstandPersistieren() {
   return persistKettenLauf(datenstandSchreibenEinmal);
+}
+
+// Warten, bis alles bereits Eingereihte durch ist - OHNE selbst zu
+// schreiben (A11, 22.09.). Die Kette laeuft der Reihe nach; wer auf ihr
+// aktuelles Ende wartet, weiss danach, dass jeder vorher angestossene
+// Schreibvorgang fertig ist.
+//
+// Wozu: Die drei Melder legen ihren Nachholauftrag an und schreiben danach
+// ins Word, ohne das lokale Speichern abzuwarten - Absicht, der Klick soll
+// nicht am Upload haengen. Stirbt die App aber NACH dem Word-PUT und VOR
+// dem lokalen Schreibvorgang, steht die Zeile im Word und die App weiss
+// nichts davon (Gegenrichtung zu A5, benannt von GPT am 22.09.).
+//
+// Das Warten sitzt INNERHALB der Schreibkette, nicht vor dem Klick: die
+// Nutzerin bekommt ihre Quittung weiterhin sofort, nur der Word-Upload
+// stellt sich hinten an. Er braucht davor ohnehin zwei Netz-Runden - der
+// lokale Weg schreibt in Millisekunden.
+function persistRuhe() {
+  return persistKette.catch(() => {});
 }
 
 // Backlog 33b (Tobias, 18.09.): *"Ich gehe mal davon aus, dass wenn wir Daten
@@ -9745,6 +9921,16 @@ function datenstandUebernehmen(paar) {
   logZeile("stand-uebernommen", { quelle: paar[1],
     ...logMehr({ soll: paar[0] && paar[0].geaendert, ist: alt }) });
   [datenstand, datenstandQuelle] = paar;
+  // Hier ist der Nachholauftrag nach einem App-Tod (A5-Fix, 22.09.).
+  // "laeuft" heisst: als die App starb, war dieser Schreibvorgang
+  // unterwegs. Niemand schreibt ihn mehr - der Merker im Arbeitsspeicher
+  // ist mit dem Prozess gestorben. Ab jetzt ist er regulaerer Rueckstand
+  // und wird von outboxAbarbeiten() aufgegriffen. Ging der Word-PUT vorher
+  // doch noch durch, findet historieXml() die Zeile und meldet "dublette"
+  // - das gilt als Erfolg, und der Auftrag verschwindet. Deshalb haengt
+  // der ganze Fix an dieser Dublettenerkennung.
+  for (const e of (datenstand && datenstand.ausstehend) || [])
+    if (e.grund === "laeuft") e.grund = "wartet";
   return true;
 }
 
