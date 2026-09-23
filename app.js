@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v156"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v157"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1269,6 +1269,45 @@ function sheetEinstellungen() {
         : "✓ Keine Abweichungen — Book, Brand Rating und Pitchliste sind sich einig."));
       pStatus.append(el("div", "stand", spiegelHinweis()));
       return;
+    }
+    // "Alles nachtragen" (v157, Tobias 23.09.): genau dieselben Reparaturen,
+    // die jede Zeile einzeln anbietet - nur in einem Zug. Anlass war der
+    // Alltag: nach einem Abend mit mehreren Rating-Wechseln stehen etliche
+    // "Ordner nachtragen" untereinander, und jedes einzeln anzutippen ist
+    // Arbeit ohne Entscheidung.
+    //
+    // KEINE zweite Reparaturlogik: der Knopf ruft befundReparatur() wie die
+    // Einzelzeile. Zwei Stellen, die dasselbe reparieren, waeren genau das
+    // Muster, an dem dieses Projekt schon dreimal haengengeblieben ist.
+    //
+    // Die Rueckfrage nennt die Arten mit Anzahl ("3x Ordner nachtragen,
+    // 1x Haken entfernen"), nicht nur eine Summe: "Haken entfernen" nimmt
+    // einer Marke ihren Book-Haken, das soll niemand blind bestaetigen.
+    //
+    // Erst ab ZWEI Reparaturen - bei einer einzigen steht der Knopf schon
+    // in der Zeile, ein zweiter daneben waere Ballast.
+    const reparierbar = fehler.concat(hinweise)
+      .map((f) => befundReparatur(f)).filter(Boolean);
+    if (reparierbar.length > 1) {
+      const zaehl = {};
+      for (const tu of reparierbar) zaehl[tu.text] = (zaehl[tu.text] || 0) + 1;
+      const aufstellung = Object.keys(zaehl)
+        .map((txt) => `${zaehl[txt]}× ${txt}`).join(", ");
+      const aZeile = el("div", "chips");
+      const aKnopf = el("button", "chip aktiv",
+        `✓ Alles nachtragen (${reparierbar.length})`);
+      aKnopf.onclick = async () => {
+        if (!confirm(`${aufstellung}.\n\nAlles auf einmal übernehmen?`)) return;
+        aKnopf.disabled = true;
+        // EINMAL speichern statt je Reparatur: datenstandPersistieren()
+        // schreibt die ganze Datei, und der Weg geht ueber OneDrive.
+        for (const tu of reparierbar) tu.mach();
+        listeVeraltet = true;
+        await datenstandPersistieren();
+        pruefen();      // frisch nachrechnen, wie bei der Einzelzeile
+      };
+      aZeile.append(aKnopf);
+      pStatus.append(aZeile);
     }
     if (fehler.length) {
       pStatus.append(el("div", null, `⚠ ${fehler.length} Abweichung(en):`));
@@ -2429,7 +2468,15 @@ function sheetPitch(p) {
     // Kundenauftrag aus, die uebrigen entscheiden selbst und geben dann
     // nichts oder ein leeres Fragment zurueck.
     const bausteine = {
-      wiedervorlage:  () => abschnitt("Wiedervorlage", tab),
+      // Der Book-Knopf steht seit v157 HIER (Tobias, 23.09.): direkt unter
+      // der Kennzahlen-Tabelle und damit oberhalb von "Nächster Schritt".
+      // Vorher sass er unten im Block "Antwort eintragen" - erreichbar
+      // nur nach dem Scrollen, obwohl er der meistgebrauchte Knopf des
+      // Sheets ist. Er wandert MIT diesem Block, wenn die Reihenfolge
+      // umgestellt wird; ein eigener Block waere eine Einstellung mehr
+      // fuer einen Knopf.
+      wiedervorlage:  () => abschnitt("Wiedervorlage", tab,
+                        bookOeffnenZeile(quelleZuName(p.name), mv)),
       kundenauftrag:  () => bereichKundenauftrag(),
       startdatum:     () => bereichStartdatum(q),
       erledigen:      () => (imAuftrag ? null : bereichErledigen(q)),
@@ -2777,11 +2824,10 @@ function sheetPitch(p) {
       el("div", "stand", "Datum der Antwort (= letzter Kontakt):"), d,
       el("div", "stand", "Bemerkung (optional):"), bem,
       zeile);
-    // 1:1 wiederverwendet, kein neuer Code fuer den Book-Knopf. Er steht
-    // hier, weil die ausfuehrliche Notiz weiter ins Word gehoert - er
-    // ersetzt das Bemerkungsfeld nicht (Tobias, 16.09.).
-    const bz = bookOeffnenZeile(quelleZuName(p.name), m);
-    if (bz) frag.append(bz);
+    // Der Book-Knopf stand hier bis v153 - die ausfuehrliche Notiz gehoert
+    // weiter ins Word, und er ersetzt das Bemerkungsfeld nicht (Tobias,
+    // 16.09.). Seit v157 steht er OBEN unter den Kennzahlen (Tobias,
+    // 23.09.); zweimal im selben Sheet waere er Klutter, nicht Komfort.
 
     return abschnitt("Antwort eintragen", frag);
   }
@@ -8424,11 +8470,31 @@ const ETAG_MUSTER = /^(W\/)?"/;
 // gibt in jedem Fall einen String zurueck. Ein Status wanderte dadurch als
 // If-Match-Header mit, der Server antwortete 412, und der Auftrag wiederholte
 // sich endlos - ohne Knopf, mit dem Andrea ihn haette abhaken koennen.
+// ponytail: Der erste 404 gilt als "wartet", nicht als "Book weg" (24.2,
+// v157). Ein Verschieben (Rating-Wechsel) aendert den Pfad, und ein
+// Schreibauftrag, der schon laeuft, adressiert noch den alten. Graph
+// antwortet dann 404, obwohl die Datei existiert - nur woanders.
+//
+// AM 23.09. BEI ANDREA EINGETRETEN, aus ihren Logfiles rekonstruiert:
+// 12:23:34 Schreiben -> 423 (Word offen), 12:23:37 Wiederholung -> 404,
+// Auftrag auf "braucht-dich". Ursache war der Rating-Wechsel B -> D
+// derselben Marke. Sie hat die Zeile danach von Hand ins Word getippt.
+//
+// bookKerninfosEinmal() hatte diese Toleranz schon (v121); die beiden
+// anderen Schreibwege nicht. Sie gehoert hierher statt dreimal daneben:
+// alle drei holen ihren eTag ueber diese Funktion.
+//
+// Ab dem ZWEITEN Versuch gilt 404 wieder als "Book weg" - sonst wuerde
+// ein wirklich geloeschtes Book ewig im Kreis laufen, statt Andrea zu
+// fragen.
 async function bookETagLesen(m, grund) {
   const meta = await OD.graphRoh(bookPfad(m) + "?$select=eTag");
   logZeile("book-etag", { ...grund, methode: "GET",
     status: meta ? meta.status : 0, code: await logFehlerCode(meta) });
   if (!meta) return "wartet";
+  // Siehe den Block ueber der Funktion: erster 404 = Pfad veraltet, nicht
+  // Book weg. `grund.versuch` zaehlt die Wiederholungen des AUFRUFERS.
+  if (meta.status === 404 && (grund.versuch || 1) <= 1) return "wartet";
   if (!meta.ok) return schreibStatus(meta);
   const j = await meta.json().catch(() => null);
   const etag = j && j.eTag;
