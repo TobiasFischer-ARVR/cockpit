@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v154"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v155"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3849,6 +3849,24 @@ function bestandBefunde(marken) {
           text: `Rating ${r}, in der Pitchliste aber ${p}` +
             (p === "D" ? " — die Marke fehlt dadurch in der Pitchliste" : "") });
       }
+    }
+
+    // --- 2c. Rating im Book: genau EIN Buchstabe aus A-D (E2, 23.09.)
+    // Entscheidung Tobias: gemeldet wird, nie geraten. Ein Book hat genau
+    // ein Rating - aendern ja, zwei nebeneinander nie. Heute im Bestand
+    // 0 Faelle (57x A-D, 61x leer, 0 Fremdwerte); die Pruefung ist
+    // Vorsorge fuer den Tag, an dem doch etwas anderes in der Zelle steht.
+    //
+    // Laeuft VOR dem Archiv-Ausstieg: ein Doppelrating auf einer D-Marke
+    // ist genauso falsch, und gerade bei D schaut sonst niemand mehr hin.
+    // Leer ist KEIN Befund - 61 Books haben schlicht keinen Eintrag.
+    const bookRating = String((m.kerninfos || {})["Rating (A-D)"] || "").trim();
+    if (bookRating && !/^[A-D]$/i.test(bookRating)) {
+      fehler.push({ name: m.name, art: "rating-unklar",
+        text: `Im Brand-Book steht „${bookRating}“ als Rating — ` +
+          "erwartet wird genau ein Buchstabe A, B, C oder D" +
+          (/[\/,;+&]|\s/.test(bookRating)
+            ? ". Sieht nach zwei Ratings in einer Zelle aus" : "") });
     }
 
     if (archiv) continue;
