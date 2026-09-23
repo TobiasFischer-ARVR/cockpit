@@ -376,9 +376,10 @@ function pfadWarnung() {
 // eine NEUE holt die Zeile von selbst zurueck. Dadurch kann sie nicht zur
 // Tapete werden, und es braucht keine Ruecksetz-Logik.
 //
-// Die Meldung nennt nur die Tatsache, keine Handlung (Tobias 14.09.):
-// "bitte am PC einlesen" waere eine Aufforderung an jemanden, der sie
-// nicht ausfuehren kann.
+// Die Meldung nannte bis v153 nur die Tatsache, keine Handlung (Tobias
+// 14.09.): "bitte am PC einlesen" waere eine Aufforderung an jemanden
+// gewesen, der sie nicht ausfuehren kann. Seit v142 KANN Andrea sie
+// ausfuehren - deshalb nennt die Meldung jetzt den Knopf.
 function bookAenderungZeile() {
   const weg = einst.bookHinweisWeg || {};
   const namen = [...bookGeaendert].filter(([n, c]) => weg[n] !== c)
@@ -398,10 +399,11 @@ function bookAenderungZeile() {
   };
   kopf.append(zu);
   k.append(kopf, el("div", "titel", namen.length === 1
-      ? "1 Brand-Book wurde in Word geändert"
-      : `${namen.length} Brand-Books wurden in Word geändert`),
+      ? "1 Brand-Book ist noch nicht gelesen"
+      : `${namen.length} Brand-Books sind noch nicht gelesen`),
     el("div", "kontext",
-      namen.join(", ") + " — der angezeigte Stand kann veraltet sein."));
+      namen.join(", ") + " — „⭳ Aus Brand-Books aktualisieren“ in den " +
+      "Einstellungen holt den Stand."));
   return k;
 }
 
@@ -420,7 +422,13 @@ function bookAenderungZeile() {
 // Unterschied ist nicht Geschmack, sondern die Regel dahinter: Einen
 // Hinweis, dessen Ursache man selbst beseitigen kann, darf man nicht
 // wegwischen koennen. Hier kann Andrea etwas tun (anmelden, Ordner
-// pruefen), beim Word-Hinweis nicht (nur Tobias kann importieren).
+// pruefen).
+//
+// NACHGEZOGEN 23.09. (v154): Hier stand ", beim Word-Hinweis nicht (nur
+// Tobias kann importieren)". Das gilt seit v142 nicht mehr - Andrea hat
+// den Knopf selbst. Der Word-Hinweis bleibt trotzdem wegklickbar: er
+// meldet keinen Fehler, sondern einen Rueckstand, und ein neuer cTag
+// holt ihn ohnehin von selbst zurueck.
 function wolkenWarnung() {
   if (!einst.cloudFehlt) return null;
   const k = el("div", "karte block warnung tippbar");
@@ -548,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v153"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v154"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1246,12 +1254,19 @@ function sheetEinstellungen() {
     if (bestandFehlerDa !== warVorher) listeVeraltet = true;
     if (wordNeu.length) {
       listeVeraltet = true;
-      pStatus.append(el("div", null, "⚠ In Word geändert: "
-        + wordNeu.join(", ") + " — der angezeigte Stand kann veraltet sein."));
+      pStatus.append(el("div", null, "⭳ Noch nicht gelesen: "
+        + wordNeu.join(", ") + " — „Aus Brand-Books aktualisieren“ holt den "
+        + "Stand."));
+    }
+    if (bookOrdnerFehlt.length) {
+      pStatus.append(el("div", null,
+        `⚠ Ordner nicht lesbar: ${bookOrdnerFehlt.join(", ")} — ` +
+        "ueber deren Marken sagt diese Pruefung nichts."));
     }
     if (!fehler.length && !hinweise.length) {
-      pStatus.append(el("div", null,
-        "✓ Keine Abweichungen — Book, Brand Rating und Pitchliste sind sich einig."));
+      pStatus.append(el("div", null, bookOrdnerFehlt.length
+        ? "✓ In den lesbaren Ordnern keine Abweichungen."
+        : "✓ Keine Abweichungen — Book, Brand Rating und Pitchliste sind sich einig."));
       pStatus.append(el("div", "stand", spiegelHinweis()));
       return;
     }
@@ -1302,7 +1317,11 @@ function sheetEinstellungen() {
         iStatus.textContent = `Lese ${wieviel} von ${von}: ${name}`;
       });
       iStatus.textContent = importBericht(b);
-      if (b && (b.uebernommen || b.befunde.length)) {
+      // `!b.fehler` zuerst: ein Fehlerbericht hat gar kein befunde[]
+      // (Review 23.09.). Ohne das warf der Knopf beim Druck ohne
+      // Anmeldung „Cannot read properties of undefined“ statt der
+      // Meldung, die importBericht() schon fertig danebenstehen hatte.
+      if (b && !b.fehler && (b.uebernommen || b.befunde.length)) {
         render();                      // Kacheln und Listen neu zeichnen
         sheetEinstellungen();          // Sheet mit frischem Stand neu aufbauen
       }
@@ -1751,7 +1770,7 @@ function markenKarte(m) {
     el("div", "kontext",
       `Follow-ups: ${m.followups} · Antworten: ${m.antworten} (${m.positiv} positiv) · Nach Erstkontakt: ${m.nach_erstkontakt}`),
     el("div", "fuss", `Quelle: ${m.quelle}.docx`
-      + (bookGeaendert.has(m.name) ? " · ✎ in Word geändert" : "")));
+      + (bookGeaendert.has(m.name) ? " · ⭳ noch nicht gelesen" : "")));
   karte.classList.add("tippbar");
   karte.onclick = () => sheetHistorie(m);
   return karte;
@@ -4468,7 +4487,7 @@ function brKarte(m) {
     el("div", "kontext", (br.status || "—") + (skalen ? " · " + skalen : "")),
     el("div", "fuss",
       (br.brandbook ? "Brand-Book ✓" : "noch kein Brand-Book")
-      + (bookGeaendert.has(m.name) ? " · ✎ in Word geändert" : "")));
+      + (bookGeaendert.has(m.name) ? " · ⭳ noch nicht gelesen" : "")));
   karte.classList.add("tippbar");
   karte.onclick = () => sheetBrandrating(m);
   return karte;
@@ -6029,27 +6048,45 @@ function bookPfad(m) {
   return `${bookBasis()}/${bookOrdner(m)} Brands/Brand-Book ${m.name}.docx`;
 }
 
-// ---------------------------------------- Book-Waechter (v123, Backlog 23)
-// Die Richtung Word -> App gibt es nur ueber den PC-Import. Bis der laeuft,
-// zeigt die App treu den alten Stand - und behauptet ihn. Am 07.09. hat
-// genau das einen Abend gekostet. Hier wird wenigstens SICHTBAR, dass ein
-// Book inzwischen anders aussieht. Kein Parsen, kein zweiter Leser neben
-// ugc_core.py: nur ein Fingerabdruck der Datei.
+// ---------------------------------------- Book-Waechter (v154, Backlog 23)
 //
-// Gemerkt wird der cTag, nicht der eTag. Der eTag zaehlt JEDE Aenderung
-// mit, auch reine Metadaten; der cTag reagiert auf deutlich weniger.
-// Der eTag gehoert zu If-Match beim Schreiben (Backlog 24.1), nicht hierher.
+// EINE Wahrheit, nicht zwei (23.09., Entscheidung mit Codex gegengeprueft).
 //
-// ACHTUNG, am 14.09. an Tobias' echtem OneDrive NACHGEMESSEN und damit
-// eine falsche Annahme aus der Graph-Doku widerlegt: Ein Verschieben
-// aendert den cTag EBENFALLS. Gemessen an einer Wegwerf-Datei, die keine
-// Marke hat (Word zu, App konnte sie nicht anfassen, GUID unveraendert):
-// eTag +3, cTag +1 durch ein blosses Verschieben zwischen zwei Ordnern.
+// Bis v153 gab es zwei Mechanismen fuer dieselbe Frage "hat sich ein Book
+// geaendert?": diesen Waechter mit einem eigenen cTag-Merker im
+// localStorage, und seit v142 den Import-Merker je Marke im Datenstand.
+// Vier gemeldete Fehler (B3, B5, B6, B7) waren allesamt Folgen davon, dass
+// der Waechter eine eigene Vergleichsbasis pflegte, die niemand sonst kannte:
 //
-// Folge: Die Nachfuehrung des Merkers in bookVerschieben() ist NICHT
-// Kosmetik, sondern das, was einen Fehlalarm bei jedem Rating-Wechsel
-// verhindert. Wer sie entfernt, macht den Waechter unbrauchbar.
-// tests/test_v123.js prueft sie deshalb ausdruecklich.
+//   B3  Nach einem PC-Snapshot setzte er die Basis STILL neu - wer in dem
+//       Fenster im Word tippte, wurde nie gemeldet.
+//   B5  Ein eigener PUT zog den Merker nach und loeschte damit den Hinweis
+//       auf eine FREMDE Aenderung mit.
+//   B6  Er mass die DATEI, nicht den Inhalt: das Abendritual (herunterladen,
+//       arbeiten, hochladen) meldete 57 Marken als "in Word geaendert",
+//       waehrend der Import-Probelauf +0/-0 sagte.
+//   B7  Bei einem Befund zog er den Merker absichtlich NICHT nach - der
+//       Hinweis liess sich durch Nachpruefen nie aufloesen.
+//
+// Alle vier verschwinden mit der Basis. Gefragt wird jetzt der Import:
+// `importFaellig()` vergleicht driveId, itemId, cTag UND Leser-Version
+// gegen den Merker, den der Import beim Uebernehmen weitersetzt. Damit
+// gilt:
+//
+//   * kein Snapshot-Reset mehr, also kein blindes Fenster (B3)
+//   * ein eigener PUT beruehrt den Import-Merker nicht (B5)
+//   * ein Import loest den Hinweis auf, auch wenn der Inhalt gleich war -
+//     Nachpruefen wirkt wieder (B7)
+//   * die Aussage ist ehrlich: nach dem Abendritual sind die Books
+//     tatsaechlich ungelesen, nicht "in Word geaendert" (B6)
+//
+// Was der Hinweis kostet: er sagt jetzt "noch nicht gelesen" statt "in Word
+// geaendert". Das ist weniger, als es klingt - der Waechter konnte den
+// Unterschied noch nie kennen, er hat ihn nur behauptet.
+//
+// Gelesen wird ueber bookListe() - dieselbe Funktion, die der Import
+// benutzt: mit Blaetterung, mit Warteschleife bei Drosselung, und mit
+// itemId und driveId statt nur dem Namen. Vier Abrufe fuer 62 Marken.
 let bookGeaendert = new Map();   // Markenname -> aktueller cTag. Nur Anzeige.
 
 // Die Dateiliste des letzten Ordner-Abrufs (v137, Backlog 7).
@@ -6060,6 +6097,11 @@ let bookGeaendert = new Map();   // Markenname -> aktueller cTag. Nur Anzeige.
 // Ordnerbuchstabe -> Map(Dateiname -> cTag).
 // Nur Anzeige, wie bookGeaendert: weder Datenstand noch localStorage.
 let bookDateien = new Map();
+
+// Ordner, deren Listing beim letzten Waechterlauf nicht lesbar war.
+// Nur Anzeige, wie bookDateien: ohne sie meldet "Daten pruefen" Ruhe
+// fuer Marken, ueber die es gar nichts erfahren hat (Review 23.09.).
+let bookOrdnerFehlt = [];
 
 // Die vier Rating-Ordner. Bis v136 lief der Abruf nur ueber die Ordner, die
 // aus den Marken abgeleitet waren - eine verwaiste Datei liegt aber gerade
@@ -6077,64 +6119,18 @@ function bookOrdner(m) {
   return m.bookordner || String(m.brandrating.rating).trim();
 }
 
-// Merker nachziehen, NACHDEM die App selbst geschrieben hat - sonst meldet
-// sie ihren eigenen Schreibvorgang als "in Word geaendert". Graph liefert
-// bei jedem erfolgreichen PUT/PATCH das aktualisierte driveItem zurueck,
-// es braucht also KEINEN zusaetzlichen Abruf. Wichtig: das passiert in
-// derselben await-Kette wie die Auswertung der Antwort, damit das Fenster
-// "geschrieben, aber noch nicht gemerkt" so klein wie moeglich bleibt.
+// ENTFALLEN mit v154: der geraetespezifische cTag-Merker (CTAG_KEY,
+// merkerLies/Setz/Loeschen/Sichern, bookMerkerSetzen). Er war die zweite
+// Vergleichsbasis neben dem Import-Merker und die Ursache von B3, B5, B6
+// und B7. Die Begruendungen von v123 und v130 stehen in der Chronik; sie
+// gelten fuer ein Problem, das es nicht mehr gibt.
 //
-// ponytail: Hat Andrea das Book veraendert, BEVOR die App hineinschrieb,
-// loescht das den Hinweis, ohne dass ihre Aenderung je gemeldet wurde.
-// Fenster ist klein (nur zwischen zwei Pruefungen) und der PC-Import bleibt
-// die eigentliche Wahrheit. Schliessen liesse sich das nur mit einem
-// zweiten Word-Leser - siehe Backlog 23 Stufe 2, Risiko hoch.
-// ---------------------------- Book-Merker: GERAETESPEZIFISCH (v130, 16.09.)
-// Ein cTag gehoert zu EINER Datei in EINEM OneDrive-Ordner. Der Book-Ordner
-// liegt seit v56 bewusst in den Geraete-Einstellungen - im Originalton der
-// Projektdatei: "nicht im Datenstand, sonst wandert der Testpfad ueber ein
-// Backup zu Andrea". Der Merker hing bis v129 trotzdem im GETEILTEN
-// datenstand.json.
-//
-// Am 16.09. an zwei echten Geraeten gemessen:
-//   Andrea: \UGC\App                          -> ihre echten Books
-//   Tobias: \Apps\Cockpit\Testdaten\UGC\App   -> seine Kopien
-// Zwei Dateisaetze, zwei cTag-Saetze, EIN Feld. Wer zuletzt lief, hinterliess
-// seine Merker - das andere Geraet meldete daraufhin JEDES Book als "in Word
-// geaendert". Genau die Sorte Warnung, die nach zwei Wochen ignoriert wird;
-// dieses Projekt hat den Fehler schon zweimal gemacht (4-Sekunden-Banner,
-// "Word ist offen" ohne offenes Word).
-//
-// Der Pfad wird MITGESPEICHERT: wird der Ordner umgestellt, gelten die alten
-// Merker nicht mehr und der naechste Lauf setzt die Basis still neu. Ohne das
-// waere der Umbau nur eine Verlagerung desselben Fehlers.
-const CTAG_KEY = "cockpit-bookctags";
-let bookMerker = { pfad: "", tags: {} };
-try {
-  const roh = JSON.parse(localStorage.getItem(CTAG_KEY) || "{}");
-  if (roh && typeof roh === "object" && roh.tags && typeof roh.tags === "object") {
-    bookMerker = { pfad: String(roh.pfad || ""), tags: roh.tags };
-  }
-} catch (_) { /* kaputter Eintrag = kein Merker = stille Neusetzung */ }
-
-function merkerLies(name) {
-  return bookMerker.pfad === bookBasis() ? (bookMerker.tags[name] || "") : "";
-}
-function merkerSetz(name, wert) {
-  // Pfad gewechselt? Alte Merker gehoeren zu fremden Dateien - weg damit.
-  if (bookMerker.pfad !== bookBasis()) bookMerker = { pfad: bookBasis(), tags: {} };
-  bookMerker.tags[name] = String(wert);
-}
-function merkerLoeschen(name) { delete bookMerker.tags[name]; }
-function merkerSichern() {
-  try { localStorage.setItem(CTAG_KEY, JSON.stringify(bookMerker)); } catch (_) {}
-}
-
-async function bookMerkerSetzen(m, antwort) {
-  if (!antwort || !antwort.ok) return;
-  const item = await antwort.json().catch(() => null);
-  if (item && item.cTag) { merkerSetz(m.name, item.cTag); merkerSichern(); }
-}
+// Was damit ebenfalls weg ist: das Nachziehen nach einem eigenen PUT. Ein
+// eigener Schreibvorgang macht die Datei jetzt "noch nicht gelesen", bis
+// der naechste Import sie geholt hat. Das ist ABSICHT und die sichere
+// Richtung - die App behauptet nie, einen Stand gelesen zu haben, den sie
+// nicht gelesen hat. Preis: nach einem Rating-Wechsel oder einem
+// Historien-Eintrag laedt der naechste Import dieses eine Book neu.
 
 // Vier Ordner-Abrufe (A-D Brands), nicht 104 Einzelabfragen. Muster wie
 // pruefeSicherungen(). NIE ueber ":/content" abfragen: darauf antwortet
@@ -6142,93 +6138,53 @@ async function bookMerkerSetzen(m, antwort) {
 // der Endantwort gehoert dann dem Storage-Blob statt dem driveItem.
 async function bookAenderungenPruefen() {
   if (!datenstand || typeof OD === "undefined" || !OD.konto()) return [];
-  const marken = (datenstand.marken || [])
-    .filter((m) => m.brandrating && m.brandrating.brandbook);
-  // Frueher stand hier ein `if (!marken.length) return []`. Er faellt weg
-  // (v137): ohne Abruf gaebe es auch keine Dateiliste - und eine verwaiste
-  // Datei ist gerade der Fall, in dem KEINE Marke auf sie zeigt.
-
-  // Ein neuer PC-Snapshot heisst: die App ist wieder auf dem Stand der
-  // Books. Dann gilt der aktuelle Dateizustand als bekannt und alte
-  // Markierungen sind erledigt. Ohne das blieben sie stehen, NACHDEM
-  // Tobias eingelesen hat - und ein Hinweis, der nicht mehr weggeht, wird
-  // nicht mehr gelesen. Der Snapshot selbst wird nie zurueckgeschrieben
-  // (siehe kpiNachrechnen), er kann die Merker also nicht selbst pflegen.
-  const basisNeu = !!(snap && snap.erzeugt &&
-    String(snap.erzeugt) !== String(datenstand.bookBasisStand || ""));
-
-  // `gebraucht` zaehlt weiter nur die Ordner, die die Marken brauchen - der
-  // Abschluss-Check unten haengt daran. Gelesen werden aber ALLE vier.
-  const gebraucht = new Set(marken.map(bookOrdner));
-  const staende = new Map();
-  for (const o of BOOK_ORDNER) {
-    const r = await OD.graphRoh(`${bookBasis()}/${o} Brands` +
-      ":/children?$select=name,cTag&$top=400");
-    if (!r || !r.ok) {
-      // Nicht still uebergehen. Ein weggeworfener Graph-Fehlercode hat am
-      // 10.09. einen Abend gekostet - daher gibt es logFehlerCode(). Der
-      // Waechter meldet nach aussen bewusst nichts (lieber schweigen als
-      // raten), aber im Protokoll MUSS stehen, warum ein Ordner fehlt.
-      logZeile("book-pruefen", { ordner: o, methode: "GET",
-        status: r ? r.status : 0, code: await logFehlerCode(r) });
-      continue;
-    }
-    const map = new Map();
-    for (const d of ((await r.json()).value) || [])
-      map.set(String(d.name), String(d.cTag || ""));
-    staende.set(o, map);
+  const liste = await bookListe();
+  // Ein nicht lesbarer Ordner darf nicht spurlos bleiben (Review-Fund
+  // 23.09.): Seine Marken tauchen weder im Waechter noch in "Daten
+  // pruefen" auf - beide melden dann Ruhe, obwohl sie nichts wissen. Der
+  // alte Waechter hat das protokolliert, beim Umbau ist es verlorengegangen.
+  // `bookOrdnerFehlt` traegt es bis in die Anzeige.
+  bookOrdnerFehlt = liste.fehlt || [];
+  for (const o of bookOrdnerFehlt) {
+    logZeile("book-pruefen", { ordner: o, warum: "Listing nicht lesbar" });
   }
-  // Ablegen, BEVOR irgendein return greift: bestandDateiBefunde() lebt davon,
-  // und ein leerer Lauf muss die alte Liste loeschen statt sie stehenzulassen.
-  bookDateien = staende;
-  if (!staende.size) return [];  // gar nichts gelesen -> nichts behaupten
+  // Gar nichts gelesen -> nichts behaupten. Ein leeres Ergebnis wuerde
+  // sonst jeden offenen Hinweis loeschen.
+  if (!liste.ordner.size) return [];
 
-  const geaendert = new Map();
-  let mutiert = false;      // betrifft den Datenstand (bookBasisStand)
-  let merkerNeu = false;    // betrifft die Geraete-Merker (localStorage, v130)
-  for (const m of marken) {
-    const map = staende.get(bookOrdner(m));
+  // Dateiliste fuer bestandDateiBefunde() ("Daten pruefen", Backlog 7).
+  // Sie kam bisher aus dem eigenen Listing des Waechters; jetzt aus
+  // demselben Abruf. Dort wird nur Ordner -> (Dateiname -> cTag)
+  // gebraucht, nicht der ganze Datensatz.
+  const flach = new Map();
+  for (const [o, map] of liste.ordner) {
+    const eintraege = new Map();
+    for (const [name, d] of map) eintraege.set(name, d.cTag || "");
+    flach.set(o, eintraege);
+  }
+  bookDateien = flach;
+
+  const offen = new Map();
+  for (const m of datenstand.marken || []) {
+    if (!(m.brandrating && m.brandrating.brandbook)) continue;
+    const map = liste.ordner.get(bookOrdner(m));
     if (!map) {
       // Ordner diesmal nicht lesbar (Netz, Sperre, Drosselung). Ein schon
-      // erkannter Befund darf dadurch NICHT aus der Anzeige fallen - die
-      // Aenderung besteht ja weiter. Also alten Befund uebernehmen statt
-      // ihn stillschweigend zu vergessen.
+      // erkannter Hinweis darf dadurch NICHT aus der Anzeige fallen - die
+      // Lage besteht ja weiter.
       const alt = bookGeaendert.get(m.name);
-      if (alt) geaendert.set(m.name, alt);
+      if (alt !== undefined) offen.set(m.name, alt);
       continue;
     }
-    const cTag = map.get(`Brand-Book ${m.name}.docx`);
-    if (!cTag) continue;                    // keine Datei -> Backlog 7, nicht hier
-    if (basisNeu || !merkerLies(m.name)) {               // Basis setzen, STILL
-      if (merkerLies(m.name) !== cTag) { merkerSetz(m.name, cTag); merkerNeu = true; }
-      continue;
-    }
-    if (cTag !== merkerLies(m.name)) geaendert.set(m.name, cTag);
+    const datei = map.get(`Brand-Book ${m.name}.docx`);
+    if (!datei) continue;              // keine Datei -> Backlog 7, nicht hier
+    // Der cTag bleibt der WERT: das Wegklicken merkt sich ihn, damit
+    // dieselbe Lage weg bleibt und eine neue Aenderung die Zeile von
+    // selbst zurueckholt (bookAenderungZeile).
+    if (importFaellig(m, datei)) offen.set(m.name, datei.cTag || "");
   }
-  // Der Snapshot gilt erst dann als verarbeitet, wenn WIRKLICH jeder
-  // gebrauchte Ordner gelesen wurde. Sonst waere der Reset verbraucht,
-  // obwohl ein Teil der Marken ihn nie bekommen hat: die behielten dann
-  // dauerhaft ihren Vor-Import-Stand als Vergleichsbasis und meldeten ab
-  // da staendig falsch, waehrend der Rest der App den Import laengst als
-  // geschehen ansieht. Lieber beim naechsten Lauf nochmal versuchen.
-  // Ordnergenau statt ueber die Groesse (v137): seit alle vier Ordner
-  // gelesen werden, ist `staende` eine Obermenge von `gebraucht` - ein
-  // Groessenvergleich waere nie wieder wahr geworden, und bookBasisStand
-  // haette sich nie wieder gesetzt.
-  if (basisNeu && [...gebraucht].every((o) => staende.has(o))) {
-    datenstand.bookBasisStand = String(snap.erzeugt);
-    mutiert = true;
-  }
-  // Auch die REINE Basis muss sofort gespeichert werden. Sonst ist sie beim
-  // naechsten Start weg, der Lauf gilt wieder als "erster" - und eine echte
-  // Word-Aenderung rutscht still durch. Eine verschwiegene Aenderung ist
-  // schlimmer als ein Fehlalarm.
-  // Merker gehen auf DIESES Geraet (v130) - kein Cloud-Schreibvorgang, kein
-  // Ping-Pong mit dem anderen Geraet.
-  if (merkerNeu) merkerSichern();
-  if (mutiert) datenstandPersistieren();
-  bookGeaendert = geaendert;
-  return [...geaendert.keys()];
+  bookGeaendert = offen;
+  return [...offen.keys()];
 }
 
 // Dateien gegen Daten (v137, Backlog 7 + 28).
@@ -6619,21 +6575,28 @@ function bookLesen(xml, parser) {
 
 // ---------------------------------------------------------------- Merker
 //
-// ZWEI GETRENNTE MERKER, und das ist der Kern:
+// EIN MERKER, und das ist seit v154 der Kern:
 //
-//   bookMerker (localStorage, v123/v130)  "diese Änderung war ich selbst"
-//   m.bookImport (Datenstand, NEU)        "so weit habe ich gelesen"
+//   m.bookImport (Datenstand)   "so weit habe ich gelesen"
 //
-// Warum getrennt: Die App lädt beim Schreiben die GANZE Datei herunter -
-// samt einer Änderung, die Andrea gerade im Word gemacht hat. Danach setzt
-// bookMerkerSetzen() den neuen cTag als "eigene Änderung". Wäre das
-// derselbe Merker, gälte ihre Änderung als gesehen, ohne je gelesen worden
-// zu sein. Genau der Fall, den Andreas Alltag täglich erzeugt: sie klebt
-// die Kundenantwort ins Word, die App trägt kurz darauf eine Zeile nach.
+// Bis v153 stand daneben ein zweiter (bookMerker im localStorage, v123/v130)
+// mit der Bedeutung "diese Änderung war ich selbst". Er ist entfallen: vier
+// gemeldete Fehler (B3, B5, B6, B7) waren allesamt Folgen davon, dass zwei
+// Vergleichsbasen dieselbe Frage unterschiedlich beantworteten. Die Anzeige
+// "noch nicht gelesen" leitet der Wächter jetzt aus DIESEM Merker ab.
+//
+// Die Regel, die den zweiten Merker nötig machte, gilt weiter und ist
+// wichtiger denn je: Die App lädt beim Schreiben die GANZE Datei herunter -
+// samt einer Änderung, die Andrea gerade im Word gemacht hat. Würde ein
+// Schreibvorgang den Import-Merker fortschreiben, gälte ihre Änderung als
+// gesehen, ohne je gelesen worden zu sein. Genau der Fall, den Andreas
+// Alltag täglich erzeugt: sie klebt die Kundenantwort ins Word, die App
+// trägt kurz darauf eine Zeile nach.
 //
 // Der Import-Merker wird deshalb AUSSCHLIESSLICH von einer vollständigen,
 // dauerhaft gespeicherten Übernahme fortgeschrieben - nie von einem
-// Schreibvorgang.
+// Schreibvorgang. Seit v154 gibt es keinen zweiten Merker mehr, der diese
+// Regel unterlaufen könnte.
 //
 // driveId gehört dazu: eine Item-ID ist laut Microsoft nur innerhalb eines
 // Drives eindeutig. Ohne sie würde Tobias' Testkopie Andreas Book quittieren.
@@ -7027,10 +6990,25 @@ async function importEinBook(m, datei) {
 function importBericht(b) {
   if (!b) return "Nichts passiert.";
   if (b.fehler) return "✗ " + b.fehler;
+  // "Nichts zu tun" heisst NICHT "nichts zu melden" (Codex-Fund 23.09.,
+   // nachgemessen): Eine Marke mit Book-Haken ohne Datei ist gerade dann
+  // unsichtbar, wenn sonst nichts faellig ist - sie kommt ja nie in die
+  // Arbeitsliste. Genau der Fall, den R3 sichtbar machen sollte. Der
+  // Ruecksprung sparte ihn wieder ein.
   if (!b.faellig) {
-    return "✓ Nichts zu tun — alle Brand-Books sind auf dem Stand der App."
-      + (b.ordnerFehlt.length
-         ? ` ⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")}.` : "");
+    let ruhe = "✓ Nichts zu tun — alle Brand-Books sind auf dem Stand der App.";
+    if (b.ordnerFehlt.length)
+      ruhe += ` ⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")}.`;
+    const ohneDatei = b.bookFehlt || [];
+    if (ohneDatei.length)
+      ruhe += ` ⚠ ${ohneDatei.length} Marke(n) mit Book-Haken, aber ohne ` +
+        "Datei: " + ohneDatei.slice(0, 3).map((x) => x.marke).join(", ") +
+        (ohneDatei.length > 3 ? " …" : "") +
+        (b.fremd.length ? " — umbenannt?" : "");
+    if (b.fremd.length)
+      ruhe += ` · ${b.fremd.length} Datei(en) ohne Marke: ` +
+        b.fremd.slice(0, 3).join(", ") + (b.fremd.length > 3 ? " …" : "");
+    return ruhe;
   }
   const teile = [];
   if (b.uebernommen) teile.push(`${b.uebernommen} übernommen`);
@@ -7179,7 +7157,8 @@ async function importLauf(fortschritt, abbrechen) {
     }
     // ... dann die Merker.
     //
-    // ZWEI Merker, und beide muessen hier weiter (R8, 20.09.):
+    // Der Import-Merker rueckt weiter - und nur er (v154; bis v153 stand
+    // hier ein zweiter, geraetespezifischer daneben):
     //
     //  1. m.bookImport - "dieses Book habe ich in dieser Fassung gelesen".
     //     Steuert, ob das Book beim naechsten Lauf nochmal geholt wird.
@@ -7197,15 +7176,14 @@ async function importLauf(fortschritt, abbrechen) {
     // die Item-ID nachgelesen und gegen das Listing geprueft (Regel 2 oben).
     // Gesetzt wird nur, wenn importMerkerWeiter() das Uebernehmen bestaetigt
     // hat - dieselbe Bedingung, keine zweite daneben.
-    let waechterNeu = false;
     for (const [marke, datei, plan] of merkerAufgaben) {
       if (!importMerkerWeiter(marke, datei, plan, true)) continue;
       b.merker++;
-      merkerSetz(marke.name, datei.cTag || "");
-      bookGeaendert.delete(marke.name);   // ✎ sofort weg, nicht erst beim naechsten Lauf
-      waechterNeu = true;
+      // Hinweis sofort weg, nicht erst beim naechsten Waechterlauf. Seit
+      // v154 ist das die EINZIGE Stelle, die ihn aufloest - der Waechter
+      // leitet ihn aus genau diesem Merker ab.
+      bookGeaendert.delete(marke.name);
     }
-    if (waechterNeu) merkerSichern();
     if (b.merker) await datenstandPersistieren();
     return b;
   } finally {
@@ -7238,8 +7216,16 @@ async function importAutomatisch() {
   const b = await importLauf(null, sheetOffen);
   if (!b || b.fehler) return b;
 
-  // Nur melden, wenn es etwas zu melden gibt.
-  if (b.uebernommen || b.befunde.length) {
+  // Nur melden, wenn es etwas zu melden gibt - aber "etwas" ist mehr als
+  // eine gelungene Uebernahme (Codex-Fund 23.09., nachgemessen). Vorher
+  // schwieg der automatische Lauf bei Lesefehlern, Rueckstellungen,
+  // fehlenden Dateien und unlesbaren Ordnern: aus "Word geaendert" wurde
+  // dauerhaft Stille. Seit v154 haengt der Hinweis an der Marke zwar am
+  // Import-Merker und bleibt stehen, solange nichts gelesen wurde - aber
+  // Andrea saehe nur den Rueckstand, nie den Grund.
+  if (b.uebernommen || b.befunde.length || b.probleme.length ||
+      b.zurueckgestellt.length || (b.bookFehlt || []).length ||
+      b.ordnerFehlt.length) {
     banner(importBericht(b));
     if (!sheetOffen()) { listeVeraltet = false; render(); }
     else listeVeraltet = true;
@@ -8483,7 +8469,6 @@ async function bookHistorieEinmal(m, datum, aktion, entfernen, versuch) {
       status: put ? put.status : 0, code: await logFehlerCode(put),
       ms: Date.now() - t0, ergebnis: schreibStatus(put),
       ...logMehr({ soll: datum + " " + aktion, bytes: xml.length }) });
-    await bookMerkerSetzen(m, put);   // sonst meldet die App sich selbst
     return schreibStatus(put);
   } catch (fehler) {
     logZeile("book-ausnahme", { ...grund, warum: String(fehler),
@@ -8578,7 +8563,6 @@ async function bookAntwortEinmal(m, datum, positiv, negativ, bemerkung, versuch)
       status: put ? put.status : 0, code: await logFehlerCode(put),
       ms: Date.now() - t0, ergebnis: schreibStatus(put),
       ...logMehr({ soll: datum + " " + aktion, bytes: xml.length }) });
-    await bookMerkerSetzen(m, put);   // sonst meldet die App sich selbst
     return schreibStatus(put);
   } catch (fehler) {
     logZeile("book-ausnahme", { ...grund, warum: String(fehler),
@@ -8735,7 +8719,6 @@ async function bookKerninfosEinmal(m, versuch) {
                    handarbeit: erg.handarbeit.join(", "),
                    bytes: erg.xml.length }) });
     const s = schreibStatus(put);
-    await bookMerkerSetzen(m, put);   // sonst meldet die App sich selbst
     // Geschrieben ist geschrieben - aber wenn eine Zelle stehen bleiben
     // musste, ist das Book eben NICHT auf Stand. Dann lieber in die
     // Warteliste unter "Braucht dich", als Erfolg zu melden.
@@ -9394,11 +9377,16 @@ async function bookVerschieben(m, vonOrdner, nachOrdner) {
     body: JSON.stringify({ parentReference: { path: zielPfad } }),
   });
   if (!r) return "offline";
-  // TRAGEND, nicht Kosmetik: Ein Verschieben erhoeht bei OneDrive auch den
-  // cTag (nachgemessen 14.09.). Ohne diese Zeile meldet der Waechter nach
-  // JEDEM Rating-Wechsel "in Word geaendert" - und eine Warnung, die falsch
-  // anschlaegt, wird nach zwei Wochen ignoriert.
-  await bookMerkerSetzen(m, r);
+  // Ein Verschieben erhoeht bei OneDrive auch den cTag (nachgemessen
+  // 14.09.). Bis v153 wurde deshalb hier der Waechter-Merker nachgezogen,
+  // sonst meldete er nach JEDEM Rating-Wechsel "in Word geaendert".
+  //
+  // Seit v154 gibt es diesen Merker nicht mehr: die Marke gilt nach dem
+  // Verschieben als "noch nicht gelesen", bis der naechste Import sie
+  // geholt hat. Das ist bewusst die teurere, aber ehrliche Richtung - die
+  // App behauptet nie, einen Stand gelesen zu haben, den sie nicht kennt.
+  // Preis ist ein Download je Rating-Wechsel. Siehe den Block bei der
+  // entfallenen Merker-Verwaltung.
   return r.ok ? "verschoben" : r.status === 404 ? "nicht gefunden" : "fehler";
 }
 
@@ -9420,7 +9408,6 @@ async function bookErzeugen(m, ersetzen) {
       (ersetzen ? "replace" : "fail"),
     { method: "PUT", body: inhalt,
       headers: { "Content-Type": DOCX_TYP } });
-  await bookMerkerSetzen(m, neu);
   return !neu ? "fehler" : neu.status === 409 ? "existiert"
        : neu.ok ? (gefuellt ? "neu" : "neu-leer") : "fehler";
 }
@@ -9486,9 +9473,8 @@ function bookRueckgaengig(m, lb) {
       delete m.quelle;          // Gegenstueck zu bookErstelltDaten (v127):
                                 // ohne das behauptet die App weiter, es gebe
                                 // eine Datei, die sie gerade geloescht hat
-      merkerLoeschen(m.name);   // sonst meldet der naechste Lauf eine Datei,
-      merkerSichern();          // die der Nutzer selbst gerade entfernt hat
-                                // (v130: Merker liegt jetzt am Geraet)
+      // Der Waechter braucht hier nichts mehr: ohne Datei im Listing
+      // meldet er die Marke gar nicht erst (v154).
     }
     m.brandrating.brandbook = lb.vorher;
     if (lb.pitchNeu) m.pitchliste = null; // Altformat vor v42 (eine Stufe)
