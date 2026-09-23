@@ -548,7 +548,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v152"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v153"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4045,17 +4045,33 @@ function ratingFormular(m, fertig) {
     // die Datei aber nicht, und das Book ist unauffindbar. Genau so ist
     // "Besser im Glas" entstanden (gefunden 06.09.).
     if (gewechselt && br.brandbook) {
+      // Knopf sperren, solange der PATCH laeuft (Review-Fund 23.09.).
+      // Ein zweiter Klick liest `alt = m.bookordner`, BEVOR der erste ihn
+      // nachzieht - am Ende zeigt der gemerkte Ordner auf den alten,
+      // waehrend die Datei im neuen liegt. Das ist der "Besser im
+      // Glas"-Schaden vom 06.09., nur ueber zwei Klicks statt ueber zwei
+      // Felder. Muster wie beim Import-Knopf (app.js:1297).
+      ok.disabled = true;
+      try {
       const alt = m.bookordner || altRating;
-      const erg = await bookVerschieben(m, alt, f.rating);
-      m.bookordner = erg === "verschoben" ? f.rating : alt;
+      // 24.3 (23.09.): Das Ziel VOR dem await festhalten. `f` gehoert dem
+      // noch offenen Formular - die Rating-Chips bleiben waehrend des PATCH
+      // anklickbar. Wer f.rating danach ERNEUT liest, kann die Datei nach B
+      // schieben und sich C merken; ab da zeigt bookPfad() ins Leere.
+      // Dieselbe Fehlerklasse wie v122/v129: geschrieben hier, gelesen dort.
+      // Wache 1g in test_invarianten.js haelt die Stelle fest.
+      const ziel = f.rating;
+      const erg = await bookVerschieben(m, alt, ziel);
+      m.bookordner = erg === "verschoben" ? ziel : alt;
       if (erg === "verschoben")
-        banner(`Book nach „${f.rating} Brands“ verschoben.`);
+        banner(`Book nach „${ziel} Brands“ verschoben.`);
       else if (erg === "nicht gefunden")
         banner(`Book nicht in „${alt} Brands“ gefunden — bitte von Hand ` +
-               `nach „${f.rating} Brands“ schieben.`);
+               `nach „${ziel} Brands“ schieben.`);
       else if (erg !== "gleich")
         banner("Book konnte nicht verschoben werden — es bleibt in " +
                `„${alt} Brands“.`);
+      } finally { ok.disabled = false; }
     }
     listeVeraltet = true;
     datenstandPersistieren();
@@ -8971,6 +8987,25 @@ async function outboxAbarbeiten(still) {
     for (const e of offen) {
       const m = markeZuName(e.marke);
       if (!m) { outboxWeg(e.k); continue; }   // Marke inzwischen geloescht
+      // Die Fassung VOR dem await festhalten (A6-Fix, 23.09.). `e` ist
+      // dasselbe Objekt wie in der Liste - outboxAufnehmen() mutiert den
+      // vorhandenen Eintrag, eine Korrektur waehrend des Uploads erhoeht
+      // also auch e.rev. Wer erst unten `e.rev` liest, vergleicht die
+      // neue Fassung mit sich selbst und loescht genau die Korrektur, die
+      // der rev-Schutz aus v152 bewahren sollte. Gemessen am 23.09.;
+      // test_v153.js haelt den Fall fest.
+      // `|| 1` fuer Auftraege aus einem Datenstand vor v152: ohne rev
+      // wuerde outboxWeg() bedingungslos loeschen, also wieder ungeschuetzt.
+      //
+      // ponytail: `rev` schuetzt gegen MUTATION, nicht gegen
+      // Entfernen-und-Neuanlegen. Wird der Eintrag waehrend des Uploads
+      // ganz gestrichen (Paarstreichung in outboxAufnehmen) und danach
+      // unter demselben Schluessel neu angelegt, faengt er wieder bei
+      // rev 1 an - und der alte Upload raeumt ihn weg. Nicht gebaut,
+      // weil die Abfolge deutlich enger ist als die hier behobene und
+      // im Bestand nie beobachtet wurde. Aufwertung: eine laufende
+      // Nummer je Marke statt je Auftrag.
+      const rev = e.rev || 1;
       // Durch DIESELBE Kette wie ein Klick (v107): lief die Nacharbeit
       // daneben, konnte ein Retry genau dann ins Book schreiben, wenn
       // outboxAufnehmen() das Paar gerade strich - Zeile im Word,
@@ -9013,15 +9048,23 @@ async function outboxAbarbeiten(still) {
           s === "gleich") {
         // e ist ein Schnappschuss von vor der Schleife: hat Andrea
         // waehrenddessen nachgebessert, steht unter demselben Schluessel
-        // eine neuere Fassung. Die bleibt stehen (A5-Fix, 22.09.).
-        outboxWeg(e.k, e.rev); fertig++;
+        // eine neuere Fassung. Die bleibt stehen (A5-Fix, 22.09.) - dafuer
+        // muss `rev` von OBEN kommen, nicht aus e (A6-Fix, 23.09.).
+        outboxWeg(e.k, rev); fertig++;
       } else if (s === "nicht-bereit") {
         // Nicht angemeldet: an diesem Eintrag ist nichts passiert, und am
         // Rest der Schlange wird genauso nichts passieren. Abbrechen statt
         // durchlaufen - und `grund` BLEIBT "wartet", sonst holt der
         // naechste Lauf den Eintrag nie wieder (Filter oben).
         break;
-      } else {
+      } else if ((e.rev || 1) === rev) {
+        // Nur die Fassung abstempeln, die dieser Versuch auch bearbeitet
+        // hat (Review-Fund 23.09., derselbe Bau wie A6 - nur ueber `grund`
+        // statt ueber `rev`). Kam waehrend des Uploads eine Korrektur
+        // herein, steht dort wieder "wartet"; ein spaetes "braucht-dich"
+        // des ALTEN Versuchs haette sie aus dem Filter von
+        // outboxAbarbeiten() gekippt - die Korrektur waere nie wieder von
+        // selbst nachgetragen worden, ohne jede Meldung.
         e.versuche = (e.versuche || 1) + 1;
         e.grund = s;                          // ggf. jetzt "braucht-dich"
         datenstandPersistieren();
