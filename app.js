@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v155"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v156"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2913,8 +2913,31 @@ function sheetPitch(p) {
       const h = herkunft ? herkunft.value.trim() : "";
       return h ? `${s.aktion} — ${h}` : s.aktion;
     };
+    // Ohne Startdatum wird NICHT abgehakt (v156, Tobias 23.09.).
+    //
+    // v119 hat hier nur gewarnt und durchgelassen, mit der Begruendung:
+    // Ausblenden wuerde Andrea zwingen, vor einem Pitch am selben Tag erst
+    // ein Startdatum "heute" zu setzen - ein Pflichtklick ohne Nutzen.
+    //
+    // Tobias hat das am 23.09. anders entschieden, nachdem Andrea gesagt
+    // hat, dass sie durchaus am Tag des Startdatums pitcht: dann setzt sie
+    // eben das Startdatum auf heute, und der Knopf geht auf. Ein Klick mehr
+    // im seltenen Fall ist billiger als ein versehentlicher Pitch, der als
+    // "versendet" in den Daten UND im Word-Book steht, ohne dass je eine
+    // Mail rausging.
+    //
+    // GESPERRT STATT VERSTECKT: der Knopf bleibt sichtbar und sagt, was
+    // fehlt. Ein verschwundener Knopf wirft die Frage auf, ob die App
+    // kaputt ist. Der Abschnitt "Startdatum" steht im selben Sheet -
+    // bereichStartdatum() zeigt ihn genau dann, wenn es noch keinen
+    // letzten Kontakt gibt, also in genau diesem Fall.
+    //
+    // Gemessen am 23.09.: 0 von 57 Pitchlisten-Marken betroffen. Die
+    // Sperre ist Vorsorge, sie nimmt heute niemandem etwas weg.
+    const ohneStart = !q.datum_naechste_aktion && !q.letzter_kontakt;
     const zeile = el("div", "chips");
     const ok = el("button", "chip aktiv", `✓ ${s.aktion} erledigt`);
+    ok.disabled = ohneStart;
     ok.onclick = () => {
       if (herkunft && herkunftUnzulaessig(herkunft.value)) {
         banner("Das Wort „Follow“ darf nicht in die Herkunft — der Eintrag " +
@@ -2922,23 +2945,10 @@ function sheetPitch(p) {
         return;
       }
       const text = aktionText();
-      // Warnung bei fehlendem Startdatum (v119, Tobias 12.09.): Kommt eine
-      // Brand frisch aus dem Brand Rating, steht sie OHNE Termin in der
-      // Pitchliste - der Erledigt-Knopf ist trotzdem schon sichtbar.
-      // Die Daten bleiben stimmig (der Pitch wird auf HEUTE datiert, was
-      // richtig ist, wenn die Mail heute rausging). Der Schaden bei einem
-      // Fehlklick ist eine VERFRUEHTE WAHRHEIT: "Pitch am ... versendet"
-      // steht dann in den Daten UND im Word-Book, ohne dass eine Mail
-      // rausging. Deshalb hier nennen statt den Knopf auszublenden -
-      // Ausblenden haette Andrea gezwungen, vor einem Pitch am selben Tag
-      // erst ein Startdatum "heute" zu setzen (Pflichtklick ohne Nutzen).
-      const ohneStart = !q.datum_naechste_aktion && !q.letzter_kontakt;
-      if (!confirm((ohneStart
-            ? "Für diese Brand ist noch KEIN Startdatum gesetzt.\n" +
-              `„${text}“ wird auf HEUTE (${deDatum(isoInTagen(0))}) datiert ` +
-              "und auch so ins Brand-Book geschrieben.\n\n"
-            : "") +
-          `${text} als erledigt eintragen?\n` +
+      // Die v119-Warnung „kein Startdatum gesetzt“ stand hier und liess den
+      // Klick durch. Sie ist mit v156 entfallen: der Knopf ist in dem Fall
+      // gesperrt, der Zweig waere tot. Begruendung oben beim Knopf.
+      if (!confirm(`${text} als erledigt eintragen?\n` +
           `Nächster Schritt: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`)) return;
       // s bleibt unangetastet - nur die Aktions-Beschriftung wird ersetzt.
       // typ/status/naechste/zaehlt kommen weiter aus naechsterSchritt(),
@@ -2956,6 +2966,12 @@ function sheetPitch(p) {
           "eintragen“ mit „negativ“ für denselben Tag."));
     } else {
       zeile.append(ok);
+      if (ohneStart) {
+        frag.append(el("div", "stand",
+          "Zum Abhaken fehlt das Startdatum — es steht weiter oben in diesem " +
+          "Fenster. Auch HEUTE ist erlaubt: einmal setzen, dann lässt sich " +
+          "der Pitch sofort abhaken."));
+      }
     }
 
     // Zweiter Knopf DIREKT darunter (v113): Termin und naechsten Schritt
