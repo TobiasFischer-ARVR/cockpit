@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v160"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v161"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2443,6 +2443,16 @@ function sheetPitch(p) {
   sheetOeffnen(p.name, wrap, stift);
 
   function bau() {
+    // Bildlaufposition merken (Tobias, 24.09.). Jedes bau() leert den
+    // Inhalt und baut ihn neu - .sheet-inhalt faellt dabei auf null zurueck,
+    // und wer unten am Erledigt-Knopf stand, sitzt wieder ganz oben. Bei
+    // einem Formular ist der Sprung nach oben richtig: da steht das Feld,
+    // das ausgefuellt werden soll.
+    // Beim ERSTEN Aufruf haengt wrap noch gar nicht im Sheet (sheetOeffnen
+    // kommt danach) - closest() liefert dann null, und es gibt nichts
+    // wiederherzustellen.
+    const box = wrap.closest(".sheet-inhalt");
+    const stand = box ? box.scrollTop : 0;
     wrap.innerHTML = "";
     const formular = formularAnsicht(z, mv);
     if (formular) { wrap.append(formular); return; }
@@ -2529,6 +2539,9 @@ function sheetPitch(p) {
 
     if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
     zuReitern(wrap, "reiterPitch");
+    // NACH zuReitern: das haengt die Knoten noch einmal um, und vorher
+    // gesetztes scrollTop waere danach wieder weg.
+    if (box && stand) box.scrollTop = stand;
   }
 
   // Startdatum (Andreas Workflow Schritt 7): frisch aus dem Brand Rating
@@ -2982,7 +2995,19 @@ function sheetPitch(p) {
     // (Freitext + Datum). Zwei Bedienungen fuer dieselbe Sache waeren
     // Unsinn, dieselbe Ueberlegung wie bei pfadAbschnitt().
     const eigen = s.typ === "EigenerSchritt";
+    //
+    // KEIN bau() beim Antippen (Tobias, 24.09.): der zeichnet das ganze
+    // Sheet neu, und die Anzeige springt dabei an den Anfang zurueck - man
+    // muss erst wieder zum Erledigt-Knopf hinunterrollen. Eine Auswahl ist
+    // keine Datenaenderung; geaendert wird nur, was sie sichtbar macht:
+    // die drei Chips, der gesperrte Knopf und die "Danach:"-Zeile.
+    //
+    // `ok` und `dText` stehen weiter unten in dieser Funktion. Das ist
+    // erlaubt: der Klick faellt lange nach dem Aufbau, die Bindungen sind
+    // dann besetzt. Ein Zugriff WAEHREND des Aufbaus waere ein Fehler -
+    // den gibt es hier nicht.
     const wahlZeile = el("div", "chips");
+    const wahlKnoepfe = [];
     if (eigen && !gestoppt) {
       for (const [beschriftung, wert] of [["Pitch", "Neuer Pitch"],
                                           ["Follow-up", "Follow up"],
@@ -2990,7 +3015,15 @@ function sheetPitch(p) {
                                            "eigener-schritt"]]) {
         const k = el("button",
           z.wahlDanach === wert ? "chip aktiv" : "chip", beschriftung);
-        k.onclick = () => { z.wahlDanach = wert; bau(); };
+        k.onclick = () => {
+          z.wahlDanach = wert;
+          for (const [kn, w] of wahlKnoepfe) {
+            kn.className = w === wert ? "chip aktiv" : "chip";
+          }
+          ok.disabled = ohneStart;
+          dText();
+        };
+        wahlKnoepfe.push([k, wert]);
         wahlZeile.append(k);
       }
     }
