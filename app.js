@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v164"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v165"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1228,10 +1228,14 @@ function sheetEinstellungen() {
   // "Excel" stand hier bis v163 als Vergleichspartner. Sie ist seit dem
   // 17.09. obsolet (Tobias) - der Satz hat Andrea einen Partner genannt,
   // den es nicht mehr gibt.
+  // "Brand-Book gegen App" taugt NICHT als Unterscheidung (Tobias,
+  // 24.09.): das Brand-Book ist in der App ja auch zu sehen, und
+  // "Brand-Book" heisst dort ausserdem ein Knopf. Die zwei Seiten sind
+  // das Word-DOKUMENT und der EIGENE Eintrag - so heissen sie jetzt auch.
   const pStatus = el("div", "stand",
-    "Vergleicht Rating, Brand Fit, Begeisterung und Erfolgschance " +
-    "zwischen Brand-Book und App — und die Brand-Books gegen die " +
-    "Ordner, in denen sie liegen.");
+    "Vergleicht Rating, Brand Fit, Begeisterung und Erfolgschance: " +
+    "was im Word-Dokument steht gegen das, was du in der App eingetragen " +
+    "hast. Dazu: liegt jedes Dokument im Ordner seines Ratings?");
   const pZeile = el("div", "chips");
   const pKnopf = el("button", "chip", "🔍 Daten prüfen");
   let bestandNachholen = false;
@@ -1369,10 +1373,14 @@ function sheetEinstellungen() {
     erklaerung("Daten prüfen",
       "Öffnet KEINE Word-Datei. Die Prüfung holt nur das Verzeichnis der "
       + "vier Ordner — Dateinamen und je eine Änderungs-Kennung — und "
-      + "vergleicht danach zwei Dinge, die schon im Gerät liegen: den "
-      + "Abzug aus dem letzten Einlesen und den Stand der App. Hat sich "
-      + "eine Datei seither geändert, meldet sie „⭳ noch nicht gelesen“; "
-      + "WAS darin steht, weiß sie erst nach dem Einlesen.")));
+      + "vergleicht danach zwei Werte, die beide schon im Gerät liegen: "
+      + "den Wert aus dem Word-Dokument, so wie er beim letzten Einlesen "
+      + "dort stand, gegen den Wert, den du selbst über „✎ Rating“ "
+      + "gesetzt hast. Beide sind in der App zu sehen — verglichen wird "
+      + "also nicht App gegen Word, sondern dein Eintrag gegen den "
+      + "Dokument-Eintrag. Hat sich eine Datei seither geändert, meldet "
+      + "die Prüfung „⭳ noch nicht gelesen“; WAS darin steht, weiß sie "
+      + "erst nach dem Einlesen.")));
 
   // ------------------------------------------------ S5b: Books einlesen
   //
@@ -4214,10 +4222,10 @@ function spiegelHinweis() {
   // sie gibt. Solange die beiden Zaehlungen auseinanderlaufen koennen, ist
   // die blosse Anzahl ehrlicher als ein Bruch, der Unsinn ergeben kann.
   const wann = neuste || (datenstand && datenstand.importiert) || "";
-  return "Verglichen wird nicht die Word-Datei, sondern ihr Abzug aus dem "
-    + "letzten Einlesen"
+  return "Der Wert aus dem Word-Dokument ist nicht die Datei selbst, "
+    + "sondern ihr Abzug aus dem letzten Einlesen"
     + (wann ? " vom " + String(wann).replace("T", " ").slice(0, 16) : "")
-    + (mit ? " (" + mit + " Brand-Books gelesen)" : "")
+    + (mit ? " (" + mit + " Word-Dokumente gelesen)" : "")
     + ". Was direkt im Word geändert wird, erscheint hier erst nach "
     + "„⭳ Aus Brand-Books aktualisieren“.";
 }
