@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v157"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v158"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -652,7 +652,10 @@ const REITER = {
   "Verlauf des Auftrags": "Historie",
   "Nächster Schritt": "Aktion",
   "Brand Rating (Excel-Blatt)": "Rating",
-  "Verwaltung": "Rating",
+  // Eigener Reiter seit v158 (Tobias, 24.09.): in der Pitchliste ist
+  // "Verwaltung" der EINZIGE Abschnitt seines Reiters - der hiess dann
+  // "Rating", enthielt aber nur "Brand loeschen".
+  "Verwaltung": "Verwaltung",
   "Kontakt & Infos": "Kontakt",
   "Historie": "Historie",
   // Eigener, vierter Reiter (v83) - die Excel-Spalten ohne eigenes
@@ -667,6 +670,10 @@ const REITER = {
   // v105: der Sicherungs-Ordner wohnt beim Sichern, nicht bei den anderen
   // Pfaden - dort sucht man ihn, wenn eine Sicherung fehlt.
   "Pfad Sicherungen": "Sicherung",
+  // Die beiden Excel-Ordner stehen beim Erzeugen, nicht bei den anderen
+  // Pfaden - dieselbe Ueberlegung wie bei "Pfad Sicherungen" (v158).
+  "Pfad Excel-Vorlage": "Sicherung",
+  "Pfad Excel-Export": "Sicherung",
   // Die Pruefung vergleicht Book gegen Excel, also Daten gegen Daten -
   // sie gehoert zu den Pfaden, nicht zur Sicherung (v92).
   "Daten prüfen": "OneDrive",
@@ -1405,6 +1412,23 @@ function sheetEinstellungen() {
     "wandern in den OneDrive-Papierkorb. Angefasst wird dabei nur, was " +
     "die App selbst geschrieben hat. Der Ordner muss existieren — die " +
     "App legt ihn nicht an. Gilt nur für dieses Gerät."));
+
+  // Excel-Ordner (v158, Tobias 24.09.: "Da braeuchte man auch eine manuelle
+  // Auswahl wie bei Datenbank und Brand Books"). Vierter und fuenfter Aufruf
+  // derselben Funktion.
+  wrap.append(pfadAbschnitt("Pfad Excel-Vorlage",
+    "vorlagePfad", EXCEL_BASIS_STD.Vorlage,
+    () => excelNachbar("Vorlage"), () => pruefeExcelOrdner("Vorlage"),
+    "Hier liegt die .xlsm-Vorlage, aus der „Excel erzeugen“ die "
+    + "Datei baut. „Standard“ nimmt wieder den Nachbarordner des "
+    + "Datenbank-Ordners. Gilt nur für dieses Gerät."));
+  wrap.append(pfadAbschnitt("Pfad Excel-Export",
+    "exportPfad", EXCEL_BASIS_STD.Export,
+    () => excelNachbar("Export"), () => pruefeExcelOrdner("Export"),
+    "Hier landet die fertige Excel. Der Ordner muss existieren — die "
+    + "App legt ihn nicht an. „Standard“ nimmt wieder den "
+    + "Nachbarordner des Datenbank-Ordners. Gilt nur für dieses "
+    + "Gerät."));
 
   // Automatisches Backup (Tobias 01.09.): datierte Kopie nach OneDrive
   const aStand = el("div", "stand", autoBackupText());
@@ -2476,7 +2500,7 @@ function sheetPitch(p) {
       // umgestellt wird; ein eigener Block waere eine Einstellung mehr
       // fuer einen Knopf.
       wiedervorlage:  () => abschnitt("Wiedervorlage", tab,
-                        bookOeffnenZeile(quelleZuName(p.name), mv)),
+                        bookOeffnenZeile(bookName(quelleZuName(p.name), mv), mv)),
       kundenauftrag:  () => bereichKundenauftrag(),
       startdatum:     () => bereichStartdatum(q),
       erledigen:      () => (imAuftrag ? null : bereichErledigen(q)),
@@ -2530,7 +2554,15 @@ function sheetPitch(p) {
       bau();
     };
     z.append(d, ok);
-    frag.append(abschnitt("Startdatum", z, erklaerung("Startdatum",
+    // Erledigt-Zeichen (Tobias, 24.09.): der Knopf sagt "ändern", das Datum
+    // steht in der Tabelle — aber nichts sagte "du hast das gesetzt".
+    // Bewusst als Zeile IM Abschnitt, nicht im Titel: REITER schluesselt
+    // ueber den Abschnittstitel, ein Haken darin machte einen eigenen Reiter.
+    const fertig = q.datum_naechste_aktion
+      ? el("div", "stand", "✓ Startdatum steht: " +
+           deDatum(q.datum_naechste_aktion))
+      : el("div", "stand", "Noch kein Startdatum — die Kadenz läuft nicht.");
+    frag.append(abschnitt("Startdatum", fertig, z, erklaerung("Startdatum",
       "Ab diesem Datum ist der Pitch fällig — erst damit beginnt die " +
       "5/5/10/90-Kadenz.")));
     return frag;
@@ -7736,8 +7768,38 @@ function xlsxSortiertPitch(marken) {
 // keine zweite Einstellung: wer den Datenbank-Ordner richtig gesetzt hat,
 // trifft auch die anderen beiden. Graph legt fehlende Ordner beim PUT
 // NICHT an - fehlt "Export", meldet die App das als Fehler.
+// Standardmaessig die NACHBARN des Datenbank-Ordners - bei Tobias stimmt
+// das, bei Andrea nicht (Tobias, 24.09.: "den Pfad gibt es bei Andrea
+// nicht"). Deshalb seit v158 einzeln waehlbar, mit derselben Bedienung wie
+// die drei anderen Pfade. Leerer Eintrag = weiter der Nachbar, damit ein
+// Geraet ohne Einstellung sich verhaelt wie bisher.
+const EXCEL_PFAD_KEY = { Export: "exportPfad", Vorlage: "vorlagePfad" };
+const EXCEL_BASIS_STD = { Export: "/UGC/App/Export",
+                          Vorlage: "/UGC/App/Vorlage" };
+
 function excelNachbar(unter) {
+  const roh = String(einst[EXCEL_PFAD_KEY[unter]] || "").trim()
+    .replace(/^\/+|\/+$/g, "");
+  if (roh) return "/me/drive/root:/" + roh;
   return datenBasis().replace(/\/[^/]+$/, "") + "/" + unter;
+}
+
+// Ordner erreichbar? Bei der Vorlage reicht das nicht - ohne .xlsm darin
+// scheitert "Excel erzeugen" trotz gruenem Ordner (Lehre aus pruefeCockpit).
+async function pruefeExcelOrdner(unter) {
+  const r = await OD.graphRoh(excelNachbar(unter) + ":/children?$select=name");
+  if (!r) return "✗ Kein Zugriff aufs Konto — ab- und neu anmelden.";
+  if (!r.ok) return graphFehlerText(r.status,
+    "✗ Ordner nicht gefunden — hier wird NICHTS abgelegt.");
+  const namen = (((await r.json()).value) || []).map((x) => String(x.name));
+  if (unter === "Vorlage") {
+    const v = namen.filter((x) => /\.xls[xm]$/i.test(x));
+    return v.length
+      ? "✓ Ordner erreichbar · Vorlage da (" + v[0] + ")"
+      : "✓ Ordner erreichbar · ⚠ keine .xlsm darin — "
+        + "„Excel erzeugen“ scheitert";
+  }
+  return "✓ Ordner erreichbar · " + namen.length + " Datei(en) darin";
 }
 
 // "Brand-Uebersicht Update Template.xlsm" + "2026-09-06"
