@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v161"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v162"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -765,6 +765,20 @@ function zuReitern(wrap, merker) {
   // Sheet-Aufbau). Zwischenspeichern erst, falls das je auffaellt.
   const messen = () => {
     if (!wrap.isConnected) { requestAnimationFrame(messen); return; }
+    // Bildlaufposition ueber die Messung retten (v162, Tobias 24.09.).
+    //
+    // Das Messen setzt JEDEN Reiter einmal ein. Dabei schrumpft der Inhalt
+    // kurz auf die Hoehe des kleinsten - und der Browser klemmt scrollTop
+    // still auf einen Wert, der noch hineinpasst, meist 0. Wer unten am
+    // Erledigt-Knopf stand, sitzt danach oben.
+    //
+    // v161 hat das in bau() zu retten versucht und lief ins Leere: messen()
+    // haengt an requestAnimationFrame und laeuft damit NACH jeder
+    // synchronen Zeile in bau(). Die Rettung muss hier stehen, wo der
+    // Schaden entsteht - und hier gilt sie fuer alle Sheets, nicht nur
+    // fuer die Pitchliste.
+    const box = wrap.closest(".sheet-inhalt");
+    const stand = box ? box.scrollTop : 0;
     const vorher = aktiv;
     let hoch = 0;
     for (const name of namen) {
@@ -773,7 +787,11 @@ function zuReitern(wrap, merker) {
     }
     buehne.style.minHeight = hoch + "px";
     einsetzen(vorher);   // einsetzen statt zeigen: kein Schreiben in die
-  };                     // Einstellungen, der Reiter hat sich nicht geaendert
+                         // Einstellungen, der Reiter hat sich nicht geaendert
+    // NACH dem Setzen der Mindesthoehe: erst jetzt ist der Bereich wieder
+    // hoch genug, dass der Wert ueberhaupt stehen bleibt.
+    if (box && stand) box.scrollTop = stand;
+  };
   requestAnimationFrame(messen);
 }
 
