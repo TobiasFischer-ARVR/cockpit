@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v159"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v160"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2956,9 +2956,49 @@ function sheetPitch(p) {
     // Denselben Zweck erfuellt "✎ Termin ändern" (v113) vollstaendig, mit
     // eigenem Speichern-Knopf UND termin_hand-Kennzeichen.
     const dText = () => {
-      danach.textContent =
-        `Danach: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`;
+      const w = naechsteWahl();
+      danach.textContent = s.typ === "EigenerSchritt" && !z.wahlDanach
+        ? "Danach: noch offen — bitte unten wählen."
+        : w === SCHRITT_OFFEN
+          ? `Danach: eigener Schritt am ${deDatum(isoInTagen(dTage()))}` +
+            ` — den Text trägst du gleich unter „✎ Termin ändern“ ein.`
+          : `Danach: ${w} am ${deDatum(isoInTagen(dTage()))}`;
     };
+    // ---- Was kommt nach einem eigenen Schritt? (T4, Tobias 24.09.) ----
+    //
+    // Bei Pitch und Follow-up weiss die Kadenz, was folgt. Bei "Kunde
+    // anrufen" weiss es nur Andrea - `naechsterSchritt()` gibt deshalb
+    // `naechste: ""` zurueck und fragt hier nach.
+    //
+    // Die Auswahl steht VOR dem Erledigt-Knopf, nicht danach. Tobias hatte
+    // sie als Rueckfrage nach dem Bestaetigen beschrieben; davor ist sie
+    // billiger und ehrlicher: der Knopf bleibt gesperrt, bis die Wahl
+    // steht, und die Zeile "Danach: ..." zeigt schon vor dem Klick, was
+    // passieren wird. Ein Dialog nach einem Schreibvorgang kann abgebrochen
+    // werden - dann stuende die Marke ohne naechsten Schritt da.
+    //
+    // "Eigener Schritt" setzt nichts, sondern klappt danach "✎ Termin
+    // aendern" auf - dort steht das Formular, das es dafuer schon gibt
+    // (Freitext + Datum). Zwei Bedienungen fuer dieselbe Sache waeren
+    // Unsinn, dieselbe Ueberlegung wie bei pfadAbschnitt().
+    const eigen = s.typ === "EigenerSchritt";
+    const wahlZeile = el("div", "chips");
+    if (eigen && !gestoppt) {
+      for (const [beschriftung, wert] of [["Pitch", "Neuer Pitch"],
+                                          ["Follow-up", "Follow up"],
+                                          ["Eigener Schritt",
+                                           "eigener-schritt"]]) {
+        const k = el("button",
+          z.wahlDanach === wert ? "chip aktiv" : "chip", beschriftung);
+        k.onclick = () => { z.wahlDanach = wert; bau(); };
+        wahlZeile.append(k);
+      }
+    }
+    // Was wirklich als naechster Schritt eingetragen wird. Bei allem ausser
+    // dem eigenen Schritt unveraendert das, was naechsterSchritt() sagt.
+    const naechsteWahl = () => !eigen ? s.naechste
+      : (z.wahlDanach === "eigener-schritt" ? SCHRITT_OFFEN
+                                            : (z.wahlDanach || ""));
     tage.oninput = dText;
     dText();
     const abstand = el("div", "stand");
@@ -3015,7 +3055,10 @@ function sheetPitch(p) {
     const ohneStart = !q.datum_naechste_aktion && !q.letzter_kontakt;
     const zeile = el("div", "chips");
     const ok = el("button", "chip aktiv", `✓ ${s.aktion} erledigt`);
-    ok.disabled = ohneStart;
+    // Zweiter Sperrgrund seit v160: bei einem eigenen Schritt steht noch
+    // nicht fest, was danach kommt. Gesperrt statt versteckt - dieselbe
+    // Entscheidung wie bei "ohne Startdatum" (v156).
+    ok.disabled = ohneStart || (eigen && !z.wahlDanach);
     ok.onclick = () => {
       if (herkunft && herkunftUnzulaessig(herkunft.value)) {
         banner("Das Wort „Follow“ darf nicht in die Herkunft — der Eintrag " +
@@ -3026,12 +3069,23 @@ function sheetPitch(p) {
       // Die v119-Warnung „kein Startdatum gesetzt“ stand hier und liess den
       // Klick durch. Sie ist mit v156 entfallen: der Knopf ist in dem Fall
       // gesperrt, der Zweig waere tot. Begruendung oben beim Knopf.
+      const w = naechsteWahl();
       if (!confirm(`${text} als erledigt eintragen?\n` +
-          `Nächster Schritt: ${s.naechste} am ${deDatum(isoInTagen(dTage()))}`)) return;
+          (w === SCHRITT_OFFEN
+            ? "Danach trägst du den nächsten Schritt selbst ein — das " +
+              "Formular geht gleich auf."
+            : `Nächster Schritt: ${w} am ${deDatum(isoInTagen(dTage()))}`))) return;
       // s bleibt unangetastet - nur die Aktions-Beschriftung wird ersetzt.
       // typ/status/naechste/zaehlt kommen weiter aus naechsterSchritt(),
       // damit die Herkunft NUR Text ist und keine Logik verschiebt.
-      erledigen(m, { ...s, aktion: text }, dTage(), standard);
+      erledigen(m, { ...s, aktion: text, naechste: w }, dTage(), standard);
+      // Hat sie "Eigener Schritt" gewaehlt, steht jetzt kein naechster
+      // Schritt da - also gleich das Formular aufklappen, in dem sie ihn
+      // eintraegt. Der Merker lebt in z und ueberlebt damit das bau().
+      // Am Platzhalter erkannt, nicht am leeren Feld: die Wahl selbst ist
+      // der Ausloeser, und z.wahlDanach wird eine Zeile weiter geloescht.
+      z.terminOffen = w === SCHRITT_OFFEN;
+      z.wahlDanach = null;
       bau();
     };
     if (gestoppt) {
@@ -3043,6 +3097,10 @@ function sheetPitch(p) {
           "mehr fällig. Zurücknehmen lässt sich das über „Antwort " +
           "eintragen“ mit „negativ“ für denselben Tag."));
     } else {
+      if (eigen) {
+        frag.append(el("div", "stand",
+          "Eigener Schritt — was kommt danach?"), wahlZeile);
+      }
       zeile.append(ok);
       if (ohneStart) {
         frag.append(el("div", "stand",
@@ -3057,7 +3115,10 @@ function sheetPitch(p) {
     // sich erst nach seinem Urlaub".
     const tKnopf = el("button", "chip", "✎ Termin ändern");
     const tForm = el("div", "fgruppe");
-    tForm.style.display = "none";
+    // z statt einer lokalen Variable (v160): nach einem eigenen Schritt
+    // klappt das Formular von allein auf, und bau() zeichnet den Abschnitt
+    // dabei neu - ein lokaler Merker waere in dem Moment schon wieder weg.
+    tForm.style.display = z.terminOffen ? "" : "none";
     // Freitext mit Vorschlagsliste statt fester Auswahl (Tobias 12.09.):
     // Andrea soll auch etwas eintragen koennen, das die Kadenz nicht kennt -
     // "Angebot nachfassen", "Muster verschickt". Gleicher Bauplan wie das
@@ -3073,7 +3134,10 @@ function sheetPitch(p) {
     // eintrug, bekam "Nichts geändert" und kam nicht mehr zurueck.
     const tAktion = el("input", "feld");
     tAktion.type = "text";
-    tAktion.value = q.naechste_aktion || "";
+    // Der Platzhalter gehoert ins Feld GELEERT: er ist die Aufforderung,
+    // etwas einzutragen, kein Vorschlag zum Stehenlassen.
+    tAktion.value = q.naechste_aktion === SCHRITT_OFFEN
+      ? "" : (q.naechste_aktion || "");
     tAktion.placeholder = "z. B. Follow up, Neuer Pitch, Angebot nachfassen";
     const tListe = el("datalist");
     tListe.id = "vs-naechsterschritt";
@@ -3123,7 +3187,8 @@ function sheetPitch(p) {
       bau();
     };
     tKnopf.onclick = () => {
-      tForm.style.display = tForm.style.display === "none" ? "" : "none";
+      z.terminOffen = tForm.style.display === "none";
+      tForm.style.display = z.terminOffen ? "" : "none";
     };
     // el(tag, klasse, TEXT) - das dritte Argument wird als textContent
     // gesetzt. Ein Element dort landet als "[object HTMLButtonElement]" in
@@ -5350,7 +5415,27 @@ function sicherungBasis() {
 // Kadenz (Andrea, 29.08.): Pitch→FU1 +5, FU1→FU2 +5, FU2→FU3 +10 Tage,
 // nach FU3 +90 Tage Pause bis "Neuer Pitch". Standardwerte — pro Marke
 // überschreibbar (m.intervalle, gesetzt beim Ändern des Abstands).
-const KADENZ_STD = { fu1: 5, fu2: 5, fu3: 10, pause: 90 };
+// "eigen" seit v160: ein eigener Schritt bekommt einen EIGENEN Abstand.
+// Ohne ihn liefe eine geaenderte Tagezahl in intervalle.fu1 und verstellte
+// still die Pitch-Kadenz dieser Marke.
+const KADENZ_STD = { fu1: 5, fu2: 5, fu3: 10, pause: 90, eigen: 5 };
+
+// Platzhalter fuer "danach kommt wieder ein eigener Schritt, den Text
+// trage ich gleich ein" (Review-Fund zu v160).
+//
+// Hier stand erst ein leerer String. Der ist aber schon vergeben: LEER
+// heisst in naechsterSchritt() "frische Marke, noch kein Schritt" und
+// faellt auf Pitch zurueck. Damit las sich eine Marke mit voller
+// Historie nach dem Abhaken wie ein unberuehrter Neuzugang - samt
+// freigeschaltetem Knopf "✓ Pitch erledigt". Ein Druck darauf haette
+// einen Pitch erfunden und die Kadenz zurueckgesetzt: genau die Falle,
+// die T4 schliessen sollte, durch die Hintertuer.
+//
+// Der Text muss selbst als eigener Schritt durchgehen, also keins der
+// vier Schluesselwoerter enthalten. "Eigener Schritt" tut das und ist
+// zugleich lesbar, wenn Andrea ihn nie ersetzt - dann steht in der
+// Liste eine ehrliche Unfertigkeit statt einer falschen Tatsache.
+const SCHRITT_OFFEN = "Eigener Schritt";
 
 // Was wird erledigt und was folgt darauf? aktion = fällige naechste_aktion
 // aus der Pitchliste, pos = Follow-ups seit dem letzten Pitch.
@@ -5415,6 +5500,49 @@ function naechsterSchritt(aktion, pos) {
       status: "Rückantworten prüfen", zaehlt: false, kontakt: false,
       naechste: "Rückantworten prüfen", key: "fu1" };
   }
+  // ------------------------------------------- Andreas eigener Schritt (T4)
+  // Bis v159 fiel JEDER unbekannte Freitext in den Pitch-Zweig darunter.
+  // Stand "Angebot nachfassen" als naechster Schritt, hiess der Knopf
+  // trotzdem "✓ Pitch erledigt" - ein Klick darauf verlor den Text, zaehlte
+  // einen Pitch und warf die Kadenz von Follow up 2 auf Follow up 1 zurueck.
+  // Die Falle stand seit dem 12.09. bewusst offen ("erst bauen, wenn der
+  // Fall eintritt"); Tobias hat sie am 24.09. schliessen lassen.
+  //
+  // Erkannt wird NEGATIV: alles, was keins der VIER Schluesselwoerter
+  // traegt ("follow", "creatorpool", "rueckantwort" oben, "pitch" hier)
+  // und nicht leer ist. Das ist der einzige Weg, der ohne eine Liste
+  // erlaubter Woerter auskommt - Andrea soll schreiben duerfen, was sie
+  // will.
+  //
+  // Am Bestand gemessen (24.09., 59 Marken mit Pitchzeile): 34x "Neuer
+  // Pitch", 13x "Follow up", 6x "Rückantworten prüfen", 3x "Pitch",
+  // 2x "Creatorpool" - und GENAU EINE, die hier neu landet: "Briefing".
+  // Die galt bis heute als Pitch. Eine Umdeutung, ja, aber in die richtige
+  // Richtung, und Tobias hat sie ausdruecklich mitlaufen lassen.
+  //
+  // LEER bleibt Pitch: eine frische Marke ohne Eintrag ist kein eigener
+  // Schritt, sie hat nur noch keinen.
+  //
+  // ereignis:false ist das Neue an diesem Zweig. Bis hierher entschied
+  // `kontakt` ueber BEIDES - Ereignis und "letzter Kontakt". Ein eigener
+  // Schritt braucht sie getrennt:
+  //   kontakt:true   -> "letzter Kontakt" wird auf heute gesetzt
+  //   ereignis:false -> kein Eintrag in der Historie, keine Zeile im Word
+  // Der Grund ist nicht Geschmack, sondern der Import: er ERSETZT die
+  // Ereignisse aus dem Word. Ein Ereignis, das nur in der App steht, waere
+  // beim naechsten "Aus Brand-Books aktualisieren" lautlos weg. Entweder
+  // es steht im Word - dann muessten beide Leser es kennen - oder es gibt
+  // es gar nicht erst. Tobias hat am 24.09. Letzteres gewaehlt.
+  //
+  // `naechste` bleibt LEER: was nach einem eigenen Schritt kommt, weiss
+  // nur Andrea. bereichErledigen() fragt sie, bevor der Knopf aufgeht.
+  if (a.trim() && !a.includes("pitch")) {
+    const text = String(aktion).trim();
+    return { typ: "EigenerSchritt", aktion: text, status: text,
+      zaehlt: false, kontakt: true, ereignis: false,
+      naechste: "", key: "eigen" };
+  }
+
   return { typ: "Pitch",
     aktion: aktion === "Neuer Pitch" ? "Neuer Pitch" : "Pitch",
     status: "Pitch", zaehlt: false, kontakt: true,
@@ -5521,7 +5649,11 @@ function erledigen(m, s, tage, standard) {
       // A7 (Audit 17.09.): merkt sich, dass gleich KEIN Ereignis entsteht.
       // rueckgaengig() sucht sonst eines, findet keins und verweigert -
       // der Punkt blieb als Leiche stehen. Siehe dort.
-      ohneEreignis: s.kontakt === false,
+      ohneEreignis: s.kontakt === false || s.ereignis === false,
+    // v160: ein eigener Schritt schreibt NICHTS ins Book - die Gegenbuchung
+    // beim Rueckgaengig muss das wissen, sonst laedt sie das Book herunter,
+    // um eine Zeile zu entfernen, die nie geschrieben wurde.
+    ohneBook: s.ereignis === false,
       // datum mitfuehren, weil es ohne Ereignis nirgends sonst steht:
       // rueckgaengig() braucht es, um die Zeile im Brand-Book wieder
       // herauszunehmen. Der normale Weg holt es aus dem Ereignis.
@@ -5531,7 +5663,11 @@ function erledigen(m, s, tage, standard) {
   // s.kontakt !== false statt s.kontakt: ein altes s ohne das Feld
   // (z.B. aus einem gespeicherten Rückgängig-Stand) verhält sich dann
   // wie bisher, statt still das Ereignis zu verschlucken.
-  if (s.kontakt !== false) {
+  // s.ereignis === false (v160, eigener Schritt): KEIN Ereignis, aber
+  // trotzdem Kontakt - "letzter Kontakt" weiter unten wird gesetzt. Bis
+  // hierher entschied `kontakt` ueber beides; getrennt werden mussten sie,
+  // weil ein App-eigenes Ereignis den naechsten Word-Import nicht ueberlebt.
+  if (s.kontakt !== false && s.ereignis !== false) {
     (m.events = m.events || []).push(
       { typ: s.typ, datum: heute, aktion: s.aktion, positiv: "" });
   }
@@ -5588,8 +5724,10 @@ function erledigen(m, s, tage, standard) {
   // schon der erste Schreibvorgang Ereignis UND Auftrag. Andersherum liefe
   // ein Stand "Ereignis ohne Auftrag" auf die Platte, und stirbt die App
   // genau dann, ist das Loch wieder offen - nur schmaler.
-  // Punkt 4 im Brand-Book sofort mitschreiben (Andrea 02.09.)
-  bookHistorieMelden(m, heute, s.aktion);
+  // Punkt 4 im Brand-Book sofort mitschreiben (Andrea 02.09.) - ausser
+  // beim eigenen Schritt (v160): der steht bewusst nur in der App, also
+  // gehoert auch keine Zeile ins Word.
+  if (s.ereignis !== false) bookHistorieMelden(m, heute, s.aktion);
   datenstandPersistieren();
 }
 
@@ -5905,7 +6043,11 @@ function rueckgaengig(m, la) {
     // Ohne diese Gegenbuchung saehe die App "nie passiert" und das Word
     // weiterhin den Eintrag: zwei Stellen, die dasselbe anders sehen.
     // Das ist der Fehler, den v96 fuer den normalen Weg abgestellt hat.
-    if (la.datum) bookHistorieMelden(m, la.datum, la.aktion, true);
+    // ... ausser beim eigenen Schritt (v160, la.ohneBook): dort hat
+    // erledigen() bewusst NICHT geschrieben. Ohne diese Bedingung liefe
+    // ein Download plus Upload des Books, um eine Zeile zu entfernen, die
+    // es nie gab - und der cTag der Datei aendert sich dabei.
+    if (la.datum && !la.ohneBook) bookHistorieMelden(m, la.datum, la.aktion, true);
     return;
   }
   const ev = m.events || [];
