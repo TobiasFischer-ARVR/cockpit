@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v162"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v163"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -7374,6 +7374,49 @@ async function importEinBook(m, datei) {
   const plan = abgleichPlan(lese, frisch, auftraegeMitFlug(
     frisch.name, (datenstand && datenstand.ausstehend) || [], bookImFlug));
   const erg = importAnwenden(frisch, lese, plan);
+
+  // --- Protokoll (v163) ------------------------------------------
+  // Bis v162 hinterliess der ganze Leseweg (Word -> App) KEINE Spur,
+  // waehrend der Schreibweg (App -> Word) lueckenlos protokolliert ist.
+  // Gemessen am 24.09. in Andreas Logdateien: 17 Arten, ueber 1.500
+  // Zeilen — und keine einzige davon aus dem Import.
+  //
+  // Das ist die Richtung, die SCHREIBT: sie ersetzt Ereignisse und
+  // Kerninfos und rechnet seit v159 zwei Pitchlisten-Felder nach.
+  // Ging dabei etwas schief, liess sich hinterher nicht einmal
+  // feststellen, dass ein Import gelaufen ist.
+  //
+  // `frisch` traegt hier noch die ALTEN Werte: importAnwenden() gibt
+  // eine Kopie zurueck, eingesetzt wird erst darunter.
+  const abgeleitet = erg.unterschied && erg.unterschied.abgeleitet;
+  logZeile("import-buch", {
+    marke: frisch.name, tun: plan.tun, grund: plan.grund,
+    getan: !!erg.getan, ergebnis: erg.grund,
+    dazu: (erg.unterschied && erg.unterschied.dazu) || 0,
+    weg: (erg.unterschied && erg.unterschied.weg) || 0,
+    ...logMehr({
+      felder: ((erg.unterschied && erg.unterschied.felder) || [])
+        .map((f) => f.label),
+      befunde: (plan.befunde || []).map((b) => b.art || b),
+    }),
+  });
+  // Eigene Zeile, damit sie such- und zaehlbar ist: das Nachrechnen
+  // ist der einzige Schreibvorgang des Imports, den Andrea nie
+  // ausgeloest hat. Laut Kommentar in abgeleitetePitchfelder() kann
+  // ein unlesbares Datum den letzten Kontakt dauerhaft verderben —
+  // dann steht hier, welche Marke es wann getroffen hat.
+  if (abgeleitet) {
+    const vorher = frisch.pitchliste || {};
+    logZeile("pitchfelder-abgeleitet", {
+      marke: frisch.name,
+      zaehler: abgeleitet.zaehler === undefined ? ""
+        : (vorher.zaehler || "") + " -> " + abgeleitet.zaehler,
+      letzter_kontakt: abgeleitet.letzter_kontakt === undefined ? ""
+        : (vorher.letzter_kontakt || "") + " -> "
+          + abgeleitet.letzter_kontakt,
+    });
+  }
+
   if (erg.getan) datenstand.marken[stelle] = erg.marke;
 
   return { lage: "gelesen", plan, erg,
@@ -7519,7 +7562,20 @@ async function importLauf(fortschritt, abbrechen) {
         break;
       }
       if (typeof fortschritt === "function") fortschritt(++i, arbeit.length, m.name);
-      const e = await bookKettig(m, () => importEinBook(m, datei));
+      let e;
+      try {
+        e = await bookKettig(m, () => importEinBook(m, datei));
+      } catch (fehler) {
+        // Weitermachen statt abbrechen: EINE kaputte Marke darf die
+        // anderen 61 nicht mitnehmen. Ihr Merker rueckt nicht weiter,
+        // sie ist beim naechsten Lauf wieder faellig.
+        logZeile("import-ausnahme", {
+          marke: m.name, warum: String(fehler),
+          ...logMehr({ stapel: String(fehler && fehler.stack || "") }),
+        });
+        b.probleme.push({ marke: m.name, lage: "ausnahme", status: 0 });
+        continue;
+      }
       if (e.lage !== "gelesen") {
         b.probleme.push({ marke: m.name, lage: e.lage, status: e.status });
         continue;
@@ -7581,6 +7637,15 @@ async function importLauf(fortschritt, abbrechen) {
       bookGeaendert.delete(marke.name);
     }
     if (b.merker) await datenstandPersistieren();
+    logZeile("import-lauf", {
+      faellig: b.faellig, gelesen: b.gelesen, uebernommen: b.uebernommen,
+      unveraendert: b.unveraendert, befunde: b.befunde.length,
+      zurueckgestellt: b.zurueckgestellt.length,
+      probleme: b.probleme.length, merker: b.merker,
+      abgebrochen: b.abgebrochen || 0, fehler: b.fehler || "",
+    });
+    logSichern();   // nicht erst bei 40 Zeilen: ein Import ist selten,
+                    // und genau danach wird ins Protokoll geschaut
     return b;
   } finally {
     importLaeuft = false;
