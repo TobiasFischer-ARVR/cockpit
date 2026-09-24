@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v158"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v159"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3900,7 +3900,11 @@ function ratingAbweichungen(marken) {
 // Pruefung, die zur Haelfte Fehlalarm ist, haette niemand lange gelesen.
 function folgeSeitPitch(events) {
   const liste = (events || [])
-    .filter((e) => e && (e.typ === "Pitch" || e.typ === "FollowUp"))
+    // Unlesbares Datum raus (v159): es sortiert sonst als "ganz spaet" ans
+    // Ende und setzt den Zaehler an der falschen Stelle zurueck. Seit v159
+    // ist das kein Anzeigefehler mehr, sondern ein Schreibvorgang.
+    .filter((e) => e && (e.typ === "Pitch" || e.typ === "FollowUp")
+                   && eventDatum(e) !== null)
     .slice()
     .sort((a, b) => datumWert(a.datum) - datumWert(b.datum));
   let n = 0;
@@ -6729,7 +6733,11 @@ function bookLesen(xml, parser) {
 // liegengelassen.
 //
 // 1 = bis v142, 2 = ab v144 (negativ/bemerkung an allen Ereignissen)
-const LESER_VERSION = 2;
+// v159: 2 -> 3. Nicht der LESER hat sich geaendert, sondern was mit dem
+// Gelesenen geschieht (abgeleitetePitchfelder). Derselbe Hebel, derselbe
+// Grund: ohne ihn wirkt die Korrektur nur bei Books, die sich zufaellig
+// sowieso aendern - 18 der 118 Marken blieben schief stehen.
+const LESER_VERSION = 3;
 
 function importMerkerLies(m) {
   const i = m && m.bookImport;
@@ -6886,10 +6894,78 @@ function importMerkerWeiter(m, datei, plan, gespeichert) {
 // Felder, die NIE aus Word kommen. Spiegelbild von APP_FELDER in
 // werkzeuge/datenstand.py - läuft das auseinander, löscht entweder der
 // Import oder der nächste --merge etwas weg.
+//
+// EINE Ausnahme seit v159, und sie ist eng: aus `pitchliste` werden
+// `zaehler` und `letzter_kontakt` nachgezogen - siehe
+// abgeleitetePitchfelder(). Beide sind reine Rechenergebnisse aus den
+// Ereignissen, die der Import ohnehin ersetzt. Alles andere in der
+// Pitchzeile bleibt App-Gebiet, allen voran `datum_naechste_aktion`.
 const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
                      "kundenauftrag", "kundenauftragHistorie", "intervalle",
                      "bookordner", "bookCTag", "bookImport", "erstellt",
                      "name", "quelle", "gruppe"];
+
+// Zwei Felder der Pitchzeile sind reine RECHENERGEBNISSE aus den
+// Ereignissen - und liefen deshalb still auseinander, seit der Import die
+// Ereignisse ersetzt: `pitchliste` steht in IMPORT_TABU, also blieb der
+// Zaehler auf dem Stand, den zuletzt ein Klick in der App gesetzt hat.
+//
+// Gefunden von Tobias am 24.09. an Calibar: vier Ereignisse im Word, vier
+// in der App, Zaehler 2 und letzter Kontakt 13.09. - obwohl Follow up 3 am
+// 23.09. dastand. "Daten pruefen" meldete es (zaehler-ereignisse), abstellen
+// konnte es niemand.
+//
+// ABSICHTLICH nur diese zwei (Tobias, 24.09.):
+//   - `datum_naechste_aktion` ist Andreas ARBEITSANWEISUNG, keine Tatsache.
+//     Sie darf aus einer Ereignisliste nicht verschwinden (Bauplan, Etappe C).
+//   - `status` und `positivBeantwortet` sind Etappe C und haengen an der
+//     Verschiebe-Erlaubnis in die Kundenauftraege - eigener Vorgang.
+//
+// Zwei Sonderfaelle, beide aus Schaden gelernt:
+//   1. KEIN Zaehler-Nachziehen bei zugesagten Marken. Ab der Zusage ist er
+//      kein laufender Zaehler mehr, sondern die Notiz "so lange hat es
+//      gedauert" - antwortEintragen() laesst ihn aus demselben Grund stehen
+//      (v140, Asam Beauty). Dieselbe Bedingung wie in bestandBefunde().
+//   2. Ohne datierte Ereignisse bleibt `letzter_kontakt` stehen. Ein Book
+//      ohne Pitch-Historie ist kein Beleg dafuer, dass es nie Kontakt gab.
+//
+// "Rueckantworten pruefen" zaehlt nicht als Kontakt (16.09.) - im Bestand
+// heute 0x, die Regel steht trotzdem hier, weil erledigen() sie auch hat.
+function abgeleitetePitchfelder(pl, events) {
+  if (!pl) return null;
+  const raus = {};
+  // eventDatum() statt e.datum: datumWert() liefert fuer Unlesbares 1e12,
+  // und das sortiert als "ganz spaet" ans Ende. Eine vertippte Datumszelle
+  // wuerde dadurch zum juengsten Kontakt - und weil die Vorwaerts-Regel
+  // danach nie wieder ein echtes Datum groesser 1e12 sieht, waere das Feld
+  // DAUERHAFT vergiftet. Der Waechter steht seit v88 in der Datei und warnt
+  // woertlich davor ("koennte letzterKontakt verfaelschen"); er wurde hier
+  // nur nicht wiederverwendet. Gefunden im Review zu v159, im Bestand
+  // 0 von 195 Ereignissen - nicht ausloesbar, aber einmal ausgeloest
+  // unumkehrbar.
+  const kontakte = (events || [])
+    .filter((e) => e && e.typ !== "Ruecksprache" && eventDatum(e) !== null);
+  if (kontakte.length) {
+    const letzt = kontakte.slice()
+      .sort((a, b) => datumWert(a.datum) - datumWert(b.datum)).pop();
+    // NUR VORWAERTS. Am Bestand gemessen (24.09., 118 Marken): bei Airup
+    // und Wunderberg steht ein letzter Kontakt, der im Book gar nicht
+    // vorkommt - 02.07. gegen ein juengstes Ereignis vom 29.06. bzw. 25.06.
+    // Altlast aus der Excel-Zeit. Wuerde hier stumpf ersetzt, verloere die
+    // App einen Kontakt, von dem sie mehr weiss als das Word. Ein Datum
+    // zurueckzusetzen ist nie eine Korrektur, immer ein Verlust.
+    const alt = String(pl.letzter_kontakt || "");
+    if (alt !== String(letzt.datum) &&
+        datumWert(letzt.datum) > (alt ? datumWert(alt) : -1)) {
+      raus.letzter_kontakt = String(letzt.datum);
+    }
+  }
+  if (!pl.positivBeantwortet) {
+    const z = String(folgeSeitPitch(events));
+    if (String(pl.zaehler || "") !== z) raus.zaehler = z;
+  }
+  return Object.keys(raus).length ? raus : null;
+}
 
 // Was hat sich geändert? Für die Anzeige und fürs Log - und damit ein
 // Import, der nichts ändert, auch nichts schreibt.
@@ -6920,7 +6996,13 @@ function importUnterschied(m, lese) {
       felder.push({ label, vorher: kAlt[label], nachher: kNeu[label] });
     }
   }
-  return { dazu, weg, felder, etwas: !!(dazu || weg || felder.length) };
+  // Auch OHNE Ereignis-Aenderung kann etwas zu tun sein: bei Calibar standen
+  // die Ereignisse laengst richtig da, nur der Zaehler nicht. Ohne diese
+  // Zeile faellt der Lauf in "keine Aenderung" und die Marke bliebe fuer
+  // immer schief.
+  const abgeleitet = abgeleitetePitchfelder(m && m.pitchliste, lese.events);
+  return { dazu, weg, felder, abgeleitet,
+           etwas: !!(dazu || weg || felder.length || abgeleitet) };
 }
 
 // Den Plan ausführen. Gibt IMMER ein Ergebnis zurück.
@@ -6960,6 +7042,15 @@ function importAnwenden(m, lese, plan) {
   // ohne das wäre dieser Schritt der gefährlichste im ganzen Projekt.
   neu.events = (lese.events || []).map((e) => Object.assign({}, e));
   neu.kerninfos = Object.assign({}, lese.kerninfos || {});
+
+  // ... und die zwei Rechenergebnisse daraus (T6, Tobias 24.09.). Die
+  // Pitchzeile wird dafuer KOPIERT: `neu` teilt sie sonst mit der Vorlage,
+  // und ein Fehler weiter unten liesse einen halb umgebauten Stand zurueck.
+  if (unterschied.abgeleitet) {
+    neu.pitchliste = Object.assign({}, neu.pitchliste,
+                                   unterschied.abgeleitet,
+                                   { geaendert: lokalIso() });
+  }
 
   return { getan: true, grund: "übernommen", marke: neu, unterschied };
 }
