@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v163"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v164"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1220,12 +1220,18 @@ function sheetEinstellungen() {
     return zeile;
   };
 
-  // Datenpruefung (v92): Word-Book gegen Excel. Findet Marken, bei denen
-  // das Brand-Book noch ein aelteres Rating traegt - ein stiller
-  // Widerspruch, den vorher niemand sehen konnte (3 von 45 am 06.09.).
+  // Datenpruefung (v92): Brand-Book gegen den Stand der App. Findet
+  // Marken, bei denen das Book ein anderes Rating traegt als die App -
+  // ein stiller Widerspruch, den vorher niemand sehen konnte (3 von 45
+  // am 06.09.).
+  //
+  // "Excel" stand hier bis v163 als Vergleichspartner. Sie ist seit dem
+  // 17.09. obsolet (Tobias) - der Satz hat Andrea einen Partner genannt,
+  // den es nicht mehr gibt.
   const pStatus = el("div", "stand",
     "Vergleicht Rating, Brand Fit, Begeisterung und Erfolgschance " +
-    "zwischen Brand-Book und Excel.");
+    "zwischen Brand-Book und App — und die Brand-Books gegen die " +
+    "Ordner, in denen sie liegen.");
   const pZeile = el("div", "chips");
   const pKnopf = el("button", "chip", "🔍 Daten prüfen");
   let bestandNachholen = false;
@@ -1359,7 +1365,14 @@ function sheetEinstellungen() {
   };
   pKnopf.onclick = pruefen;
   pZeile.append(pKnopf);
-  wrap.append(abschnitt("Daten prüfen", pStatus, pZeile));
+  wrap.append(abschnitt("Daten prüfen", pStatus, pZeile,
+    erklaerung("Daten prüfen",
+      "Öffnet KEINE Word-Datei. Die Prüfung holt nur das Verzeichnis der "
+      + "vier Ordner — Dateinamen und je eine Änderungs-Kennung — und "
+      + "vergleicht danach zwei Dinge, die schon im Gerät liegen: den "
+      + "Abzug aus dem letzten Einlesen und den Stand der App. Hat sich "
+      + "eine Datei seither geändert, meldet sie „⭳ noch nicht gelesen“; "
+      + "WAS darin steht, weiß sie erst nach dem Einlesen.")));
 
   // ------------------------------------------------ S5b: Books einlesen
   //
@@ -4169,21 +4182,44 @@ function kerninfosNachziehen(m) {
 }
 
 // Alter des Book-Spiegels (Tobias 07.09., v93). Die Pruefung vergleicht NICHT
-// die Word-Datei, sondern m.kerninfos - deren Abbild aus dem letzten PC-Import.
+// die Word-Datei, sondern m.kerninfos - deren Abzug aus dem letzten Einlesen.
 // Wer direkt im Word korrigiert, sieht hier bis zum naechsten Import weiter die
 // alte Meldung. Genau das kostete am 07.09. einen Abend Fehlersuche: die Books
 // waren laengst richtig, die App zeigte treu den Stand von morgens 08:09.
-// datenstand.geaendert taugt dafuer NICHT - das ueberschreibt die App bei jedem
-// Speichern (siehe datenstandPersistieren). Deshalb ein eigenes Feld, das nur
-// datenstand.py schreibt und die App nie anfasst.
+//
+// v164: Der Hinweis las `datenstand.importiert` - ein Feld, das NUR das
+// PC-Werkzeug datenstand.py schreibt. Seit S5b importiert die App selbst,
+// und damit log der Satz: am 24.09. stand dort "PC-Import vom 19.09.
+// 23:50", obwohl die App um 21:58 desselben Tages 62 Books gelesen hatte.
+// Fuenf Tage daneben, und ein Weg genannt, den es nicht mehr gibt.
+//
+// Massgeblich ist jetzt der juengste Import-Merker ueber alle Marken.
+// Die Zahl daneben sagt, fuer wie viele er ueberhaupt gilt - ohne sie
+// klaenge "vom 24.09." so, als waeren alle Books an dem Tag gelesen
+// worden. `datenstand.importiert` bleibt als Rueckfall fuer Geraete,
+// die noch nie selbst importiert haben.
 function spiegelHinweis() {
-  const imp = datenstand && datenstand.importiert;
-  return imp
-    ? "Verglichen wird der Book-Stand aus dem PC-Import vom " +
-      String(imp).replace("T", " ") + ". Direkt im Word gemachte Änderungen " +
-      "erscheinen erst nach einem neuen Import."
-    : "Verglichen wird der Book-Stand aus dem letzten PC-Import. Direkt im " +
-      "Word gemachte Änderungen erscheinen erst nach einem neuen Import.";
+  const marken = (datenstand && datenstand.marken) || [];
+  let neuste = "", mit = 0;
+  for (const m of marken) {
+    const z = (m.bookImport && m.bookImport.zeit) || "";
+    if (!z) continue;
+    mit++;
+    if (z > neuste) neuste = z;   // ISO-Text sortiert wie ein Datum
+  }
+  // KEIN Bruch "66 von 64". Der erste Entwurf zaehlte als Nenner die Marken
+  // mit Haken "Brand Book" - und genau daran ist er zerbrochen: am 24.09.
+  // hatten 66 Marken einen Import-Merker, aber nur 64 den Haken. Zwei Books
+  // (Bergmensch, Teaballs) wurden gelesen, ohne dass die App weiss, dass es
+  // sie gibt. Solange die beiden Zaehlungen auseinanderlaufen koennen, ist
+  // die blosse Anzahl ehrlicher als ein Bruch, der Unsinn ergeben kann.
+  const wann = neuste || (datenstand && datenstand.importiert) || "";
+  return "Verglichen wird nicht die Word-Datei, sondern ihr Abzug aus dem "
+    + "letzten Einlesen"
+    + (wann ? " vom " + String(wann).replace("T", " ").slice(0, 16) : "")
+    + (mit ? " (" + mit + " Brand-Books gelesen)" : "")
+    + ". Was direkt im Word geändert wird, erscheint hier erst nach "
+    + "„⭳ Aus Brand-Books aktualisieren“.";
 }
 
 // Rating-Wechsel protokollieren. BEWUSST NICHT in m.events:
