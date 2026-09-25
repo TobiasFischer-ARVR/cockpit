@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v169"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v170"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6044,6 +6044,21 @@ function erledigen(m, s, tage, standard) {
   if (s.zaehlt) {
     m.pitchliste.zaehler = String(
       (parseInt(datenstand.letzteAktion.vorher.zaehler, 10) || 0) + 1);
+  } else if (s.typ === "Pitch" && !zusageAusEreignissen(m.events)) {
+    // Z1 (gefunden 24.09. an "7 Hauben", gebaut als v170): Ein neuer Pitch
+    // faengt die Kadenz von vorne an - also muss der Follow-up-Zaehler auf
+    // 0. Vorher tat er hier GAR NICHTS: erhoeht wurde nur bei s.zaehlt
+    // (Follow-up), genullt nur in ruecksprungAufPitch(), und das laeuft
+    // ausschliesslich bei einer Absage oder beim Zurueckschieben aus den
+    // Kundenauftraegen. Gemessen: vier Ereignisse (Pitch, FU1, Pitch, FU1),
+    // Historie zaehlt 1 Follow-up seit dem zweiten Pitch, der Zaehler stand
+    // auf 2. "Daten pruefen" meldete es jedes Mal neu.
+    //
+    // Der Guard auf die Zusage ist Pflicht (v140, Asam Beauty): ab da ist
+    // der Zaehler kein laufender Zaehler mehr, sondern die Notiz "so lange
+    // hat es gedauert". antwortEintragen() laesst ihn aus genau dem Grund
+    // stehen - hier darf er ihn nicht hintenherum doch noch plattmachen.
+    m.pitchliste.zaehler = "0";
   }
   if (tage !== standard) (m.intervalle = m.intervalle || {})[s.key] = tage;
   // A1 (Tobias, 17.09.): Nach einer Zusage haekelt der Erledigt-Knopf nur
