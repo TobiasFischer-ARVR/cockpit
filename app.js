@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v165"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v167"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -681,6 +681,11 @@ const REITER = {
   // pruefen", weil beides dasselbe Bild betrifft - die eine Seite meldet
   // Unterschiede, die andere holt den Word-Stand.
   "Aus Brand-Books aktualisieren": "OneDrive",
+  // v166: derselbe Reiter wie der Import-Knopf, direkt darunter. Der
+  // Abend-Knopf IST der Import - nur mit Stand-Tausch davor. Unter
+  // "Sicherung" zu stehen waere inhaltlich auch vertretbar, wuerde ihn
+  // aber von dem Knopf trennen, dessen Wirkung er hat.
+  "Stand aus OneDrive übernehmen": "OneDrive",
   "Pfad Brand-Books": "OneDrive",
   "Pfad Datenbank": "OneDrive",
   // Warteliste (v103). Im Einstellungs-Sheet ein eigener Reiter; das
@@ -1422,6 +1427,59 @@ function sheetEinstellungen() {
       "Word hat Vorrang bei Ereignissen und Kerninfos. Marken mit einem " +
       "wartenden Eintrag in der Warteliste werden übersprungen, bis der " +
       "durch ist — dort ist die App weiter als das Word.")));
+
+  // ------------------------------- Andreas Stand uebernehmen (v166)
+  //
+  // Sichtbar auch fuer Andrea, aber mit Warnton (Tobias, 25.09.): ein
+  // versteckter Knopf waere mehr Code fuer einen Fall, der bei ihr nie
+  // eintritt - sie hat keinen zweiten Stand, den sie sich holen koennte.
+  const aStatus = el("div", "stand",
+    "Holt den Stand aus OneDrive — auch wenn er ÄLTER ist als der " +
+    "auf diesem Gerät — und liest danach alle Brand-Books neu ein. " +
+    "Der jetzige Stand wird vorher gesichert.");
+  const aZeile = el("div", "chips");
+  const aKnopf = el("button", "chip",
+    "⇩ Stand aus OneDrive übernehmen");
+  aKnopf.onclick = async () => {
+    if (!confirm(
+      "Der Stand aus OneDrive wird übernommen — AUCH WENN ER " +
+      "ÄLTER IST als der auf diesem Gerät.\n\n" +
+      "Alles, was seitdem nur auf diesem Gerät eingetragen wurde, ist " +
+      "danach weg.\n\n" +
+      "Der jetzige Stand wird vorher nach OneDrive gesichert. Danach " +
+      "werden ALLE Brand-Books neu gelesen — über 60 Dateien, " +
+      "also besser über WLAN.\n\n" +
+      "Wirklich übernehmen?")) return;
+    aKnopf.disabled = true;
+    try {
+      const r = await andreasStandUebernehmen((t) => {
+        aStatus.textContent = t;
+      });
+      if (r.fehler) { aStatus.textContent = "✗ " + r.fehler; return; }
+      aStatus.textContent =
+        (r.standGetauscht
+          ? "✓ Stand aus OneDrive übernommen. "
+          : "Kein Stand in OneDrive gefunden — nur neu eingelesen. ") +
+        r.merkerWeg + " Marken neu zu lesen. " + importBericht(r.bericht);
+      // Bewusst KEIN sheetEinstellungen() wie beim Import-Knopf: das baut
+      // das Sheet neu auf und wischt genau den Bericht weg, den man nach
+      // diesem Knopf lesen will. listeVeraltet reicht - popstate zeichnet
+      // die Ansicht frisch, sobald das Sheet zugeht (Muster backupLaden).
+      listeVeraltet = true;
+    } catch (fehler) {
+      aStatus.textContent = "✗ Abgebrochen: " + (fehler && fehler.message);
+    } finally {
+      aKnopf.disabled = false;
+    }
+  };
+  aZeile.append(aKnopf);
+  wrap.append(abschnitt("Stand aus OneDrive übernehmen", aStatus, aZeile,
+    erklaerung("Stand aus OneDrive übernehmen",
+      "Normalerweise gewinnt der NEUERE Stand. Das ist richtig, solange " +
+      "nur ein Gerät arbeitet — beim Zusammenführen ist es " +
+      "falsch: jedes Öffnen der App stempelt den eigenen Stand auf " +
+      "jetzt, und damit gewinnt er gegen eine Datei, die nachmittags " +
+      "gespeichert wurde. Dieser Knopf fragt nicht nach dem Alter.")));
 
   // Datenbank- und Brand-Books-Pfad: seit v86 wird der Pfad NICHT mehr
   // getippt, sondern durchgeklickt (Tobias 06.09.). Beide Abschnitte
@@ -2499,7 +2557,10 @@ function sheetPitch(p) {
     // einem "Erledigt" steht der neue Termin am Datenstand, waehrend p
     // noch den Stand von vor dem Klick traegt (bis v103 tat das
     // pitchMitDatenstand).
-    const q = mv && mv.pitchliste ? { ...p, ...mv.pitchliste } : p;
+    // ...mv.pitchliste wuerde den ueberlagerten Status wieder mit dem
+    // GESPEICHERTEN ueberschreiben - deshalb danach noch einmal (v167).
+    const q = mv && mv.pitchliste
+      ? { ...p, ...mv.pitchliste, status: statusAnzeige(mv) } : p;
     wrap.append(el("div", "kontext",
       ampel(q.datum_naechste_aktion, heuteNull()).text));
 
@@ -2990,7 +3051,10 @@ function sheetPitch(p) {
     // in der Liste, ohne dass sie sie abraeumen koennte.
     // Die automatische Kadenz bleibt trotzdem still: erledigen() leert die
     // Terminfelder bei gesetztem Flag gleich wieder (siehe dort).
-    const gestoppt = !!q.positivBeantwortet && !q.termin_hand;
+    // Etappe C (v167): abgeleitet statt am Flag. `termin_hand` bleibt
+    // unangetastet - es traegt Andreas selbst gesetzte Wiedervorlage,
+    // und die darf aus einer Tatsache nicht verschwinden.
+    const gestoppt = zusageAusEreignissen(m.events) && !q.termin_hand;
     const s = naechsterSchritt(q.naechste_aktion, fuSeitPitch(m));
     const standard = (m.intervalle || {})[s.key] || KADENZ_STD[s.key];
     const tage = el("input", "tage");
@@ -3383,7 +3447,11 @@ function markeZuName(name) {
 function pitchlisteAktuell() {
   const liste = (datenstand ? datenstand.marken || [] : [])
     .filter((m) => m.pitchliste)
-    .map((m) => ({ name: m.name, ...m.pitchliste }));
+    // `status` zuletzt: er wird aus den Ereignissen ueberlagert
+    // (Etappe C, v167). Hier statt in pitchKarte/pitchPasst/Detail,
+    // weil `p` keine Ereignisse traegt - eine Stelle statt vier.
+    .map((m) => ({ name: m.name, ...m.pitchliste,
+                   status: statusAnzeige(m) }));
   // D-Brands = inaktiv/Archiv bei Andrea (Tobias 01.09.): erscheinen nie
   // in der Pitchliste - egal ob das D aus Andreas Altbestand stammt oder
   // per Rating-Edit in der App gesetzt wurde.
@@ -4035,6 +4103,135 @@ function ratingAbweichungen(marken) {
 //
 // Die ersten drei waren zweite Pitch-Runden, also gar kein Befund. Eine
 // Pruefung, die zur Haelfte Fehlalarm ist, haette niemand lange gelesen.
+// Hat diese Marke eine gueltige ZUSAGE? Abgeleitet, nicht gespeichert.
+//
+// Etappe C aus dem Bauplan "Word lesen in der App". Bis v166 stand die
+// Antwort in `pitchliste.positivBeantwortet` - einem Flag, das genau EINE
+// Stelle setzte (antwortEintragen) und genau eine wieder loeschte
+// (ruecksprungAufPitch). Kam eine Antwort auf einem anderen Weg herein -
+// aus dem Word, ueber den PC-Import, von Hand -, blieb das Flag stehen wo
+// es war. Genau dafuer gab es werkzeuge/zusage_nachtragen.py, das am
+// 17.09. neun von 118 Marken nachziehen musste.
+//
+// Die Regel ist 1:1 die des Werkzeugs, dort an echten Daten erprobt:
+//   * nur ANTWORT-Ereignisse
+//   * nur LESBAR datierte - ein "noch offen" im Datumsfeld loest nichts aus
+//   * nur die JUENGSTE davon entscheidet. Steht nach der Zusage eine
+//     Absage, ist die Zusage vorbei
+//
+// Gemessen am 25.09. gegen den Bestand, BEVOR umgestellt wurde: 9 Marken
+// mit Flag, dieselben 9 aus den Ereignissen ableitbar. Keine Abweichung in
+// beide Richtungen - die Umstellung nimmt keiner Marke etwas weg.
+//
+// Das Flag wird weiterhin GESCHRIEBEN (Excel, PC-Werkzeuge, Rueckfallebene),
+// aber nirgends mehr GELESEN. Wer es liest, baut die zweite Wahrheit wieder
+// auf, die dieser Vorgang gerade abgeraeumt hat.
+// Wann wurde zugesagt? Liefert den Datumswert der gueltigen Zusage, oder
+// null. EINE Quelle - zusageAusEreignissen() ist nur die Ja/Nein-Sicht
+// darauf, verschiebenErlaubt() braucht zusaetzlich das Datum.
+function zusageDatum(events) {
+  let juengste = null, wert = -1;
+  for (const e of events || []) {
+    if (!e || e.typ !== "Antwort") continue;
+    const d = eventDatum(e);
+    if (d === null) continue;
+    // >= statt >: liegen zwei Antworten auf demselben Tag, gewinnt die
+    // SPAETER eingetragene. Die Reihenfolge im Datenstand ist die
+    // Eintragereihenfolge, also ist die hintere die aktuellere.
+    // zusage_nachtragen.py nimmt mit max() die erste - der Unterschied
+    // trifft heute 0 Marken, steht hier aber bewusst anders herum.
+    if (d >= wert) { wert = d; juengste = e; }
+  }
+  return (juengste &&
+    String(juengste.positiv || "").trim().toUpperCase() === "X") ? wert : null;
+}
+
+function zusageAusEreignissen(events) {
+  return zusageDatum(events) !== null;
+}
+
+// Wann wurde zuletzt aus den Kundenauftraegen ZURUECK in die Pitchliste
+// geschoben? -1, wenn nie.
+//
+// Gefunden am 25.09. beim Bau von Etappe C, gemeldet von test_v133 und vom
+// Stresslauf gegen den Echtbestand ("Marke ist ohne Zusage verschiebbar"):
+// kundenauftragZurueck() laesst die Antwort-Ereignisse ABSICHTLICH stehen -
+// der Rueckzug ist ein neuer Eintrag, keine Ruecknahme der Zusage. Eine
+// Ableitung, die nur die Ereignisse liest, sieht deshalb die alte Zusage
+// und gibt die Marke sofort wieder frei. Mit dem Flag fiel genau das weg,
+// weil ruecksprungAufPitch() es zurueckgesetzt hat.
+//
+// Am Bestand gemessen: 0 Marken sind bisher zurueckgeschoben worden. Der
+// Weg ist gebaut und wird benutzt - der Fehler sass nur noch nicht drin.
+// Wie viele Antworten stehen in der Historie? Das ist die Sequenznummer,
+// an der sich "verbraucht" entscheidet.
+function antwortStand(events) {
+  let n = 0;
+  for (const e of events || []) if (e && e.typ === "Antwort") n++;
+  return n;
+}
+
+// Ist die Zusage schon einmal in einen Auftrag umgesetzt und wieder
+// zurueckgezogen worden?
+//
+// NICHT ueber Datumsvergleich (erster Entwurf vom 25.09., vom Stresslauf
+// widerlegt): Rueckzug und Antwort sind beide nur TAGESGENAU. Schiebt
+// Andrea zurueck und sagt am selben Tag neu zu, ist keine Reihenfolge
+// feststellbar - "strikt neuer" sperrt dann die echte neue Zusage, und
+// "neuer oder gleich" laesst die alte durch. Der Stresslauf trifft den Fall
+// in JEDER Runde, er ist also nicht selten, sondern der Normalfall.
+//
+// Stattdessen merkt sich der Rueckweg, wie viele Antworten es damals gab
+// (Codex, 25.09.: "du brauchst eine gemeinsame, eindeutige Reihenfolge").
+// Kommt spaeter eine Antwort dazu, ist die Zusage frisch. Das ist exakt,
+// unabhaengig von Datumsformaten und von nachgetragenen Antworten.
+//
+// Fehlt der Merker, sperrt der Rueckzug. Betrifft nur Eintraege aus der
+// Zeit vor v167 - im Bestand gemessen: 0 von 9.
+function zusageVerbraucht(m) {
+  let letzter = null;
+  for (const h of (m && m.kundenauftragHistorie) || [])
+    if (h && h.richtung === "zurueck") letzter = h;   // der spaeteste im Array
+  if (!letzter) return false;
+  // Von Hand entwertet: Andrea hat nach dem Rueckweg erneut eine Zusage
+  // eingetragen (Tobias, 25.09.). Das ist eine bewusste Handlung und zaehlt
+  // als neue Zusage - auch am selben Tag, wo gar kein neues Ereignis
+  // entsteht. Ohne diesen Weg waere die Marke bis Mitternacht gesperrt,
+  // ohne dass irgendwo stuende warum (vom Stresslauf als Sackgasse
+  // gemeldet).
+  if (letzter.entwertet) return false;
+  const damals = Number(letzter.antwortStand);
+  // Der Zaehler traegt den ANDEREN Weg: der Word-Import bringt Antworten
+  // herein, ohne antwortEintragen() zu rufen - dort gibt es niemanden, der
+  // entwerten koennte.
+  if (Number.isFinite(damals)) return antwortStand(m && m.events) <= damals;
+
+  // ALTDATEN (Rueckweg vor v167, ohne Merker): Datumsvergleich als
+  // Rueckfall. Er ist bei Gleichstand ungenau - beide Seiten sind nur
+  // tagesgenau -, aber er ist das Beste, was aus diesen Eintraegen
+  // herauszuholen ist.
+  //
+  // Erst pauschal gesperrt (25.09.), dann am ECHTEN Stand nachgemessen und
+  // verworfen: im Testdaten-Ordner stehen 8 Rueckwege ohne Merker, und die
+  // Sperre haette 7 Marken mit gueltiger Zusage blockiert - also genau den
+  // Nutzen von Etappe C aufgefressen. Die Annahme "0 Altdaten" stammte aus
+  // der Repo-Kopie vom 20.09., nicht aus dem laufenden Bestand.
+  const rueck = datumWert(letzter.datum);
+  if (rueck >= 1e12) return true;        // unlesbares Datum -> sperren
+  const zusage = zusageDatum(m && m.events);
+  if (zusage === null) return true;
+  return zusage <= rueck;
+}
+
+// Der Status, wie er auf der Karte steht. "Zugesagt" UEBERLAGERT den
+// gespeicherten Wert, statt ihn zu ersetzen: `status` traegt sonst den
+// Schritt ("Follow up", "Creatorpool") oder Freitext aus dem Word, und den
+// will niemand verlieren, nur weil eine Zusage vorliegt.
+function statusAnzeige(m) {
+  const pl = (m && m.pitchliste) || {};
+  return zusageAusEreignissen(m && m.events) ? "Zugesagt" : (pl.status || "");
+}
+
 function folgeSeitPitch(events) {
   const liste = (events || [])
     // Unlesbares Datum raus (v159): es sortiert sonst als "ganz spaet" ans
@@ -4132,7 +4329,8 @@ function bestandBefunde(marken) {
     // richtig war. Am Bestand nachgemessen: 9 Marken tragen das Flag, die
     // Regel nimmt genau diesen einen Fehlalarm weg und laesst die zwei
     // echten Befunde stehen.
-    if (pl && !pl.positivBeantwortet && String(pl.zaehler || "").trim()) {
+    if (pl && !zusageAusEreignissen(m.events) &&
+        String(pl.zaehler || "").trim()) {          // Etappe C (v167)
       const z = parseInt(pl.zaehler, 10);
       const echt = folgeSeitPitch(m.events);
       if (!isNaN(z) && z !== echt) {
@@ -5804,7 +6002,7 @@ function erledigen(m, s, tage, standard) {
   // `status` wird MIT zurueckgesetzt: erledigen() hat ihn oben auf den
   // Schritt gesetzt ("Creatorpool"), und danach stuende auf der Karte wieder
   // etwas anderes als "Zugesagt" - A2 waere ausgehebelt. Gemessen 17.09.
-  if (m.pitchliste.positivBeantwortet) {
+  if (zusageAusEreignissen(m.events)) {   // Etappe C (v167)
     Object.assign(m.pitchliste, {
       status: "Zugesagt",
       naechste_aktion: "",
@@ -5960,12 +6158,19 @@ function antwortEintragen(m, datumIso, positiv, bemerkung, jetzt) {
     Object.assign(m.pitchliste, {
       letzter_kontakt: datum,
       status: "Zugesagt",
-      positivBeantwortet: true,
+      positivBeantwortet: true,   // v167: geschrieben, nicht mehr gelesen
       naechste_aktion: "",
       datum_naechste_aktion: "",
       termin_hand: false,
       geaendert: jetzt,
     });
+    // Eine frisch eingetragene Zusage hebt eine Rueckweg-Sperre auf (v167,
+    // Tobias 25.09.). Muss hier stehen und nicht in zusageVerbraucht():
+    // liegt der Rueckweg auf demselben Tag, ersetzt der Zweig oben nur das
+    // vorhandene Ereignis - an der Ereignisliste aendert sich dann gar
+    // nichts, und eine reine Ableitung koennte den Unterschied nie sehen.
+    for (const h of m.kundenauftragHistorie || [])
+      if (h && h.richtung === "zurueck") h.entwertet = true;
   } else {
     // Absage: zurueck auf Pitch. ruecksprungAufPitch() stempelt selbst und
     // setzt positivBeantwortet zurueck - es entwertet ABSICHTLICH keine
@@ -6039,9 +6244,24 @@ function naechsterCheckpunkt(ka) {
   return treffer ? { datum: treffer.datum, text: treffer.text || "" } : null;
 }
 
+// Darf diese Marke in die Kundenauftraege verschoben werden?
+//
+// Etappe C (v167): abgeleitet statt am Flag. Das ist die Abnahmebedingung
+// aus dem Bauplan - dieselbe Ereignisliste muss mit `true`, `false` und
+// fehlendem Feld dieselbe Erlaubnis ergeben.
+//
+// Drei Bedingungen, jede aus einem eigenen Grund:
+//   1. `!m.kundenauftrag` - wer schon drin ist, wird nicht nochmal
+//      verschoben. Und eine spaetere ABSAGE loest einen bestehenden
+//      Auftrag NICHT auf: kundenauftragVerschieben() legt einen eigenen
+//      Vorgang samt Historie an, den raeumt nur der Rueckweg wieder ab.
+//   2. Es gibt eine gueltige Zusage (juengste Antwort ist positiv).
+//   3. Die Zusage ist nicht VERBRAUCHT - nach einem Rueckweg braucht es
+//      eine neue (Tobias, 25.09.).
 function verschiebenErlaubt(m) {
-  return Boolean(m && m.pitchliste && m.pitchliste.positivBeantwortet &&
-                 !m.kundenauftrag);
+  if (!m || !m.pitchliste || m.kundenauftrag) return false;
+  if (zusageDatum(m.events) === null) return false;
+  return !zusageVerbraucht(m);
 }
 
 function kundenauftragVerschieben(m, jetzt) {
@@ -6110,8 +6330,12 @@ function kundenauftragZurueck(m, grund, jetzt, datumIso) {
   };
   delete m.kundenauftrag;
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    // antwortStand: wie viele Antworten gab es JETZT? Daran erkennt
+    // verschiebenErlaubt() spaeter, ob eine neue dazugekommen ist (v167).
+    // Ein Datumsvergleich traegt hier nicht - beide Seiten sind tagesgenau.
     .push({ richtung: "zurueck", datum: deDatum(isoInTagen(0)),
-            grund: text, naechsterPitch: datumIso, archiv });
+            grund: text, naechsterPitch: datumIso,
+            antwortStand: antwortStand(m.events), archiv });
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
@@ -7155,8 +7379,9 @@ const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
 // ABSICHTLICH nur diese zwei (Tobias, 24.09.):
 //   - `datum_naechste_aktion` ist Andreas ARBEITSANWEISUNG, keine Tatsache.
 //     Sie darf aus einer Ereignisliste nicht verschwinden (Bauplan, Etappe C).
-//   - `status` und `positivBeantwortet` sind Etappe C und haengen an der
-//     Verschiebe-Erlaubnis in die Kundenauftraege - eigener Vorgang.
+//   - `status` wird nicht GESCHRIEBEN, sondern in statusAnzeige()
+//     ueberlagert (Etappe C, v167). Der gespeicherte Wert traegt den
+//     Schritt oder Word-Freitext und bleibt deshalb stehen.
 //
 // Zwei Sonderfaelle, beide aus Schaden gelernt:
 //   1. KEIN Zaehler-Nachziehen bei zugesagten Marken. Ab der Zusage ist er
@@ -7197,7 +7422,7 @@ function abgeleitetePitchfelder(pl, events) {
       raus.letzter_kontakt = String(letzt.datum);
     }
   }
-  if (!pl.positivBeantwortet) {
+  if (!zusageAusEreignissen(events)) {     // Etappe C (v167)
     const z = String(folgeSeitPitch(events));
     if (String(pl.zaehler || "") !== z) raus.zaehler = z;
   }
@@ -10516,6 +10741,91 @@ function datenstandUebernehmen(paar) {
   for (const e of (datenstand && datenstand.ausstehend) || [])
     if (e.grund === "laeuft") e.grund = "wartet";
   return true;
+}
+
+// ------------------------------- Andreas Stand uebernehmen (v166, 25.09.)
+//
+// Der Abend-Knopf. Am 23.09. gemessen: Andreas Ordner geleert, ihre Dateien
+// 1:1 hineinkopiert - und "Daten pruefen" meldete trotzdem 12 Abweichungen.
+// Kein Kopierfehler, sondern die Altersregel. Die App vergleicht beim Start
+// nicht Dateien, sondern ZEITSTEMPEL, und jedes Oeffnen stempelt den eigenen
+// Stand auf jetzt. Ihre Datei 13:00:44, das Geraet 22:53:58 - ihrer wurde
+// regelkonform verworfen.
+//
+// Dieser Weg geht bewusst an der Altersregel vorbei. Die Reihenfolge ist
+// NICHT beliebig:
+//   1. sichern - scheitert das, passiert gar nichts
+//   2. Cloud-Stand direkt setzen, OHNE datenstandUebernehmen(). Das ist die
+//      Bremse, die "nicht neuer" STILL ablehnt; ueber sie bliebe der Knopf
+//      wirkungslos und niemand saehe warum (dasselbe Muster wie "den
+//      aelteren nehmen" in standWahlKlaeren)
+//   3. persistieren
+//   4. Merker loeschen und NOCHMAL persistieren, BEVOR importLauf() laeuft.
+//      importMerkerWeiter() schreibt neue Merker nur bei gespeichert===true
+//      fort - stuende der Reset dahinter, waeren die Merker sofort wieder da
+//      und die 62 Books gaelten als gelesen.
+//   5. Import
+//
+// Was der Knopf NICHT kann: die Befunde beseitigen, die in Andreas Daten
+// stecken. Wer ihren Bestand 1:1 hat, hat auch ihre Abweichungen 1:1. Das
+// Versprechen lautet "dein Geraet mischt nichts mehr dazu", nicht "keine
+// Fehler mehr".
+async function andreasStandUebernehmen(melde) {
+  const sag = (t) => { if (melde) melde(t); };
+
+  // 1. Sicherheitskopie. Muster aus backupLaden(): die CLOUD-Kopie ist die
+  // Bedingung, der Download laeuft nur zusaetzlich mit. Einbahnstrassen
+  // sind in diesem Projekt schon zweimal teuer geworden.
+  if (datenstand) {
+    sag("Eigener Stand wird gesichert …");
+    const kopie = "cockpit-vor-andreas-" +
+      lokalIso().slice(0, 16).replace("T", "-").replace(":", "") + ".json";
+    const gesichert = typeof OD !== "undefined" && await OD.graphPutLeise(
+      datenBasis() + "/" + kopie + ":/content", datenstand);
+    datenstandBackup("cockpit-vor-andreas-");  // zusaetzlich, ungeprueft
+    if (!gesichert) {
+      logZeile("andrea-abgebrochen", { grund: "Sicherung fehlgeschlagen" });
+      logSichern();
+      return { fehler: "Sicherheitskopie konnte nicht in OneDrive abgelegt " +
+                       "werden — es wurde NICHTS geändert." };
+    }
+  }
+
+  // 2. Cloud-Stand holen und ohne Altersvergleich setzen.
+  sag("OneDrive wird gelesen …");
+  const cloud = typeof OD !== "undefined"
+    ? await OD.graphLeise(OD_DATENSTAND())
+    : null;
+  let standGetauscht = false;
+  if (cloud && Array.isArray(cloud.marken)) {
+    logZeile("andrea-stand-uebernommen", { quelle: "OneDrive",
+      ...logMehr({ soll: cloud.geaendert,
+                   ist: datenstand && datenstand.geaendert }) });
+    [datenstand, datenstandQuelle] = [cloud, "OneDrive"];
+    await datenstandPersistieren();
+    standGetauscht = true;
+  }
+
+  // 3. Merker loeschen - auch wenn kein Cloud-Stand kam (Tobias, 25.09.).
+  // Dann ist der Knopf eben nur "alle Books noch einmal lesen". Die Kopien
+  // liegen auf einem anderen Laufwerk und haben andere itemIds; ohne den
+  // Reset gelten sie als FREMD statt als ungelesen.
+  let merkerWeg = 0;
+  for (const m of (datenstand && datenstand.marken) || [])
+    if (m.bookImport) { delete m.bookImport; merkerWeg++; }
+  await datenstandPersistieren();   // MUSS vor den Import, siehe Kopf
+
+  // 4. Import. bookGeaendert raeumt importLauf() selbst auf.
+  sag("Brand-Books werden gelesen …");
+  const bericht = await importLauf((wieviel, von, name) => {
+    sag(`Lese ${wieviel} von ${von}: ${name}`);
+  });
+  logZeile("andrea-lauf", { standGetauscht, merkerWeg,
+    gelesen: (bericht && bericht.gelesen) || 0,
+    uebernommen: (bericht && bericht.uebernommen) || 0,
+    fehler: (bericht && bericht.fehler) || "" });
+  logSichern();
+  return { standGetauscht, merkerWeg, bericht };
 }
 
 async function datenstandLaden() {
