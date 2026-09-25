@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v170"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v171"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1273,32 +1273,74 @@ function sheetEinstellungen() {
   // die App entscheiden, welche Seite gewinnt, und beim Word-Vergleich auch
   // noch ins Dokument schreiben. Die Anweisung dazu steht seit dem 07.09.
   // unter dem Befund und bleibt stehen.
+  //
+  // Liefert eine LISTE (v171, Tobias 25.09.): bei "Haken ohne Datei" gibt es
+  // zwei sinnvolle Antworten - der Haken ist falsch, ODER die Datei fehlt
+  // noch. Beide anzubieten ist ehrlicher, als eine davon zu raten.
+  // `mach` darf async sein; "Brand-Book erstellen" schreibt nach OneDrive.
   const befundReparatur = (f) => {
     const m = markeZuName(f.name);
-    if (!m) return null;
+    if (!m) return [];
     if (f.art === "haken-ohne-book" && m.brandrating) {
-      return { text: "Haken entfernen",
-               mach: () => { m.brandrating.brandbook = ""; } };
+      return [
+        { text: "Haken entfernen",
+          mach: () => { m.brandrating.brandbook = ""; } },
+        // Die Gegenrichtung: das Book fehlt wirklich und wird jetzt angelegt.
+        // bookErzeugen() legt die Datei an, bookErstelltDaten() setzt Haken,
+        // quelle und bookordner - dieselbe Funktion wie beim Knopf im
+        // Brand-Sheet, damit es nur EINEN Weg gibt, ein Book zu erstellen.
+        { text: "Brand-Book erstellen",
+          mach: async () => {
+            const erg = await bookErzeugen(m);
+            if (erg === "fehler") {
+              banner("Book-Anlage fehlgeschlagen \u2014 Internet/OneDrive "
+                     + "pr\u00fcfen.");
+              return false;
+            }
+            bookErstelltDaten(m, erg !== "existiert", lokalIso());
+            return true;
+          } },
+      ];
+    }
+    // Z2 (v171): Das Dokument liegt da, nur der Haken fehlt. Hier WEISS die
+    // App, was richtig ist - deshalb ein Knopf. Gesetzt wird ueber
+    // bookErstelltDaten(), damit quelle und bookordner mitkommen; ohne die
+    // beiden meldete der naechste Lauf denselben Befund erneut.
+    if (f.art === "book-ohne-haken" && m.brandrating) {
+      return [{ text: "Haken setzen",
+                mach: () => { bookErstelltDaten(m, false, lokalIso()); } }];
     }
     if (f.art === "book-falscher-ordner" && f.ordner) {
-      return { text: "Ordner nachtragen",
-               mach: () => { m.bookordner = f.ordner; } };
+      return [{ text: "Ordner nachtragen",
+                mach: () => { m.bookordner = f.ordner; } }];
     }
-    return null;
+    return [];
   };
   const befundZeile = (f, nochmal) => {
     const zeile = el("div", null, "• " + f.name + ": " + f.text);
-    const tu = befundReparatur(f);
-    if (!tu) return zeile;
-    const k = el("button", "chip", tu.text);
-    k.onclick = async () => {
-      k.disabled = true;                 // ein Klick, eine Aenderung
-      tu.mach();
-      listeVeraltet = true;
-      await datenstandPersistieren();
-      nochmal();      // frisch nachrechnen statt die Zeile nur wegzunehmen
-    };
-    zeile.append(" ", k);
+    const knoepfe = befundReparatur(f);
+    if (!knoepfe.length) return zeile;
+    const alle = [];
+    for (const tu of knoepfe) {
+      const k = el("button", "chip", tu.text);
+      alle.push(k);
+      k.onclick = async () => {
+        // ALLE Knoepfe der Zeile sperren, nicht nur den geklickten: sonst
+        // liesse sich "Haken entfernen" und "Brand-Book erstellen"
+        // nacheinander druecken, und der zweite Lauf arbeitete auf einem
+        // Stand, den der erste schon geaendert hat.
+        for (const x of alle) x.disabled = true;
+        const ok = await tu.mach();
+        if (ok === false) {          // Aktion hat selbst gemeldet
+          for (const x of alle) x.disabled = false;
+          return;
+        }
+        listeVeraltet = true;
+        await datenstandPersistieren();
+        nochmal();    // frisch nachrechnen statt die Zeile nur wegzunehmen
+      };
+      zeile.append(" ", k);
+    }
     return zeile;
   };
 
@@ -4394,12 +4436,18 @@ function bestandBefunde(marken) {
       }
     }
 
-    // --- 3. Der Haken "Brand Book" gegen die Wirklichkeit (NEU) ---
-    const haken = String(br.brandbook || "").trim();
-    if (haken && !m.quelle) {
-      fehler.push({ name: m.name, art: "haken-ohne-book",
-        text: "Haken „Brand Book“ gesetzt, es gibt aber keine Datei" });
-    } else if (m.quelle && !pl) {
+    // --- 3. Book ohne Pitchzeile ---
+    //
+    // Der Befund "haken-ohne-book" stand bis v170 HIER und verglich
+    // `haken && !m.quelle`. Beide Felder setzt bookErstelltDaten()
+    // gemeinsam, sie konnten also nie auseinanderlaufen - der Befund war
+    // blind (gemessen 25.09.: 64 Haken, 64 quelle). Er sitzt jetzt in
+    // bestandDateiBefunde(), wo die echte Dateiliste liegt.
+    //
+    // Diese Funktion bleibt bewusst PUR (Marken rein, Befunde raus, kein
+    // OneDrive) - test_v105 prueft das. Eine Aussage ueber Dateien gehoert
+    // deshalb nicht hierher.
+    if (m.quelle && !pl) {
       const ereignisse = (m.events || []).length;
       if (ereignisse) {
         fehler.push({ name: m.name, art: "book-ohne-pitchzeile",
@@ -6876,7 +6924,56 @@ function bestandDateiBefunde(marken, dateien) {
     const s = schluessel(m.name);
     bekannt.add(s);
     const ort = gefunden.get(s);
-    if (!ort) continue;                       // keine Datei -> nicht mein Fall
+
+    // --- Z2 (v171): der Haken gegen die WIRKLICHKEIT, beide Richtungen ---
+    //
+    // Bis v170 beantwortete die App "hat diese Marke ein Brand-Book?" an
+    // DREI Stellen verschieden:
+    //   * der Waechter          am Haken brandrating.brandbook
+    //   * "Daten pruefen"       am Feld m.quelle
+    //   * der Import            an der Datei im Ordner
+    //
+    // Gemessen am 25.09.: Haken 64, quelle 64, Datei 66. Haken und quelle
+    // laufen IMMER synchron - bookErstelltDaten() setzt beide zusammen -,
+    // weshalb der alte Befund "haken-ohne-book" gar nichts finden KONNTE:
+    // er verglich zwei Felder, die nicht auseinanderlaufen koennen. Die
+    // echte Luecke waren zwei Marken, die nur der Import kannte
+    // (Bergmensch, Teaballs): ihre Dokumente werden gelesen, aber der
+    // Waechter ueberspringt sie, also kommt kein "noch nicht gelesen".
+    //
+    // Hier ist die einzige Stelle mit der TATSACHE - die Dateiliste aus dem
+    // Ordner-Listing. Deshalb wird der Haken jetzt gegen sie geprueft und
+    // nicht mehr gegen einen zweiten Datenbank-Eintrag.
+    const haken = !!String((m.brandrating && m.brandrating.brandbook) || "").trim();
+    if (ort && !haken) {
+      // HINWEIS, nicht Fehler: es geht nichts verloren, der Waechter ist nur
+      // blind. Ein Fehler stuende als dauerhafte Warnkarte da - dieselbe
+      // Ueberlegung wie beim Zaehler-Befund (test_v139).
+      hinweise.push({ name: m.name, art: "book-ohne-haken",
+        ordner: ort.ordner,
+        text: "Dokument liegt in \u201e" + ort.ordner + " Brands\u201c, "
+              + "aber der Haken \u201eBrand Book\u201c fehlt \u2014 "
+              + "\u201enoch nicht gelesen\u201c wird f\u00fcr diese Marke "
+              + "nie gemeldet" });
+    } else if (!ort && haken) {
+      // SCHWEIGEN STATT RATEN (Regel aus v137, hier prompt wieder
+      // zugeschlagen): "keine Datei gefunden" ist nicht dasselbe wie "es
+      // gibt keine Datei". Wurde der Ordner, in dem sie liegen MUESSTE,
+      // gar nicht gelesen - kein Zugriff, Listing fehlgeschlagen -, weiss
+      // die App nichts und darf nichts behaupten. Der erste Entwurf vom
+      // 25.09. hat hier gemeldet und ist an test_v137 aufgelaufen.
+      const soll = String(bookOrdner(m) || "").trim().toUpperCase();
+      let gelesen = false;
+      for (const o of dateien.keys())
+        if (String(o).toUpperCase() === soll) gelesen = true;
+      if (soll && gelesen) {
+        fehler.push({ name: m.name, art: "haken-ohne-book",
+          text: "Haken \u201eBrand Book\u201c gesetzt, aber in \u201e" + soll
+                + " Brands\u201c liegt keine Datei" });
+      }
+    }
+
+    if (!ort) continue;                       // keine Datei -> Rest entfaellt
     const soll = String(bookOrdner(m) || "").trim().toUpperCase();
     if (!soll || soll === String(ort.ordner).toUpperCase()) continue;
     fehler.push({ name: m.name, art: "book-falscher-ordner",
