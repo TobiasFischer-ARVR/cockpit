@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v172"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v173"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3151,7 +3151,8 @@ function sheetPitch(p) {
     // unangetastet - es traegt Andreas selbst gesetzte Wiedervorlage,
     // und die darf aus einer Tatsache nicht verschwinden.
     const gestoppt = zusageAusEreignissen(m.events) && !q.termin_hand;
-    const s = naechsterSchritt(q.naechste_aktion, fuSeitPitch(m));
+    const pos = fuSeitPitch(m);
+    const s = naechsterSchritt(q.naechste_aktion, pos);
     const standard = (m.intervalle || {})[s.key] || KADENZ_STD[s.key];
     const tage = el("input", "tage");
     tage.type = "number";
@@ -3205,6 +3206,17 @@ function sheetPitch(p) {
     // erlaubt: der Klick faellt lange nach dem Aufbau, die Bindungen sind
     // dann besetzt. Ein Zugriff WAEHREND des Aufbaus waere ein Fehler -
     // den gibt es hier nicht.
+    // Drei Follow-ups sind die ganze Kadenz - ist die durch, darf hier kein
+    // viertes gewaehlt werden (Tobias, 25.09., nach dem doppelten "Follow up
+    // 3" an Faroel Naturseife). naechsterSchritt() faengt die Wahl inzwischen
+    // ohnehin ab und macht einen neuen Pitch daraus; der Chip wuerde also
+    // etwas anbieten, das die App danach stillschweigend umdeutet.
+    //
+    // GESPERRT STATT VERSTECKT, dieselbe Entscheidung wie beim Erledigt-Knopf
+    // ohne Startdatum (v156): ein verschwundener Chip wirft die Frage auf, ob
+    // die App kaputt ist. Der gesperrte sagt, dass es ihn gibt und warum er
+    // gerade nicht geht - der Satz dazu steht unter der Zeile.
+    const fuDurch = pos >= 3;
     const wahlZeile = el("div", "chips");
     const wahlKnoepfe = [];
     if (eigen && !gestoppt) {
@@ -3214,6 +3226,13 @@ function sheetPitch(p) {
                                            "eigener-schritt"]]) {
         const k = el("button",
           z.wahlDanach === wert ? "chip aktiv" : "chip", beschriftung);
+        if (wert === "Follow up" && fuDurch) {
+          k.disabled = true;
+          k.title = "Follow up 3 ist schon eingetragen — es folgt ein " +
+            "neuer Pitch.";
+          wahlZeile.append(k);
+          continue;
+        }
         k.onclick = () => {
           z.wahlDanach = wert;
           for (const [kn, w] of wahlKnoepfe) {
@@ -3332,6 +3351,12 @@ function sheetPitch(p) {
       if (eigen) {
         frag.append(el("div", "stand",
           "Eigener Schritt — was kommt danach?"), wahlZeile);
+        if (fuDurch) {
+          frag.append(el("div", "stand",
+            "Follow-up ist gesperrt: seit dem letzten Pitch stehen schon " +
+            "3 Follow-ups in der Historie. Nach Follow up 3 folgt laut " +
+            "Kadenz ein neuer Pitch."));
+        }
       }
       zeile.append(ok);
       if (ohneStart) {
@@ -5916,8 +5941,34 @@ function naechsterSchritt(aktion, pos) {
     return eigenerSchritt(roh.replace(SCHRITT_MARKE, ""));
   }
   const a = roh.toLowerCase();
-  if (a.includes("follow")) {
-    const nr = Math.min(pos + 1, 3);
+  // ---------------------------------- Die Kadenz hat genau drei Follow-ups
+  // Andreas Regel (doku/Anleitung Pitchliste.md): Pitch -> FU1 -> FU2 -> FU3
+  // -> 90 Tage Pause -> Neuer Pitch. Ein VIERTES Follow-up gibt es nicht.
+  //
+  // Hier stand `Math.min(pos + 1, 3)`. Der Deckel hat die Regel nicht
+  // durchgesetzt, sondern verschluckt: ab pos >= 3 kam wieder "Follow up 3"
+  // heraus - dieselbe Nummer ein zweites Mal, neue Zeile im Brand-Book,
+  // Zaehler auf 4. Gefunden am 25.09. an "Faroel Naturseife": Pitch, FU1,
+  // FU2, FU3, eigener Schritt, FU3.
+  //
+  // Die Falle ist AELTER als v172, dort war sie nur unerreichbar - nach FU3
+  // setzt die Kadenz von selbst "Neuer Pitch". Erreichbar ist sie ueber
+  // jeden Weg, der "Follow up" VON HAND in die Pitchzeile schreibt: die
+  // Chip-Auswahl nach einem eigenen Schritt (v172) und "✎ Termin aendern"
+  // (v113). Am echten Bestand gemessen (25.09., 118 Marken): 12 Marken
+  // tragen "Follow up" als naechste Aktion, bei 3 davon stand pos schon auf
+  // 3 - dort war ein Klick auf "erledigt" ein viertes Follow-up.
+  //
+  // Der Guard sitzt HIER und nicht nur an den Chips: beide Handwege und der
+  // Excel-Altbestand laufen durch diese eine Funktion. Eine Sperre nur an
+  // der Bedienung waere das Pflaster auf dem Symptom.
+  //
+  // KEIN eigener return: der faellt bis zum Pitch-Zweig am Ende durch, damit
+  // es bei EINEM Pitch-Objekt bleibt. Zwei Kopien waeren die Vorlage dafuer,
+  // dass in sechs Monaten die eine gepflegt wird und die andere nicht.
+  const fuErschoepft = a.includes("follow") && pos >= 3;
+  if (a.includes("follow") && !fuErschoepft) {
+    const nr = pos + 1;   // durch den Guard oben immer 1, 2 oder 3
     return {
       typ: "FollowUp", aktion: "Follow up " + nr, status: "Follow up",
       zaehlt: true, kontakt: true,
@@ -6002,12 +6053,20 @@ function naechsterSchritt(aktion, pos) {
   //
   // `naechste` bleibt LEER: was nach einem eigenen Schritt kommt, weiss
   // nur Andrea. bereichErledigen() fragt sie, bevor der Knopf aufgeht.
-  if (a.trim() && !a.includes("pitch")) {
+  //
+  // !fuErschoepft ist Pflicht: "Follow up" bei pos >= 3 wuerde hier sonst
+  // als Freitext durchgehen und zu einem EIGENEN Schritt namens "Follow up"
+  // werden - schlimmer als das doppelte FU3, weil der Text dann auch noch
+  // ins Word wandert.
+  if (!fuErschoepft && a.trim() && !a.includes("pitch")) {
     return eigenerSchritt(roh);
   }
 
   return { typ: "Pitch",
-    aktion: aktion === "Neuer Pitch" ? "Neuer Pitch" : "Pitch",
+    // fuErschoepft: die Marke hatte ihren Zyklus, es ist ein NEUER Pitch -
+    // nicht der erste. Sonst hiesse der Knopf "✓ Pitch erledigt" an einer
+    // Marke mit voller Historie.
+    aktion: fuErschoepft || aktion === "Neuer Pitch" ? "Neuer Pitch" : "Pitch",
     status: "Pitch", zaehlt: false, kontakt: true,
     naechste: "Follow up", key: "fu1" };
 }

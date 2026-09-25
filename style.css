@@ -341,6 +341,10 @@ main {
   font-size: 12.5px;
   cursor: pointer;
 }
+/* Gesperrter Chip (v173): sichtbar, aber erkennbar nicht benutzbar. Ohne
+   diese Regel sah ein disabled-Chip genauso aus wie ein freier - man tippt
+   drauf, nichts passiert, und die App wirkt kaputt. */
+.chip:disabled { opacity: .45; cursor: default; }
 .chip.aktiv {
   background: var(--akzent-flaeche);
   border-color: var(--akzent-rand);
