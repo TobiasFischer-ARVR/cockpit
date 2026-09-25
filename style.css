@@ -611,6 +611,7 @@ main {
 .punkt-pitch { background: var(--blau); }
 .punkt-followup { background: var(--gelb); }
 .punkt-antwort { background: var(--grau); }
+.punkt-eigen { background: var(--gruen); }
 .punkt-rating { background: var(--gelb); }
 .punkt-positiv { background: var(--gruen); }
 

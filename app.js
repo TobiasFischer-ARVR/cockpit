@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v171"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v172"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -5832,6 +5832,42 @@ const KADENZ_STD = { fu1: 5, fu2: 5, fu3: 10, pause: 90, eigen: 5 };
 // Liste eine ehrliche Unfertigkeit statt einer falschen Tatsache.
 const SCHRITT_OFFEN = "Eigener Schritt";
 
+// Die Erkennungsmarke fuer Andreas eigenen Schritt - EINE Regel fuer drei
+// Leser: naechsterSchritt() (was wird abgehakt), klassifiziereAktion() (was
+// steht im Word) und klassifiziere_aktion() in ugc_core.py (der PC-Weg).
+//
+// Warum ein Ausdruck und kein startsWith("schritt:"): beide Gegenpruefer
+// haben am 25.09. unabhaengig denselben Fall gefunden. Andrea tippt
+// "Schritt : Rueckruf" - Leerzeichen vor dem Doppelpunkt, im Deutschen eine
+// haeufige Gewohnheit. Mit startsWith() bricht die Marke, der Text faellt
+// auf "Pitch" zurueck, und dieser erfundene Pitch nullt ueber v170/Z1 den
+// Follow-up-Zaehler. Genau der Schaden, den v172 verhindern soll.
+// Toleriert wird deshalb: Leerraum vorne, Leerraum um den Doppelpunkt,
+// Gross-/Kleinschreibung. NICHT toleriert: ein anderes Wort - die Marke
+// muss eine Marke bleiben.
+const SCHRITT_MARKE = /^\s*schritt\s*:\s*/i;
+
+// Ein eigener Schritt, aus nacktem Text gebaut. EINE Stelle, ZWEI Wege
+// dorthin: ein Text, der die Marke schon traegt (dann ist sie abgezogen),
+// und ein Freitext ohne jedes Schluesselwort. Beide muessen dasselbe
+// ergeben, sonst haengt das Verhalten daran, wie der Text hereinkam.
+//
+// `status` traegt den NACKTEN Text (das sieht Andrea in der Pitchliste),
+// `aktion` die markierte Fassung (das steht im Word und im Ereignis).
+function eigenerSchritt(text) {
+  const t = String(text == null ? "" : text).trim();
+  // Der Platzhalter wird nachsichtig verglichen: "eigener schritt" oder
+  // "Eigener  Schritt" sind derselbe Nicht-Eintrag. Ohne die Nachsicht
+  // landete eine Tippvariante als echter Schritt im Word (Codex, 25.09.).
+  const offen = !t || t.toLowerCase().replace(/\s+/g, " ")
+                       === SCHRITT_OFFEN.toLowerCase();
+  return { typ: "EigenerSchritt",
+    aktion: offen ? SCHRITT_OFFEN : "Schritt: " + t,
+    status: offen ? SCHRITT_OFFEN : t,
+    zaehlt: false, kontakt: true, ereignis: !offen,
+    ereignisTyp: "Eigen", naechste: "", key: "eigen" };
+}
+
 // Was wird erledigt und was folgt darauf? aktion = fällige naechste_aktion
 // aus der Pitchliste, pos = Follow-ups seit dem letzten Pitch.
 // Was bisher als Pitch-Herkunft in den Books steht - als Vorschlagsliste.
@@ -5864,7 +5900,22 @@ function herkunftUnzulaessig(text) {
 }
 
 function naechsterSchritt(aktion, pos) {
-  const a = String(aktion || "").toLowerCase();
+  const roh = String(aktion || "");
+  // Traegt der Text die Marke, ist er ein eigener Schritt - VOR allen
+  // Schluesselwoertern. Ohne diesen Vorrang waere "Schritt: Follow-up-Mail
+  // aufsetzen" beim Abhaken ein Follow-up (Zaehler steigt), waehrend der
+  // Import dieselbe Zeile als "Eigen" liest: zwei Wahrheiten fuer einen
+  // Text. Gefunden von Codex, 25.09.
+  //
+  // Die Marke wird ABGEZOGEN, nicht nur erkannt. Sonst entsteht beim
+  // naechsten Abhaken "Schritt: Schritt: Kunde anrufen" - und der Weg
+  // dorthin ist kurz: das Termin-Fenster zeigt "Zuletzt eingetragen:
+  // Schritt: ..." (app.js, bereichErledigen), also genau den Text, den
+  // man wieder eintraegt. Doppelt, dann dreifach, ohne Deckel.
+  if (SCHRITT_MARKE.test(roh)) {
+    return eigenerSchritt(roh.replace(SCHRITT_MARKE, ""));
+  }
+  const a = roh.toLowerCase();
   if (a.includes("follow")) {
     const nr = Math.min(pos + 1, 3);
     return {
@@ -5918,24 +5969,41 @@ function naechsterSchritt(aktion, pos) {
   // LEER bleibt Pitch: eine frische Marke ohne Eintrag ist kein eigener
   // Schritt, sie hat nur noch keinen.
   //
-  // ereignis:false ist das Neue an diesem Zweig. Bis hierher entschied
-  // `kontakt` ueber BEIDES - Ereignis und "letzter Kontakt". Ein eigener
-  // Schritt braucht sie getrennt:
-  //   kontakt:true   -> "letzter Kontakt" wird auf heute gesetzt
-  //   ereignis:false -> kein Eintrag in der Historie, keine Zeile im Word
-  // Der Grund ist nicht Geschmack, sondern der Import: er ERSETZT die
-  // Ereignisse aus dem Word. Ein Ereignis, das nur in der App steht, waere
-  // beim naechsten "Aus Brand-Books aktualisieren" lautlos weg. Entweder
-  // es steht im Word - dann muessten beide Leser es kennen - oder es gibt
-  // es gar nicht erst. Tobias hat am 24.09. Letzteres gewaehlt.
+  // kontakt und ereignis sind hier GETRENNT - bis v160 entschied `kontakt`
+  // ueber beides:
+  //   kontakt:true  -> "letzter Kontakt" wird auf heute gesetzt
+  //   ereignis:true -> Eintrag in der Historie UND Zeile im Word
+  //
+  // v160 hatte `ereignis` hart auf false, mit dieser Begruendung: der
+  // Import ERSETZT die Ereignisse aus dem Word, ein Ereignis das nur in
+  // der App steht waere beim naechsten Lauf lautlos weg. Die Begruendung
+  // stimmt - nur war die Schlussfolgerung zu kurz. Richtig ist die andere
+  // Haelfte des Satzes: "entweder es steht im Word - dann muessen beide
+  // Leser es kennen". Genau das macht v172 (Tobias, 25.09.).
+  //
+  // Das Praefix "Schritt: " ist die Erkennungsmarke fuer beide Leser.
+  // Ohne sie faellt der Freitext in klassifiziereAktion() auf "Pitch"
+  // zurueck, und ueber v170/Z1 nullt dieser erfundene Pitch den
+  // Follow-up-Zaehler. Warum eine Marke und keine Negativ-Regel ("alles
+  // Unbekannte ist ein eigener Schritt"): am Bestand gemessen (25.09.,
+  // 197 Ereignisse) stehen dort 5 echte Erstkontakte als Freitext ohne
+  // Schluesselwort ("Bewerberformular ausgefuellt", "Registrierung im
+  // Bewerberformular", ...). Die MUESSEN Pitch bleiben.
+  //
+  // ereignisTyp statt typ: `typ` gehoert dem Pending-Namensraum -
+  // bereichErledigen() prueft s.typ === "EigenerSchritt", und das ist der
+  // GEPLANTE Schritt. Der Ereignistyp ist ein anderer Begriff. Stuenden
+  // beide unter einem Namen, saehe die App vor dem Import etwas anderes
+  // als danach - und genau das soll v172 ja abstellen.
+  //
+  // Steht noch der Platzhalter (SCHRITT_OFFEN), bleibt alles wie in v160:
+  // kein Ereignis, keine Zeile. Eine Zeile "Schritt: Eigener Schritt"
+  // waere fuer Andrea kein Gewinn, sondern Fuellmaterial (Tobias, 25.09.).
   //
   // `naechste` bleibt LEER: was nach einem eigenen Schritt kommt, weiss
   // nur Andrea. bereichErledigen() fragt sie, bevor der Knopf aufgeht.
   if (a.trim() && !a.includes("pitch")) {
-    const text = String(aktion).trim();
-    return { typ: "EigenerSchritt", aktion: text, status: text,
-      zaehlt: false, kontakt: true, ereignis: false,
-      naechste: "", key: "eigen" };
+    return eigenerSchritt(roh);
   }
 
   return { typ: "Pitch",
@@ -6063,8 +6131,14 @@ function erledigen(m, s, tage, standard) {
   // hierher entschied `kontakt` ueber beides; getrennt werden mussten sie,
   // weil ein App-eigenes Ereignis den naechsten Word-Import nicht ueberlebt.
   if (s.kontakt !== false && s.ereignis !== false) {
+    // s.ereignisTyp statt s.typ (v172): beim eigenen Schritt heisst der
+    // GEPLANTE Schritt "EigenerSchritt", das ENTSTANDENE Ereignis "Eigen".
+    // klassifiziereAktion() liest die Word-Zeile spaeter als "Eigen" -
+    // stuende hier s.typ, truege derselbe Vorgang vor und nach dem Import
+    // zwei verschiedene Typen, und die Historie spraenge bei jedem Lauf.
     (m.events = m.events || []).push(
-      { typ: s.typ, datum: heute, aktion: s.aktion, positiv: "" });
+      { typ: s.ereignisTyp || s.typ, datum: heute, aktion: s.aktion,
+        positiv: "" });
   }
   // termin_hand wird hier GELOESCHT (v116/v117), und das ist zwingend:
   // Dieses Datum kommt aus der Kadenz, darf also von pitchNachrechnen()
@@ -6135,8 +6209,9 @@ function erledigen(m, s, tage, standard) {
   // ein Stand "Ereignis ohne Auftrag" auf die Platte, und stirbt die App
   // genau dann, ist das Loch wieder offen - nur schmaler.
   // Punkt 4 im Brand-Book sofort mitschreiben (Andrea 02.09.) - ausser
-  // beim eigenen Schritt (v160): der steht bewusst nur in der App, also
-  // gehoert auch keine Zeile ins Word.
+  // bei einem eigenen Schritt OHNE Text (v172): solange dort nur der
+  // Platzhalter steht, gehoert keine Zeile ins Word. Mit Text schreibt
+  // auch der eigene Schritt, als "Schritt: <Text>".
   if (s.ereignis !== false) bookHistorieMelden(m, heute, s.aktion);
   datenstandPersistieren();
 }
@@ -6473,17 +6548,26 @@ function rueckgaengig(m, la) {
     m.pitchliste = { ...la.vorher, geaendert: lokalIso() };
     delete datenstand.letzteAktion;
     listeVeraltet = true;
-    datenstandPersistieren();
+    // Reihenfolge wie in erledigen() (A5-Fix, 22.09.) - hier nachgezogen am
+    // 25.09., gefunden von Codex: bookHistorieMelden() legt SYNCHRON den
+    // Nachholauftrag an, also muss es VOR dem Persistieren laufen. Stand es
+    // danach, lag ein Stand "Ruecknahme ohne Loeschauftrag" auf der Platte;
+    // stirbt die App genau dann, bleibt die Zeile im Word stehen und der
+    // naechste Import holt das zurueckgenommene Ereignis wieder herein.
+    // Dasselbe Loch wie A5, nur am anderen Ende des Handgriffs.
     // Ins Brand-Book hat erledigen() TROTZDEM geschrieben - bookHistorie-
     // Melden() haengt dort nicht am Ereignis, sondern laeuft immer.
     // Ohne diese Gegenbuchung saehe die App "nie passiert" und das Word
     // weiterhin den Eintrag: zwei Stellen, die dasselbe anders sehen.
     // Das ist der Fehler, den v96 fuer den normalen Weg abgestellt hat.
-    // ... ausser beim eigenen Schritt (v160, la.ohneBook): dort hat
-    // erledigen() bewusst NICHT geschrieben. Ohne diese Bedingung liefe
-    // ein Download plus Upload des Books, um eine Zeile zu entfernen, die
-    // es nie gab - und der cTag der Datei aendert sich dabei.
+    // ... ausser bei einem eigenen Schritt OHNE Text (v172, la.ohneBook):
+    // dort hat erledigen() bewusst NICHT geschrieben. Ohne diese Bedingung
+    // liefe ein Download plus Upload des Books, um eine Zeile zu entfernen,
+    // die es nie gab - und der cTag der Datei aendert sich dabei.
+    // Ein eigener Schritt MIT Text laeuft seit v172 gar nicht mehr hier
+    // durch, sondern unten ueber den normalen Zweig: er hat ein Ereignis.
     if (la.datum && !la.ohneBook) bookHistorieMelden(m, la.datum, la.aktion, true);
+    datenstandPersistieren();
     return;
   }
   const ev = m.events || [];
@@ -6510,8 +6594,10 @@ function rueckgaengig(m, la) {
   m.pitchliste = { ...la.vorher, geaendert: lokalIso() };
   delete datenstand.letzteAktion;
   listeVeraltet = true;
-  datenstandPersistieren();
+  // Auftrag vor dem Persistieren, wie oben und wie in erledigen()
+  // (A5-Fix; hier nachgezogen 25.09.).
   bookHistorieMelden(m, weg.datum, weg.aktion, true);
+  datenstandPersistieren();
 }
 
 // ----------------------------------------------- Neue Brand (Phase 5)
@@ -7024,6 +7110,16 @@ function bestandDateiBefunde(marken, dateien) {
 // PYTHON, weil Python die Referenz des Paritätstests ist.
 function klassifiziereAktion(aktion) {
   const a = String(aktion == null ? "" : aktion).toLowerCase();
+  // "Schritt: ..." ZUERST (v172): Andreas eigener Schritt, von der App
+  // geschrieben oder von ihr selbst getippt. Muss vor allen anderen
+  // stehen - "Schritt: Follow-up-Mail aufsetzen" ist ein eigener Schritt,
+  // kein Follow-up. Ein Ereignis dieses Typs zaehlt in keiner Quote:
+  // KONTAKT_TYPEN ist eine Positivliste, "Eigen" steht nicht drin.
+  // Ohne diesen Zweig faellt der Text unten auf "Pitch" zurueck und nullt
+  // ueber v170/Z1 den Follow-up-Zaehler - ein Pitch, den niemand gemacht
+  // hat. Das Gegenstueck heisst klassifiziere_aktion() in ugc_core.py und
+  // muss mitwandern.
+  if (SCHRITT_MARKE.test(aktion == null ? "" : aktion)) return "Eigen";
   if (a.includes("creatorpool")) return "Creatorpool";
   return a.includes("follow") ? "FollowUp" : "Pitch";
 }
