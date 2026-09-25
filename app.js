@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v173"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v174"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -10279,6 +10279,21 @@ function sheetWarteliste() {
   if (wartend.length) {
     const nachtragen = el("button", "chip", "Jetzt nachtragen");
     nachtragen.onclick = async () => {
+      // Backlog 18 (v174): Laeuft schon ein automatischer Durchlauf, gab
+      // outboxAbarbeiten() bisher wortlos 0 zurueck - der Knopf tat nichts
+      // und sagte nichts. Andrea drueckt dann ein zweites Mal.
+      //
+      // Der Guard sitzt HIER und nicht in outboxAbarbeiten(): dessen
+      // Rueckgabewert 0 heisst dreierlei ("laeuft schon", "nichts wartet",
+      // "nichts geschafft"), und die uebrigen Aufrufer sind alle
+      // Hintergrundlaeufe ohne await, denen der Unterschied egal ist. Nur
+      // dieser eine Klick braucht eine Antwort - also bekommt nur er den
+      // Guard, statt den Rueckgabewert fuer alle umzubauen.
+      if (outboxLaeuft) {
+        banner("Die App trägt gerade schon nach — einen Moment. " +
+          "Nichts geht verloren.");
+        return;
+      }
       nachtragen.disabled = true;
       await outboxAbarbeiten(true);
       sheetWarteliste();
