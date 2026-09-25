@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v168"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v169"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1114,71 +1114,81 @@ function sheetEinstellungen() {
       "geändert, steht danach in der App wieder der alte Wert, im " +
       "Brand-Book aber der neue.")));
 
-  // --------------------------------- Andreas Stand holen (v166/v168)
+  // --------------------------- Andreas Stand holen (v166/v168/v169)
   //
-  // Sichtbar auch fuer Andrea, aber mit Warnton (Tobias, 25.09.): ein
-  // versteckter Knopf waere mehr Code fuer einen Fall, der bei ihr nie
-  // eintritt - sie hat keinen zweiten Stand, den sie sich holen koennte.
-  // v168 (Tobias, 25.09.): umbenannt und in den Sicherungs-Reiter
-  // verschoben. Vorher hiess er "Stand aus OneDrive uebernehmen" und stand
-  // neben "Aus Brand-Books aktualisieren" - zwei aehnlich klingende Knoepfe
-  // nebeneinander, und Tobias musste fragen, was der Unterschied ist. Er
-  // gehoert hierher: er ERSETZT den Stand und sichert vorher, genau wie
-  // "Backup laden" - nur mit der Cloud als Quelle statt einer Datei.
-  const aStatus = el("div", "stand",
-    "Für den Abend, nachdem du Andreas Dateien heruntergeladen hast: holt " +
-    "ihren Stand aus OneDrive — auch wenn er ÄLTER ist als der " +
-    "auf diesem Gerät — und liest danach alle Brand-Books neu ein. " +
-    "Der jetzige Stand wird vorher gesichert.");
-  const aZeile = el("div", "chips");
-  const aKnopf = el("button", "chip",
-    "⇩ Andreas Stand holen (Abend)");
-  aKnopf.onclick = async () => {
-    if (!confirm(
-      "Der Stand aus OneDrive wird übernommen — AUCH WENN ER " +
-      "ÄLTER IST als der auf diesem Gerät.\n\n" +
-      "Alles, was seitdem nur auf diesem Gerät eingetragen wurde, ist " +
-      "danach weg.\n\n" +
-      "Der jetzige Stand wird vorher nach OneDrive gesichert. Danach " +
-      "werden ALLE Brand-Books neu gelesen — über 60 Dateien, " +
-      "also besser über WLAN.\n\n" +
-      "Wirklich übernehmen?")) return;
-    aKnopf.disabled = true;
-    try {
-      const r = await andreasStandUebernehmen((t) => {
-        aStatus.textContent = t;
-      });
-      if (r.fehler) { aStatus.textContent = "✗ " + r.fehler; return; }
-      aStatus.textContent =
-        (r.standGetauscht
-          ? "✓ Stand aus OneDrive übernommen. "
-          : "Kein Stand in OneDrive gefunden — nur neu eingelesen. ") +
-        r.merkerWeg + " Marken neu zu lesen. " + importBericht(r.bericht);
-      // Bewusst KEIN sheetEinstellungen() wie beim Import-Knopf: das baut
-      // das Sheet neu auf und wischt genau den Bericht weg, den man nach
-      // diesem Knopf lesen will. listeVeraltet reicht - popstate zeichnet
-      // die Ansicht frisch, sobald das Sheet zugeht (Muster backupLaden).
-      listeVeraltet = true;
-    } catch (fehler) {
-      aStatus.textContent = "✗ Abgebrochen: " + (fehler && fehler.message);
-    } finally {
-      aKnopf.disabled = false;
-    }
-  };
-  aZeile.append(aKnopf);
-  wrap.append(abschnitt("Andreas Stand holen", aStatus, aZeile,
-    erklaerung("Andreas Stand holen",
-      "Normalerweise gewinnt der NEUERE Stand. Das ist richtig, solange " +
-      "nur ein Gerät arbeitet — beim Zusammenführen ist es " +
-      "falsch: jedes Öffnen der App stempelt den eigenen Stand auf " +
-      "jetzt, und damit gewinnt er gegen eine Datei, die nachmittags " +
-      "gespeichert wurde. Dieser Knopf fragt nicht nach dem Alter.\n\n" +
-      "Unterschied zu „Aus Brand-Books aktualisieren“: das liest nur " +
-      "die Word-Dokumente und holt daraus Ereignisse und Kerninfos. " +
-      "Rating, Rating-Historie und die Pitchlisten-Felder gibt es im " +
-      "Word gar nicht — die stehen nur in ihrem Datenstand. Dieser " +
-      "Knopf holt beides und macht das Aktualisieren als letzten " +
-      "Schritt gleich mit; danach ist es nicht nochmal nötig.")));
+  // VERSTECKT seit v169 (Tobias, 25.09.). Bis v168 stand er offen da - mit
+  // der Begruendung, Andrea habe ohnehin keinen zweiten Stand, den sie
+  // holen koennte. Das stimmt, aber seit v168 wohnt er im Reiter
+  // "Sicherung" neben "Backup laden", also dort, wo sie im Ernstfall
+  // wirklich sucht. Ein Knopf, der ihren Tag ueberschreibt, hat da nichts
+  // zu suchen.
+  //
+  // Freischalten: im Info-Sheet SIEBEN MAL auf die Versionszeile tippen.
+  // Dasselbe nochmal versteckt ihn wieder. Der Merker haengt am Geraet
+  // (localStorage), nicht im Datenstand - sonst waere er nach dem naechsten
+  // "Andreas Stand holen" bei ihr mit drin, und das waere genau verkehrt.
+  if (einst.abendKnopf) {
+    // v168 (Tobias, 25.09.): umbenannt und in den Sicherungs-Reiter
+    // verschoben. Vorher hiess er "Stand aus OneDrive uebernehmen" und stand
+    // neben "Aus Brand-Books aktualisieren" - zwei aehnlich klingende Knoepfe
+    // nebeneinander, und Tobias musste fragen, was der Unterschied ist. Er
+    // gehoert hierher: er ERSETZT den Stand und sichert vorher, genau wie
+    // "Backup laden" - nur mit der Cloud als Quelle statt einer Datei.
+    const aStatus = el("div", "stand",
+      "Für den Abend, nachdem du Andreas Dateien heruntergeladen hast: holt " +
+      "ihren Stand aus OneDrive — auch wenn er ÄLTER ist als der " +
+      "auf diesem Gerät — und liest danach alle Brand-Books neu ein. " +
+      "Der jetzige Stand wird vorher gesichert.");
+    const aZeile = el("div", "chips");
+    const aKnopf = el("button", "chip",
+      "⇩ Andreas Stand holen (Abend)");
+    aKnopf.onclick = async () => {
+      if (!confirm(
+        "Der Stand aus OneDrive wird übernommen — AUCH WENN ER " +
+        "ÄLTER IST als der auf diesem Gerät.\n\n" +
+        "Alles, was seitdem nur auf diesem Gerät eingetragen wurde, ist " +
+        "danach weg.\n\n" +
+        "Der jetzige Stand wird vorher nach OneDrive gesichert. Danach " +
+        "werden ALLE Brand-Books neu gelesen — über 60 Dateien, " +
+        "also besser über WLAN.\n\n" +
+        "Wirklich übernehmen?")) return;
+      aKnopf.disabled = true;
+      try {
+        const r = await andreasStandUebernehmen((t) => {
+          aStatus.textContent = t;
+        });
+        if (r.fehler) { aStatus.textContent = "✗ " + r.fehler; return; }
+        aStatus.textContent =
+          (r.standGetauscht
+            ? "✓ Stand aus OneDrive übernommen. "
+            : "Kein Stand in OneDrive gefunden — nur neu eingelesen. ") +
+          r.merkerWeg + " Marken neu zu lesen. " + importBericht(r.bericht);
+        // Bewusst KEIN sheetEinstellungen() wie beim Import-Knopf: das baut
+        // das Sheet neu auf und wischt genau den Bericht weg, den man nach
+        // diesem Knopf lesen will. listeVeraltet reicht - popstate zeichnet
+        // die Ansicht frisch, sobald das Sheet zugeht (Muster backupLaden).
+        listeVeraltet = true;
+      } catch (fehler) {
+        aStatus.textContent = "✗ Abgebrochen: " + (fehler && fehler.message);
+      } finally {
+        aKnopf.disabled = false;
+      }
+    };
+    aZeile.append(aKnopf);
+    wrap.append(abschnitt("Andreas Stand holen", aStatus, aZeile,
+      erklaerung("Andreas Stand holen",
+        "Normalerweise gewinnt der NEUERE Stand. Das ist richtig, solange " +
+        "nur ein Gerät arbeitet — beim Zusammenführen ist es " +
+        "falsch: jedes Öffnen der App stempelt den eigenen Stand auf " +
+        "jetzt, und damit gewinnt er gegen eine Datei, die nachmittags " +
+        "gespeichert wurde. Dieser Knopf fragt nicht nach dem Alter.\n\n" +
+        "Unterschied zu „Aus Brand-Books aktualisieren“: das liest nur " +
+        "die Word-Dokumente und holt daraus Ereignisse und Kerninfos. " +
+        "Rating, Rating-Historie und die Pitchlisten-Felder gibt es im " +
+        "Word gar nicht — die stehen nur in ihrem Datenstand. Dieser " +
+        "Knopf holt beides und macht das Aktualisieren als letzten " +
+        "Schritt gleich mit; danach ist es nicht nochmal nötig.")));
+  }
 
   // Datenlogging (v103). Werkzeug auf Zeit: einschalten, Fehler einfangen,
   // wieder ausschalten. Der Pfad wird MIT angezeigt - steht der Datenbank-
@@ -1676,6 +1686,36 @@ function backupLaden() {
 // Info-Button (Tobias 30.08.): kontextabhaengig - im Hauptmenue Infos zur
 // App allgemein, im UGC-Bereich Infos zum Dashboard (was zaehlen die
 // Kacheln? Genau die Fragen, die sonst per Chat geklaert werden muessen).
+// Versteckter Schalter fuer "Andreas Stand holen" (v169).
+//
+// Sieben Tipps auf die Versionszeile schalten den Abschnitt in den
+// Einstellungen ein oder aus. Das Muster ist von Android geborgt (siebenmal
+// auf die Build-Nummer), aus zwei Gruenden: Tobias muss sich EINE Sache
+// merken, und Andrea findet es nicht durch Herumprobieren.
+//
+// Ab dem vierten Tipp wird mitgezaehlt - ohne Rueckmeldung tippt man sieben
+// Mal ins Leere und haelt es fuer kaputt.
+//
+// Der Zaehler lebt nur so lange wie das offene Sheet. Wer es zumacht,
+// faengt von vorne an; ein versehentliches Freischalten ueber mehrere
+// Besuche hinweg gibt es damit nicht.
+function abendSchalter(el_) {
+  let tipps = 0;
+  el_.onclick = () => {
+    tipps++;
+    if (tipps < 4) return;
+    if (tipps < 7) { banner("Noch " + (7 - tipps) + " …"); return; }
+    tipps = 0;
+    einst.abendKnopf = !einst.abendKnopf;
+    localStorage.setItem(EINST_KEY, JSON.stringify(einst));
+    banner(einst.abendKnopf
+      ? "„Andreas Stand holen“ ist jetzt sichtbar — Einstellungen, "
+        + "Reiter „Sicherung“."
+      : "„Andreas Stand holen“ ist wieder versteckt.");
+  };
+  return el_;
+}
+
 function sheetInfo() {
   const wrap = el("div");
   const titel = (t) => el("div", "info-titel", t);
@@ -1716,8 +1756,8 @@ function sheetInfo() {
       titel("Cockpit"),
       zeile("Installierbare Web-App (PWA). Daten liegen auf dem Gerät und " +
             "in OneDrive — nichts auf GitHub."),
-      zeile("App-Version " + APP_VERSION + " · Updates holt die App beim " +
-            "Öffnen selbst und meldet sich mit einem Banner."),
+      abendSchalter(zeile("App-Version " + APP_VERSION + " · Updates holt " +
+            "die App beim Öffnen selbst und meldet sich mit einem Banner.")),
       updateSuchKnopf(),
       zeile(datenstand
         ? `Datenstand: ${datenstand.marken.length} Marken · Stand ` +
