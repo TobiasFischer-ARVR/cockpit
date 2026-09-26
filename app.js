@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v174"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v175"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -5986,8 +5986,11 @@ function naechsterSchritt(aktion, pos) {
       status: "Creatorpool", zaehlt: false, kontakt: true,
       naechste: "Creatorpool", key: "fu1" };
   }
-  // "Rückantworten prüfen" zählt weder in Historie noch KPI (14.09.) -
-  // kontakt:false unterdrückt das Ereignis ganz.
+  // "Rückantworten prüfen" zählt weder in Historie noch KPI (14.09.,
+  // bestätigt Tobias 26.09.: "eigener Schritt ohne Wertung").
+  // kontakt:false unterdrückt das Ereignis, ereignis:false (v175) auch die
+  // Word-Zeile. Bis v174 fehlte das zweite: die Zeile landete im Book, und
+  // klassifiziereAktion() las sie beim nächsten Import als PITCH (Backlog 40).
   // ABSICHTLICH eng: nur "rückantwort", NICHT "rückmeldung". Andreas
   // Freitexte ("Warten auf Rückmeldung") verhalten sich damit wie
   // bisher; eine Umdeutung bestehender Daten wäre eine stille
@@ -5995,7 +5998,7 @@ function naechsterSchritt(aktion, pos) {
   if (a.includes("rückantwort") || a.includes("rueckantwort")) {
     return { typ: "Ruecksprache", aktion: "Rückantworten prüfen",
       status: "Rückantworten prüfen", zaehlt: false, kontakt: false,
-      naechste: "Rückantworten prüfen", key: "fu1" };
+      ereignis: false, naechste: "Rückantworten prüfen", key: "fu1" };
   }
   // ------------------------------------------- Andreas eigener Schritt (T4)
   // Bis v159 fiel JEDER unbekannte Freitext in den Pitch-Zweig darunter.
@@ -7179,6 +7182,12 @@ function klassifiziereAktion(aktion) {
   // hat. Das Gegenstueck heisst klassifiziere_aktion() in ugc_core.py und
   // muss mitwandern.
   if (SCHRITT_MARKE.test(aktion == null ? "" : aktion)) return "Eigen";
+  // "Rückantworten prüfen" (v175, Backlog 40): Sicherheitsnetz für Zeilen,
+  // die bis v174 ins Word geschrieben wurden oder die Andrea selbst tippt.
+  // Ohne diesen Zweig -> "Pitch" -> erfundener Kontakt + Zähler genullt.
+  // Wortgleich eng wie in naechsterSchritt(): nur "rückantwort".
+  if (a.includes("rückantwort") || a.includes("rueckantwort"))
+    return "Ruecksprache";
   if (a.includes("creatorpool")) return "Creatorpool";
   return a.includes("follow") ? "FollowUp" : "Pitch";
 }
