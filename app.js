@@ -8394,7 +8394,7 @@ async function importAutomatisch() {
     // der Rueckkehr wartet nicht, niemand haette sie gesehen.
     logZeile("import-ausnahme", { marke: "", warum: String(fehler) });
     banner("⚠ Brand-Books konnten nicht gelesen werden: " + String(fehler));
-    return null;
+    b = null;   // weiter: ein vorgemerkter Nachlauf darf nicht liegenbleiben (Codex)
   }
   // v177: Kam eine Rueckkehr, waehrend schon ein Lauf lief, einmal hinterher
   // nachholen - sonst wartet eine Word-Aenderung bis zur uebernaechsten
@@ -10793,7 +10793,11 @@ function persistKettenLauf(fn) {
 }
 
 function datenstandPersistieren() {
-  return persistKettenLauf(datenstandSchreibenEinmal);
+  // v177: NICHT die Funktion direkt uebergeben. persistKettenLauf ruft
+  // .then(fn) - fn bekaeme das Ergebnis des VORIGEN Laufs als Argument, und
+  // seit v177 ist das erste Argument `still`: nach jedem erfolgreichen
+  // Speichern waere Andreas "Eingetragen" verschwunden (Codex, Diff-Review).
+  return persistKettenLauf(() => datenstandSchreibenEinmal(false));
 }
 
 // v177: Speichern fuer den Import - ohne "Eingetragen"-Banner. Bis v176
