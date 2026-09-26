@@ -8184,10 +8184,18 @@ function importBericht(b) {
       b.befunde.map((x) => x.marke).join(", ") + ". " + text;
   }
   if (b.probleme.length) {
-    const arten = {};
-    for (const p of b.probleme) arten[p.lage] = (arten[p.lage] || 0) + 1;
-    text += " · nicht gelesen: " +
-      Object.entries(arten).map(([a, k]) => `${k}× ${a}`).join(", ");
+    // v177 (Backlog 42/F6): Worte und Markennamen statt "1× graph-fehler".
+    // Mit S6 kommt dieser Satz ungefragt - er muss ohne Tobias lesbar sein.
+    const wort = { "waehrenddessen-geaendert": "gerade in Word geändert",
+      "datei-weg": "Datei nicht mehr da", unbestaetigt: "nicht bestätigt",
+      "graph-fehler": "OneDrive-Fehler", offline: "keine Verbindung",
+      "kein-docx": "kein lesbares Word-Dokument", ausnahme: "Lesefehler",
+      "marke-weg": "Marke nicht mehr da" };
+    const liste = b.probleme.slice(0, 3).map((p) => `${p.marke} (` +
+      (wort[p.lage] || p.lage) + (p.status ? " " + p.status : "") + ")");
+    text += " · nicht gelesen: " + liste.join(", ") +
+      (b.probleme.length > 3 ? ` und ${b.probleme.length - 3} weitere` : "") +
+      " — wird beim nächsten Zurückkommen nochmal versucht";
   }
   if (b.ordnerFehlt.length) {
     text += ` · ⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")}`;
@@ -9588,6 +9596,14 @@ document.addEventListener("visibilitychange", () => {
 //   dublette      stand schon drin
 //   wartet        geht von allein weg - Sperre, Drosselung, Netz, 5xx
 //   braucht-dich  wird von allein nichts - Book weg oder Anker fehlt
+// v177 (Backlog 43, Geraetetest 26.09.): Word am Handy haelt die Sperre,
+// solange das Dokument dort offen ist - Wegwischen reicht nicht, bis zu
+// 30 Minuten. "Belegt" allein liess Andrea raten, warum. Der Status (423
+// oder Netz) kommt hier nicht mehr an - schreibStatus() fasst beides zu
+// "wartet" zusammen -, deshalb ein Tipp statt einer Behauptung.
+const BOOK_BELEGT_TIPP = " Falls es in Word offen ist: dort oben links " +
+  "schließen, nicht nur wegwischen.";
+
 function schreibStatus(antwort) {
   if (!antwort) return "wartet";                 // kein Netz, kein Token
   if (antwort.ok) return "ok";
@@ -9919,7 +9935,7 @@ function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
         ? "Antwort ist eingetragen. Keine Verbindung zum Brand-Book — "
           + "wird nachgetragen, sobald du wieder angemeldet bist."
         : "Antwort ist eingetragen. Das Brand-Book ist gerade belegt — "
-          + "wird automatisch nachgetragen.");
+          + "wird automatisch nachgetragen." + BOOK_BELEGT_TIPP);
     } else if (s === "braucht-dich") {
       outboxAufnehmen(m, datum, aktion, false, "braucht-dich", "antwort", daten);
       if (wartelisteZeigen()) return;
@@ -10087,7 +10103,7 @@ function bookKerninfosMelden(m) {
                       "wartet", "kerninfos");
       banner(s === "wartet"
         ? "Gespeichert. Das Brand-Book ist gerade belegt — " +
-          "die Änderung wird automatisch nachgetragen."
+          "die Änderung wird automatisch nachgetragen." + BOOK_BELEGT_TIPP
         : "Gespeichert. Keine Verbindung zum Brand-Book — die Änderung " +
           "wird nachgetragen, sobald du wieder angemeldet bist.");
     } else if (s === "braucht-dich") {
@@ -10483,7 +10499,8 @@ function sheetWarteliste() {
       el("div", "stand",
         "Das Brand-Book ist gerade in Word geöffnet oder nicht erreichbar. "
         + "Die App trägt es automatisch nach, sobald es frei ist — beim "
-        + "nächsten Wechsel zurück in die App. Nichts geht verloren."),
+        + "nächsten Wechsel zurück in die App. Nichts geht verloren."
+        + BOOK_BELEGT_TIPP),
       zeile, ...wartend.map((e) => wartelisteZeile(e, false))));
   }
   sheetOeffnen("Warteliste", wrap);
@@ -10618,7 +10635,7 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
         : entfernen
         ? "„" + aktion + "“ wird aus dem Brand-Book entfernt, sobald es frei ist."
         : "„" + aktion + "“ ist eingetragen. Das Brand-Book ist gerade belegt — "
-          + "wird automatisch nachgetragen.");
+          + "wird automatisch nachgetragen." + BOOK_BELEGT_TIPP);
     } else if (s === "braucht-dich") {
       // Von allein wird das nichts: Book geloescht, umbenannt, oder die
       // erwartete Tabelle fehlt (Andreas handgepflegte Books).
@@ -11415,7 +11432,11 @@ async function datenstandLaden() {
         String(cloud.geaendert || "") < String(datenstand.geaendert || "")) {
       logZeile("stand-nachgereicht", { grund: "Cloud aelter trotz Ablehnung",
         ...logMehr({ soll: datenstand.geaendert, ist: cloud.geaendert }) });
-      persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
+      // v177 (Backlog 42/F7): klappt das stille Nachreichen, muss auch die
+      // Karte "Nur auf diesem Geraet" weg - sie behauptete sonst weiter das
+      // Gegenteil, bis Andrea selbst etwas eintraegt. Nur bei Erfolg.
+      persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand))
+        .then((ok) => { if (ok) wolkeMerken(true); });
     }
     if (datenstand) { versionsSicherung(); autoBackupPruefen(); }
     return;
@@ -11437,7 +11458,8 @@ async function datenstandLaden() {
     // Durch die Kette (v128): das hier ist der ZWEITE Schreiber auf
     // datenstand.json. Lief er gleichzeitig mit einem Persistieren, konnten
     // sich die beiden PUTs ueberholen - genau der Fall aus Backlog 5.
-    persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
+    persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand))
+      .then((ok) => { if (ok) wolkeMerken(true); });   // v177 (F7), wie oben
   }
   // Rueckfahrkarte fuer ein missratenes Release ZUERST, dann das taegliche
   // Backup. Beide bewusst OHNE await: der Start soll nicht auf einen
