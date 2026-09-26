@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v176"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v177"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2028,7 +2028,7 @@ function markenKarte(m) {
     el("div", "fuss", `Quelle: ${m.quelle}.docx`
       + (bookGeaendert.has(m.name) ? " · ⭳ noch nicht gelesen" : "")));
   karte.classList.add("tippbar");
-  karte.onclick = () => sheetHistorie(m);
+  karte.onclick = () => markeFrischOeffnen(m, sheetHistorie);
   return karte;
 }
 
@@ -3538,6 +3538,18 @@ function schluessel(name) {
     .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue")
     .replace(/ß/g, "ss")
     .replace(/[^a-z0-9]/g, "");
+}
+
+// v177: Eine Karte kann ein Markenobjekt zeigen, das der Import inzwischen
+// ersetzt hat - die Liste wird erst am Laufende neu gezeichnet. Ein Sheet
+// auf diesem alten Objekt schreibt ins Leere (S6-Szenario sheet_download,
+// Variante "liste"). Deshalb beim Tippen frisch per Name holen. BEWUSST
+// kein Rueckfall auf das alte Objekt (Codex): fehlt die Marke, ist die
+// Liste veraltet - neu zeichnen statt ein Sheet ins Leere oeffnen.
+// sheetPitch loest selbst frisch auf und braucht das nicht.
+function markeFrischOeffnen(m, sheet) {
+  const frisch = markeZuName(m.name);
+  if (frisch) sheet(frisch); else render();
 }
 
 function markeZuName(name) {
@@ -5099,7 +5111,7 @@ function brKarte(m) {
       (br.brandbook ? "Brand-Book ✓" : "noch kein Brand-Book")
       + (bookGeaendert.has(m.name) ? " · ⭳ noch nicht gelesen" : "")));
   karte.classList.add("tippbar");
-  karte.onclick = () => sheetBrandrating(m);
+  karte.onclick = () => markeFrischOeffnen(m, sheetBrandrating);
   return karte;
 }
 
@@ -8004,7 +8016,7 @@ async function graphMitWarten(pfad) {
 
 // EIN Book. Läuft ausschließlich innerhalb von bookKettig(), damit sich
 // Import und Outbox nicht überholen.
-async function importEinBook(m, datei) {
+async function importEinBook(m, datei, abbrechen) {
   const r = await graphMitWarten("/me/drive/items/" +
                                  encodeURIComponent(datei.itemId) + "/content");
   if (!r) return { lage: "offline" };
@@ -8031,6 +8043,14 @@ async function importEinBook(m, datei) {
   // ------------------------------------------------------------------
   // AB HIER KEIN await MEHR. Regel 1.
   // ------------------------------------------------------------------
+  // v177 (S6-Szenario sheet_download, 20/20 rot): Ging WAEHREND des
+  // Downloads ein Sheet auf, haelt es die Marke per Closure fest - ersetzen
+  // wir sie jetzt, landet jede Eingabe dort im verwaisten Objekt (v95-Falle,
+  // derselbe Waechter wie in datenstandUebernehmen seit v108). Die Pruefung
+  // vor jedem Book in importLauf kommt dafuer zu frueh. Hier, nach dem
+  // letzten await, kann sich bis zur Zuweisung nichts mehr dazwischenschieben.
+  // Nur fuer den automatischen Lauf: der Knopf laeuft AUS einem Sheet heraus.
+  if (typeof abbrechen === "function" && abbrechen()) return { lage: "sheet-offen" };
   const k = schluessel(m.name);
   const stelle = datenstand.marken.findIndex((x) => schluessel(x.name) === k);
   if (stelle < 0) return { lage: "marke-weg" };
@@ -8101,10 +8121,17 @@ function importBericht(b) {
   // Arbeitsliste. Genau der Fall, den R3 sichtbar machen sollte. Der
   // Ruecksprung sparte ihn wieder ein.
   if (!b.faellig) {
-    let ruhe = "✓ Nichts zu tun — alle Brand-Books sind auf dem Stand der App.";
-    if (b.ordnerFehlt.length)
-      ruhe += ` ⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")}.`;
+    // v177: Die Entwarnung gilt nur fuer das, was gelesen wurde (S6-Szenario
+    // fehler_sichtbar). Bis v176 stand "alle Brand-Books sind auf dem
+    // Stand" direkt neben "Ordner nicht lesbar" - obwohl gerade dort eine
+    // ungelesene Word-Aenderung liegen kann.
     const ohneDatei = b.bookFehlt || [];
+    let ruhe = b.ordnerFehlt.length
+      ? `⚠ Ordner nicht lesbar: ${b.ordnerFehlt.join(", ")} — dort konnte ` +
+        "nichts geprüft werden."
+      : ohneDatei.length
+        ? "✓ Alle vorhandenen Brand-Books sind auf dem Stand der App."
+        : "✓ Nichts zu tun — alle Brand-Books sind auf dem Stand der App.";
     if (ohneDatei.length)
       ruhe += ` ⚠ ${ohneDatei.length} Marke(n) mit Book-Haken, aber ohne ` +
         "Datei: " + ohneDatei.slice(0, 3).map((x) => x.marke).join(", ") +
@@ -8227,10 +8254,13 @@ async function importLauf(fortschritt, abbrechen) {
         b.abgebrochen = arbeit.length - i;
         break;
       }
-      if (typeof fortschritt === "function") fortschritt(++i, arbeit.length, m.name);
+      // v177: i zaehlt IMMER - bis v176 nur mit Fortschrittsanzeige, im
+      // automatischen Lauf stand b.abgebrochen deshalb stets auf "alle".
+      i++;
+      if (typeof fortschritt === "function") fortschritt(i, arbeit.length, m.name);
       let e;
       try {
-        e = await bookKettig(m, () => importEinBook(m, datei));
+        e = await bookKettig(m, () => importEinBook(m, datei, abbrechen));
       } catch (fehler) {
         // Weitermachen statt abbrechen: EINE kaputte Marke darf die
         // anderen 61 nicht mitnehmen. Ihr Merker rueckt nicht weiter,
@@ -8241,6 +8271,12 @@ async function importLauf(fortschritt, abbrechen) {
         });
         b.probleme.push({ marke: m.name, lage: "ausnahme", status: 0 });
         continue;
+      }
+      // Kein Problem, sondern derselbe Ausstieg wie oben - nur spaeter
+      // bemerkt. Dieses Book zaehlt zum Rest (sein Merker rueckt nicht).
+      if (e.lage === "sheet-offen") {
+        b.abgebrochen = arbeit.length - i + 1;
+        break;
       }
       if (e.lage !== "gelesen") {
         b.probleme.push({ marke: m.name, lage: e.lage, status: e.status });
@@ -8267,7 +8303,7 @@ async function importLauf(fortschritt, abbrechen) {
       // STRIKT auf true prüfen, nicht auf "nicht falsch". Ein undefined
       // wäre genau der stille Fehlschlag, den wir hier ausschließen wollen -
       // und bis heute gab datenstandSchreibenEinmal() genau das zurück.
-      const ok = await datenstandPersistieren();
+      const ok = await importSpeichern();
       if (ok !== true) {
         b.fehler = "Speichern fehlgeschlagen - keine Merker gesetzt";
         return b;                     // Merker NICHT setzen (Codex)
@@ -8302,7 +8338,10 @@ async function importLauf(fortschritt, abbrechen) {
       // leitet ihn aus genau diesem Merker ab.
       bookGeaendert.delete(marke.name);
     }
-    if (b.merker) await datenstandPersistieren();
+    // v177: Ergebnis zaehlt jetzt. Harmlos in der Richtung (das Book wird
+    // nochmal gelesen), aber der Bericht darf keinen Erfolg behaupten.
+    if (b.merker && (await importSpeichern()) !== true)
+      b.fehler = "Merker nicht gespeichert - Books werden erneut gelesen";
     logZeile("import-lauf", {
       faellig: b.faellig, gelesen: b.gelesen, uebernommen: b.uebernommen,
       unveraendert: b.unveraendert, befunde: b.befunde.length,
@@ -8338,9 +8377,36 @@ async function importAutomatisch() {
   if (typeof OD === "undefined" || !OD.konto()) return null;
   if (typeof JSZip === "undefined") return null;
 
-  const sheetOffen = () =>
-    typeof document !== "undefined" && !!document.getElementById("schleier");
-  const b = await importLauf(null, sheetOffen);
+  // v177: Bricht der Lauf wegen eines Sheets ab, SOFORT das Nachholen
+  // vormerken - nicht erst nach dem Speichern. Schliesst Andrea das Sheet
+  // in der Zwischenzeit, findet popstate den Merker sonst noch nicht (Codex).
+  const sheetOffen = () => {
+    const offen = typeof document !== "undefined" &&
+                  !!document.getElementById("schleier");
+    if (offen) abgleichNachholen = true;
+    return offen;
+  };
+  let b;
+  try {
+    b = await importLauf(null, sheetOffen);
+  } catch (fehler) {
+    // v177: Bis v176 blieb eine Ausnahme hier unbehandelt - der Aufruf bei
+    // der Rueckkehr wartet nicht, niemand haette sie gesehen.
+    logZeile("import-ausnahme", { marke: "", warum: String(fehler) });
+    banner("⚠ Brand-Books konnten nicht gelesen werden: " + String(fehler));
+    return null;
+  }
+  // v177: Kam eine Rueckkehr, waehrend schon ein Lauf lief, einmal hinterher
+  // nachholen - sonst wartet eine Word-Aenderung bis zur uebernaechsten
+  // Rueckkehr (S6-Szenario rueckkehr_serie). Nur HIER, nicht auch in
+  // importLauf: zwei Stellen, die nachstarten, starten doppelt (Codex).
+  if (b && b.fehler === "läuft bereits") { importNochmal = true; return b; }
+  // Ohne await: dieser Lauf ist fertig (importLaeuft ist frei), der
+  // Nachlauf traegt sich selbst.
+  if (importNochmal) { importNochmal = false; importAutomatisch(); }
+  // Die uebrigen Fehler sind entweder bewusst still (nicht angemeldet, kein
+  // Datenstand) oder schon laut: ein gescheitertes Speichern meldet
+  // datenstandSchreibenEinmal() selbst, auch im stillen Modus.
   if (!b || b.fehler) return b;
 
   // Nur melden, wenn es etwas zu melden gibt - aber "etwas" ist mehr als
@@ -8354,7 +8420,15 @@ async function importAutomatisch() {
       b.zurueckgestellt.length || (b.bookFehlt || []).length ||
       b.ordnerFehlt.length) {
     banner(importBericht(b));
-    if (!sheetOffen()) { listeVeraltet = false; render(); }
+  }
+  // v177: Neuzeichnen haengt nicht mehr am Banner - rueckt nur ein Merker
+  // weiter, verschwindet "noch nicht gelesen", und die Liste muss es zeigen.
+  if (b.uebernommen || b.merker || b.befunde.length || b.probleme.length ||
+      b.zurueckgestellt.length || (b.bookFehlt || []).length ||
+      b.ordnerFehlt.length) {
+    const offen = typeof document !== "undefined" &&
+                  !!document.getElementById("schleier");
+    if (!offen) { listeVeraltet = false; render(); }
     else listeVeraltet = true;
   }
   return b;
@@ -10722,6 +10796,15 @@ function datenstandPersistieren() {
   return persistKettenLauf(datenstandSchreibenEinmal);
 }
 
+// v177: Speichern fuer den Import - ohne "Eingetragen"-Banner. Bis v176
+// kam es bei fast jeder Rueckkehr, weil jeder eigene Book-Schreibvorgang
+// den cTag aendert und der Import nur den Merker nachzieht (S6-Szenario
+// rueckkehr_serie). Pro Auftrag, nicht global: Andrea kann waehrenddessen
+// selbst speichern und soll ihre Bestaetigung behalten (Codex).
+function importSpeichern() {
+  return persistKettenLauf(() => datenstandSchreibenEinmal(true));
+}
+
 // Warten, bis alles bereits Eingereihte durch ist - OHNE selbst zu
 // schreiben (A11, 22.09.). Die Kette laeuft der Reihe nach; wer auf ihr
 // aktuelles Ende wartet, weiss danach, dass jeder vorher angestossene
@@ -10791,7 +10874,9 @@ function kontoStempeln() {
   if (k && datenstand) datenstand.konto = k;
 }
 
-async function datenstandSchreibenEinmal() {
+// still (v177): nur das ERFOLGS-Banner entfaellt - fuer die Speicher-
+// vorgaenge des Imports, der selbst berichtet. Jeder Fehlschlag bleibt laut.
+async function datenstandSchreibenEinmal(still) {
   // EINE Referenz für beide Schreibwege (Backlog 5, Codex 11.09.). Vorher
   // stand hier zweimal die globale `datenstand`, mit einem `await`
   // dazwischen - taucht backupLaden() in diesem Fenster ein anderes Objekt
@@ -10839,7 +10924,7 @@ async function datenstandSchreibenEinmal() {
   // Ehrlich melden (Tobias 04.09.) - jetzt auch für den Fall, dass der
   // GERÄTESPEICHER versagt hat. "Nur auf dem Gerät" war dann eine
   // beruhigende Unwahrheit: in Wahrheit lag der Eintrag NIRGENDWO.
-  banner(ok && aufGeraet
+  if (!(still && ok && aufGeraet)) banner(ok && aufGeraet
     ? "Eingetragen — gesichert auf Gerät + OneDrive."
     : ok ? "⚠ Nur in OneDrive! Gerätespeicher hat abgelehnt — "
            + "bei schlechtem Netz kann der Eintrag fehlen."
@@ -11838,6 +11923,7 @@ if ("serviceWorker" in navigator) {
 // If-Match/eTag beim PUT; erst bauen, wenn das real vorkommt.
 let abgleichLaeuft = false;
 let abgleichNachholen = false;      // Abgleich wartet auf ein leeres Sheet
+let importNochmal = false;         // v177: Rueckkehr kam waehrend eines Imports
 
 async function abgleichBeiRueckkehr() {
   if (abgleichLaeuft) return;         // Doppelaufrufe beim Aufwachen
@@ -11854,7 +11940,11 @@ async function abgleichBeiRueckkehr() {
   // wurden trotzdem ausgetauscht. Genau diese Luecke.
   if (document.getElementById("schleier")) { abgleichNachholen = true; return; }
   abgleichLaeuft = true;
-  const vorher = datenstand && datenstand.geaendert;
+  // v177: dasselbe OBJEKT, nicht derselbe Zeitstempel. Ein eigenes Speichern
+  // (seit S6 auch der Import) stempelt `geaendert` am selben Objekt um - fiel
+  // das in laden(), hiess es faelschlich "anderes Geraet" (S6-Szenario
+  // rueckkehr_serie, 4/20). Ein fremder Stand tauscht das Objekt aus.
+  const vorher = datenstand;
   try {
     await laden();     // zieht den Datenstand selbst mit (siehe dort)
   } catch (_) {
@@ -11883,17 +11973,17 @@ async function abgleichBeiRueckkehr() {
   // serialisiert bookKettig() je Marke, und eine Marke mit offenem Auftrag
   // stellt abgleichPlan() ohnehin zurück.
   //
-  // ABSICHTLICH STILLGELEGT IN v142 (Tobias, 20.09.): importAutomatisch()
-  // ist gebaut und in test_s5b.js geprüft, aber der ganze Weg - echtes
-  // Graph, echte Word-Dateien, echtes MSAL - ist bisher nur gegen Attrappen
-  // gelaufen. Erst wird der KNOPF in den Einstellungen erprobt; wenn der
-  // sauber durchläuft, wird diese eine Zeile wieder scharf geschaltet.
+  // SCHARF SEIT v177 (Tobias, 26.09.). Von v142 bis v176 stillgelegt, weil
+  // der Weg nur gegen Attrappen gelaufen war. Vor dem Scharfschalten sechs
+  // Szenarien im Simulator (athena/s6/, athena_import.js) gegen den echten
+  // App-Code; drei Befunde daraus sind mit v177 behoben: Sheet-Waechter
+  // direkt vor dem Einsetzen, stilles Speichern, ehrliche Entwarnung.
   //
-  // Der Unterschied ist die Tragweite: den Knopf drückt jemand bewusst,
-  // diese Zeile läuft bei JEDER Rückkehr in die App - beim ersten Mal über
-  // alle 62 Books.
-  // importAutomatisch();
-  if (datenstand && datenstand.geaendert !== vorher) {
+  // Die Tragweite bleibt: den Knopf drückt jemand bewusst, diese Zeile läuft
+  // bei JEDER Rückkehr in die App - nach einem Leser-Versionssprung über
+  // alle Books.
+  importAutomatisch();
+  if (datenstand && datenstand !== vorher) {
     listeVeraltet = true;
     banner("Neuerer Stand von einem anderen Gerät geladen.");
   }
