@@ -6878,8 +6878,18 @@ async function bookEntfernen(m) {
   // Review 26.09.: ohne Antwort ist Word nicht der Grund - nicht raten.
   if (!r) return "Löschen nicht bestätigt — keine Antwort von OneDrive " +
     "(Netz?). Es wurde nichts entfernt, bitte nochmal versuchen.";
-  return "Löschen nicht bestätigt — ist das Brand-Book gerade in Word " +
-    "geöffnet? Word schließen und nochmal versuchen. Es wurde nichts entfernt.";
+  // v177 (Tobias' Geraetetest 26.09.): Bis hierher sagte JEDE Ablehnung
+  // "Word geoeffnet?" - auch nach dem Schliessen. Ob das die nachlaufende
+  // Sperre war (Word am Handy gibt sie verzoegert frei) oder ein anderer
+  // Fehler, liess sich nicht klaeren: der Status stand nirgends. Jetzt im
+  // Protokoll und in der Meldung.
+  logZeile("book-loeschen-abgelehnt", { marke: m.name, status: r.status });
+  return r.status === 423
+    ? "Löschen abgelehnt — das Brand-Book ist noch gesperrt (Word). Nach " +
+      "dem Schließen hält OneDrive die Sperre oft noch einige Minuten. " +
+      "Es wurde nichts entfernt, bitte später nochmal versuchen."
+    : "Löschen nicht bestätigt — OneDrive antwortete mit Fehler " +
+      r.status + ". Es wurde nichts entfernt, bitte nochmal versuchen.";
 }
 
 async function brandLoeschen(m) {
