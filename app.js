@@ -6885,9 +6885,14 @@ async function bookEntfernen(m) {
   // Protokoll und in der Meldung.
   logZeile("book-loeschen-abgelehnt", { marke: m.name, status: r.status });
   return r.status === 423
-    ? "Löschen abgelehnt — das Brand-Book ist noch gesperrt (Word). Nach " +
-      "dem Schließen hält OneDrive die Sperre oft noch einige Minuten. " +
-      "Es wurde nichts entfernt, bitte später nochmal versuchen."
+    // Geraetetest 26.09.: Word am Handy haelt die Sperre, solange das
+    // Dokument in Word offen ist - Wegwischen aus der App-Uebersicht reicht
+    // nicht, Word laeuft im Hintergrund weiter und erneuert sie. Auch der
+    // OneDrive-Client am PC konnte das Book in dieser Zeit nicht loeschen.
+    ? "Löschen abgelehnt — das Brand-Book ist noch gesperrt, weil es in " +
+      "Word offen ist. In Word das Dokument oben links schließen, nicht nur " +
+      "wegwischen — sonst bleibt es bis zu 30 Minuten gesperrt. Es wurde " +
+      "nichts entfernt."
     : "Löschen nicht bestätigt — OneDrive antwortete mit Fehler " +
       r.status + ". Es wurde nichts entfernt, bitte nochmal versuchen.";
 }
