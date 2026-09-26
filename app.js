@@ -556,7 +556,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v175"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v176"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4884,12 +4884,21 @@ function bereichLoeschen(m) {
   const frag = document.createDocumentFragment();
   const lz = el("div", "chips");
   const lk = el("button", "chip", "🗑 Brand löschen");
-  lk.onclick = () => {
+  lk.onclick = async () => {
     if (!confirm(`„${m.name}“ komplett löschen?\n` +
         "Verschwindet aus allen Listen; ein per App angelegtes " +
         "Brand-Book wandert in den OneDrive-Papierkorb.")) return;
-    brandLoeschen(m);
-    history.back(); // Sheet zu, popstate zeichnet die Liste frisch
+    // v176: erst schliessen, wenn geloescht ist - bleibt das Book
+    // gesperrt, bleibt auch das Sheet offen, samt Hinweis.
+    // Nur zurueck, wenn DIESES Sheet noch offen ist (Review 26.09.): hat
+    // Andrea waehrend des Wartens selbst "zurueck" gedrueckt, ginge ein
+    // zweites history.back() einen Schritt zu weit - bis aus der App.
+    const schleier = document.getElementById("schleier");
+    lk.disabled = true;
+    try {
+      if (await brandLoeschen(m) &&
+          document.getElementById("schleier") === schleier) history.back();
+    } finally { lk.disabled = false; }
   };
   lz.append(lk);
   frag.append(abschnitt("Verwaltung", lz, erklaerung("Brand löschen",
@@ -5176,7 +5185,11 @@ function sheetBrandrating(m) {
           : "✓ Brand-Book erstellt: " + lb.zeit.replace("T", " ").slice(0, 16)));
       const rz = el("div", "chips");
       const rk = el("button", "chip", "↶ Rückgängig");
-      rk.onclick = () => { bookRueckgaengig(m, lb); bau(); };
+      rk.onclick = async () => {
+        rk.disabled = true;                 // v176: wartet jetzt auf OneDrive
+        await bookRueckgaengig(m, lb);
+        bau();
+      };
       rz.append(rk);
       frag.append(rz);
       // kein return: nach Stufe 1 muss der Stufe-2-Knopf direkt sichtbar sein
@@ -6704,6 +6717,7 @@ function sheetNeueBrand() {
   ok.onclick = () => {
     const n = name.value.trim();
     if (!n) { banner("Name fehlt."); return; }
+    if (!bookNameOk(n)) { banner(BOOK_NAME_HINWEIS); return; }
     if ((datenstand.marken || []).some(
         (m) => schluessel(m.name) === schluessel(n))) {
       banner("Diese Brand gibt es schon."); return;
@@ -6816,7 +6830,36 @@ function websiteNachtragen(name, url) {
   return true;
 }
 
-function brandLoeschen(m) {
+// Book loeschen und das ERGEBNIS abwarten (v176, Backlog 19). Liefert null,
+// wenn das Book weg ist, sonst den Text fuer das Banner.
+//
+// Bis v175 ging das DELETE ohne await raus, und die Marke verschwand
+// trotzdem. Gemessen 26.09. (Tobias, Handy, Word offen): OneDrive lehnt das
+// LOESCHEN eines geoeffneten Books ab - das Verschieben nicht. Ergebnis war
+// eine Waise im Ordner, obwohl der Dialog "Papierkorb" versprach.
+//
+// Nur ok und 404 gelten als "weg". 404 heisst: am erwarteten Ort liegt
+// nichts. Liegt die Datei woanders (von Hand verschoben), bleibt eine Waise
+// - bewusst akzeptiert (Tobias 26.09.), "Daten pruefen" meldet sie.
+// null (offline, Anmeldung) zaehlt NICHT als weg: das DELETE kann
+// durchgegangen sein, nur die Antwort fehlt. Marke behalten ist die
+// vorsichtige Seite - ein zweiter Versuch trifft dann auf 404.
+// Keine Warteschlange (Tobias 26.09.): Andrea versucht es bewusst nochmal.
+async function bookEntfernen(m) {
+  if (!bookNameOk(m.name)) return null;      // so ein Name hat kein Book
+  if (typeof OD === "undefined" || !OD.konto())
+    return "Ohne OneDrive-Anmeldung kann das Brand-Book nicht mit " +
+      "gelöscht werden — es wurde nichts entfernt.";
+  const r = await OD.graphRoh(bookPfad(m), { method: "DELETE" });
+  if (r && (r.ok || r.status === 404)) return null;
+  // Review 26.09.: ohne Antwort ist Word nicht der Grund - nicht raten.
+  if (!r) return "Löschen nicht bestätigt — keine Antwort von OneDrive " +
+    "(Netz?). Es wurde nichts entfernt, bitte nochmal versuchen.";
+  return "Löschen nicht bestätigt — ist das Brand-Book gerade in Word " +
+    "geöffnet? Word schließen und nochmal versuchen. Es wurde nichts entfernt.";
+}
+
+async function brandLoeschen(m) {
   // App-erzeugtes Book mit in den OneDrive-Papierkorb (Tobias 01.09.:
   // "löschen aus allen Listen + dem Brand-Book") - nur bei App-angelegten
   // Brands, und DELETE landet im Papierkorb, nichts ist hart weg.
@@ -6834,16 +6877,17 @@ function brandLoeschen(m) {
   // nicht gibt, beantwortet Graph mit 404 - harmlos. Rät bookPfad() den
   // Ordner falsch, zeigt der Pfad ins Leere, also ebenfalls 404; der
   // Dateiname kommt aus dem Markennamen und ist markenspezifisch.
+  //
+  // v176: Die Marke geht erst, wenn das Book nachweislich weg ist. Ohne
+  // OneDrive bleibt sie jetzt auch OHNE Haken stehen - der Haken beweist
+  // nichts (siehe oben), und still loeschen hiess bis v175: Waise.
   if (m.erstellt && m.brandrating) {
-    if (typeof OD !== "undefined" && OD.konto()) {
-      OD.graphRoh(bookPfad(m), { method: "DELETE" });
-    } else if (m.brandrating.brandbook) {
-      // Ohne OneDrive verschwindet die Marke, die Datei bleibt liegen. Das
-      // still zu tun erzeugt genau die Waise, die wir gerade abschaffen.
-      banner("Brand gelöscht — das Brand-Book blieb liegen (kein OneDrive). "
-        + "Datei bei Gelegenheit von Hand entfernen.");
-    }
+    const fehler = await bookEntfernen(m);
+    if (fehler) { banner(fehler); return false; }
   }
+  // Waehrend des Wartens kann der Stand getauscht oder die Marke schon
+  // entfernt worden sein (zweiter Klick) - dann nichts mehr anfassen.
+  if (!datenstand || !datenstand.marken.includes(m)) return false;
   datenstand.marken = datenstand.marken.filter((x) => x !== m);
   if (datenstand.letzteAktion &&
       schluessel(datenstand.letzteAktion.name) === schluessel(m.name)) {
@@ -6855,6 +6899,7 @@ function brandLoeschen(m) {
   }
   listeVeraltet = true;
   datenstandPersistieren();
+  return true;
 }
 
 // -------------------------------------- Rating abgeschlossen (Phase 5)
@@ -6887,7 +6932,29 @@ function bookPfad(m) {
   // Der Ordner kommt aus bookOrdner() - EINE Stelle, die entscheidet, wo ein
   // Book liegt. Zwei Stellen mit derselben Fallunterscheidung sind genau das
   // Muster, aus dem der m.gruppe/m.bookordner-Fehler von v122 entstanden ist.
-  return `${bookBasis()}/${bookOrdner(m)} Brands/Brand-Book ${m.name}.docx`;
+  return bookDateiPfad(bookOrdner(m), m.name);
+}
+
+// EIN Ort, der den Dateipfad baut (v176) - bookVerschieben() hatte bis v175
+// eine eigene Kopie. Der Name geht ROH in die Graph-URL; was darin nichts
+// verloren hat, haelt bookNameOk() vor jedem schreibenden Zugriff fern.
+function bookDateiPfad(ordner, name) {
+  return `${bookBasis()}/${ordner} Brands/Brand-Book ${name}.docx`;
+}
+
+// Sicherheits-Review 26.09. (Backlog 14): ein Markenname wie
+// "x/../../Wichtig" traf nach der URL-Normalisierung eine BELIEBIGE .docx
+// in Andreas OneDrive - DELETE, PATCH und PUT inklusive (nachgemessen).
+// / \ : * ? " < > | verbietet OneDrive im Dateinamen ohnehin, # und %
+// zerschneiden den Pfad. Geprueft wird beim Anlegen UND vor jedem
+// schreibenden Book-Zugriff: im Bestand steht "Zenwatch / Zenring" (Rating
+// D, ohne Book) - der Name bleibt, Book-Aktionen werden abgewiesen
+// (Tobias 26.09.). Ein solcher Name KANN kein Book haben.
+const BOOK_NAME_VERBOTEN = /[\\/:*?"<>|#%]/;
+const BOOK_NAME_HINWEIS = "Der Name enthält ein Zeichen, das in einem " +
+  "Dateinamen nicht erlaubt ist ( / \\ : * ? \" < > | # % ).";
+function bookNameOk(name) {
+  return !BOOK_NAME_VERBOTEN.test(String(name == null ? "" : name));
 }
 
 // ---------------------------------------- Book-Waechter (v154, Backlog 23)
@@ -8847,8 +8914,8 @@ async function excelErzeugen() {
 // laeuft und die Zellen darin getrennt gehoeren ("06.09.2026 Follow Up 2").
 // Innerhalb EINES Absatzes ist derselbe Trenner falsch: Word zerlegt einen
 // Wert gern in mehrere Runs (Rechtschreibpruefung, rsid-Wechsel, ein
-// kaufmaennisches Und), und aus "info@calibar.de" wird dann
-// "info @ calibar.de". Gemessen am echten Bestand: 17 von 541 Wertzellen.
+// kaufmaennisches Und), und aus "info@beispiel.de" wird dann
+// "info @ beispiel.de". Gemessen am echten Bestand: 17 von 541 Wertzellen.
 // Deshalb wordText(absatz, "") fuer Werte - das ist genau das, was
 // python-docx (und damit ugc_core) liefert.
 function wordText(s, trenner) {
@@ -8897,7 +8964,7 @@ function zelleSetzen(tc, text) {
 //     zwei E-Mail-Adressen kaeme "info@x.de together@x.de" heraus, was nie
 //     einem App-Wert gleicht.
 //   * wordText(..., " ") setzt zwischen Runs ein Leerzeichen - aus
-//     "info@calibar.de" wird "info @ calibar.de".
+//     "info@beispiel.de" wird "info @ beispiel.de".
 // Zusammen betrafen die beiden 16 von 60 Books: die App haette dort bei
 // JEDEM Speichern hochgeladen, ohne etwas zu aendern.
 function ersteZeileText(tc) {
@@ -9498,6 +9565,9 @@ const ETAG_MUSTER = /^(W\/)?"/;
 // ein wirklich geloeschtes Book ewig im Kreis laufen, statt Andrea zu
 // fragen.
 async function bookETagLesen(m, grund) {
+  // v176: ein unzulaessiger Name kann kein Book haben - "kein-book" nimmt
+  // den Auftrag aus der Outbox, statt ihn ewig kreisen zu lassen.
+  if (!bookNameOk(m.name)) return "kein-book";
   const meta = await OD.graphRoh(bookPfad(m) + "?$select=eTag");
   logZeile("book-etag", { ...grund, methode: "GET",
     status: meta ? meta.status : 0, code: await logFehlerCode(meta) });
@@ -10493,7 +10563,8 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
 // Meldung. Genau so ist "Besser im Glas" entstanden (gefunden 06.09.).
 async function bookVerschieben(m, vonOrdner, nachOrdner) {
   if (String(vonOrdner) === String(nachOrdner)) return "gleich";
-  const datei = `${bookBasis()}/${vonOrdner} Brands/Brand-Book ${m.name}.docx`;
+  if (!bookNameOk(m.name)) return "fehler";             // v176, s. bookNameOk
+  const datei = bookDateiPfad(vonOrdner, m.name);
   const zielPfad = "/drive/root:" + bookBasis().split("root:")[1] +
     "/" + nachOrdner + " Brands";
   const r = await OD.graphRoh(datei, {
@@ -10516,6 +10587,7 @@ async function bookVerschieben(m, vonOrdner, nachOrdner) {
 }
 
 async function bookErzeugen(m, ersetzen) {
+  if (!bookNameOk(m.name)) { banner(BOOK_NAME_HINWEIS); return "fehler"; }
   const tplName = String(m.brandrating.rating).trim() === "A"
     ? "Template Brand-Book A Brand.docx"
     : "Template Brand-Book B-C Brand.docx";
@@ -10586,15 +10658,22 @@ function bookBefuelltDaten(m, jetzt) {
 // Rückgängig (eine Ebene): Stufe 2 nimmt den Pitchlisten-Eintrag zurueck,
 // Stufe 1 den Haken + das frisch kopierte Book. Graph-DELETE landet im
 // OneDrive-Papierkorb - Books mit Inhalt werden nie hart geloescht.
-function bookRueckgaengig(m, lb) {
+async function bookRueckgaengig(m, lb) {
   logZeile("book-rueckgaengig", { marke: m.name, stufe: lb.stufe,
     ...logMehr({ haengt: (datenstand.marken || []).includes(m) }) });
+  // Nur den AKTUELLEN Ruecknahmepunkt einloesen (Codex 26.09.) - ein
+  // Knopf aus einem alten Sheet darf keinen neueren wegraeumen.
+  if (datenstand.letztesBook !== lb) return false;
   if (lb.stufe === 2) {
     if (lb.pitchNeu) m.pitchliste = null;
   } else {
     if (lb.bookNeu) {
-      OD.graphRoh(bookPfad(m), { method: "DELETE" }); // erst loeschen ...
-      delete m.bookordner;                            // ... dann den Merker
+      // v176: erst BESTAETIGT loeschen, dann den Merker. Bis v175 lief das
+      // DELETE ohne await - bei offenem Word blieb die Datei liegen,
+      // waehrend die App sie vergass (Backlog 19).
+      const fehler = await bookEntfernen(m);
+      if (fehler) { banner(fehler); return false; }
+      delete m.bookordner;
       delete m.quelle;          // Gegenstueck zu bookErstelltDaten (v127):
                                 // ohne das behauptet die App weiter, es gebe
                                 // eine Datei, die sie gerade geloescht hat
@@ -10604,9 +10683,12 @@ function bookRueckgaengig(m, lb) {
     m.brandrating.brandbook = lb.vorher;
     if (lb.pitchNeu) m.pitchliste = null; // Altformat vor v42 (eine Stufe)
   }
-  delete datenstand.letztesBook;
+  // Nach dem Warten: nur den eigenen Punkt austragen - ist inzwischen ein
+  // neuer entstanden, gehoert er einer anderen Aktion.
+  if (datenstand.letztesBook === lb) delete datenstand.letztesBook;
   listeVeraltet = true;
   datenstandPersistieren();
+  return true;
 }
 
 // Nach jeder App-Änderung: aufs Gerät (IndexedDB) + still nach OneDrive.

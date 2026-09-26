@@ -2,6 +2,10 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
+<!-- v176 (Sicherheits-Review 26.09.): nur eigene Skripte. Bewusst KEIN
+     default-src/connect-src - Graph-Downloads leiten auf fremde Speicher-
+     Hosts um, dazu MSAL-Login und dns.google. -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self'; object-src 'none'; base-uri 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0c1322">
 <title>Cockpit</title>
