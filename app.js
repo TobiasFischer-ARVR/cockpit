@@ -2677,7 +2677,7 @@ function sheetPitch(p) {
       ["Erfolgschance", br.erfolgschance],
       ["Kategorie", q.kategorie],
       ["Letzter Kontakt", q.letzter_kontakt],
-      ["Nächster Schritt", q.naechste_aktion],
+      ["Nächster Schritt", schrittAnzeige(q.naechste_aktion, mv)],
       ["Termin", q.datum_naechste_aktion ? deDatum(q.datum_naechste_aktion) : ""],
       ["Follow-ups", q.zaehler],
       ["Kooperation", q.kooperation],
@@ -3647,7 +3647,8 @@ function pitchKarte(p, alsAuftrag) {
         ? ` · Nächster Schritt: ${p.naechsterCheckText}` : "") +
       (p.kooperation ? ` · Kooperation: ${p.kooperation}` : "")
     : `${p.status || "—"} · Follow-ups: ${p.zaehler || "0"}` +
-      (p.naechste_aktion ? ` · Nächster Schritt: ${p.naechste_aktion}` : "") +
+      (p.naechste_aktion ? ` · Nächster Schritt: ${schrittAnzeige(p.naechste_aktion,
+        markeZuName(p.name))}` : "") +
       (p.kooperation ? ` · Kooperation: ${p.kooperation}` : "");
   // Ohne offenen Punkt mit Datum ist nichts mehr zu tun - das sagt die Karte
   // ausdruecklich, statt "kein Termin eingetragen" zu behaupten (Tobias).
@@ -6101,6 +6102,16 @@ function naechsterSchritt(aktion, pos) {
 
 // Position im aktuellen Zyklus: FollowUp-Events zählen, Pitch setzt zurück.
 // Ohne Events (Marke nur in der Pitchliste): Zähler-Spalte als Näherung.
+// v177 (Tobias, 26.09.): "Follow up" als naechster Schritt sagt nicht, der
+// wievielte. Gespeichert bleibt das schlichte "Follow up" - Excel und die
+// PC-Werkzeuge lesen den Text. Nur die ANZEIGE nennt die Nummer, und zwar
+// ueber naechsterSchritt(): dieselbe Rechnung, die der Erledigt-Knopf
+// eintraegt. Nach Follow up 3 steht dort deshalb "Neuer Pitch".
+function schrittAnzeige(aktion, m) {
+  if (!m || !/^follow[ -]?up$/i.test(String(aktion || "").trim())) return aktion;
+  return naechsterSchritt(aktion, fuSeitPitch(m)).aktion;
+}
+
 function fuSeitPitch(m) {
   const ev = m.events || [];
   if (!ev.length) return parseInt((m.pitchliste || {}).zaehler, 10) || 0;
