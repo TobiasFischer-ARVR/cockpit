@@ -442,6 +442,26 @@ function wolkenWarnung() {
   return k;
 }
 
+// Unlesbarer Brand-Book-Ordner als BLEIBENDE Karte (v181, Backlog 42).
+// Voraussetzung dafuer, dass das Import-Banner derselben Stoerung nur noch
+// einmal kommt: ohne Karte waere nach dem ersten Banner das einzige Signal
+// weg - und Word-Aenderungen in diesem Ordner blieben still ungelesen.
+// Ephemer wie bestandFehler: der naechste Importlauf setzt es neu.
+let importOrdnerFehlt = [];
+function ordnerWarnung() {
+  if (!importOrdnerFehlt.length) return null;
+  const k = el("div", "karte block warnung tippbar");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "⚠ Achtung"));
+  k.append(kopf, el("div", "titel",
+      "Brand-Book-Ordner nicht lesbar: " + importOrdnerFehlt.join(", ")),
+    el("div", "kontext",
+      "Änderungen in diesen Books werden nicht eingelesen. "
+      + "Zum Prüfen hier tippen."));
+  k.onclick = sheetEinstellungen;
+  return k;
+}
+
 // Offene Standwahl als BLEIBENDE Karte (v136) - gleiche Regel wie bei der
 // Wolken-Warnung: nicht wegklickbar, weil Andrea die Ursache selbst
 // beseitigen kann (naemlich durch Entscheiden). Antippen holt die Frage
@@ -583,7 +603,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v180"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v181"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -5804,6 +5824,8 @@ function renderHauptmenu() {
   if (wolke) c.append(wolke);
   const wahl = standWahlWarnung();
   if (wahl) c.append(wahl);
+  const ordner = ordnerWarnung();   // v181, Backlog 42
+  if (ordner) c.append(ordner);
   const bef = bestandWarnung();
   if (bef) c.append(bef);
 
@@ -5963,6 +5985,8 @@ function renderUgc() {
   if (wolke) c.append(wolke);
   const wahl = standWahlWarnung();
   if (wahl) c.append(wahl);
+  const ordner = ordnerWarnung();   // v181, Backlog 42
+  if (ordner) c.append(ordner);
   const bef = bestandWarnung();
   if (bef) c.append(bef);
   if (snap.zeitraeume.length > 1) c.append(chipZeile());
@@ -8789,6 +8813,35 @@ async function importLauf(fortschritt, abbrechen) {
 // drei Tagen Tapete - dieselbe Lehre wie beim Sicherungsbanner am 04.09.
 //
 // Läuft ein Sheet, wird gar nicht erst angefangen und mittendrin abgebrochen.
+// v181 (Backlog 42, F4 aus S6): dieselbe Stoerung nicht bei JEDER Rueckkehr
+// neu melden. Bleibt z.B. ein Book gesperrt, kam bisher bei jeder Rueckkehr
+// dasselbe Banner - nach dem dritten wird es nicht mehr gelesen, und eine
+// ECHTE Neuigkeit geht darin unter.
+//
+// Nur STOERUNGEN werden zusammengefasst (Codex): nicht gelesen (mit Lage
+// UND Status - aus 423 wird 429 = neue Meldung), zurueckgestellt, Book
+// fehlt, Ordner nicht lesbar. Uebernommene Books und Befunde sind
+// Neuigkeiten und kommen immer. Ein Lauf ohne Stoerung setzt zurueck:
+// kommt dieselbe Stoerung spaeter wieder, wird sie wieder gemeldet.
+// Ephemer (pro App-Start): nach dem Neustart kommt sie einmal - die
+// bleibenden Anzeigen ("noch nicht gelesen", Karten) tragen dazwischen.
+let importStoerungZuletzt = "";
+function importStoerungSignatur(b) {
+  return JSON.stringify([
+    (b.probleme || []).map((p) => [p.marke, p.lage, p.status || ""]),
+    (b.zurueckgestellt || []).map((x) => x.marke),
+    (b.bookFehlt || []).map((x) => x.marke),
+    b.ordnerFehlt || []]);
+}
+function importStoerungNeu(b) {
+  const sig = importStoerungSignatur(b);
+  const leer = sig === importStoerungSignatur({});
+  const zuletzt = importStoerungZuletzt;
+  importStoerungZuletzt = leer ? "" : sig;
+  if (b.uebernommen || (b.befunde || []).length) return true;
+  return leer || sig !== zuletzt;
+}
+
 async function importAutomatisch() {
   if (typeof document !== "undefined" && document.getElementById("schleier")) {
     return null;
@@ -8829,6 +8882,11 @@ async function importAutomatisch() {
   // Datenstand) oder schon laut: ein gescheitertes Speichern meldet
   // datenstandSchreibenEinmal() selbst, auch im stillen Modus.
   if (!b || b.fehler) return b;
+  // v181 (Backlog 42): Karte "Ordner nicht lesbar" folgt jedem Lauf.
+  if (String(importOrdnerFehlt) !== String(b.ordnerFehlt)) {
+    importOrdnerFehlt = b.ordnerFehlt.slice();
+    listeVeraltet = true;
+  }
 
   // Nur melden, wenn es etwas zu melden gibt - aber "etwas" ist mehr als
   // eine gelungene Uebernahme (Codex-Fund 23.09., nachgemessen). Vorher
@@ -8840,7 +8898,7 @@ async function importAutomatisch() {
   if (b.uebernommen || b.befunde.length || b.probleme.length ||
       b.zurueckgestellt.length || (b.bookFehlt || []).length ||
       b.ordnerFehlt.length) {
-    banner(importBericht(b));
+    if (importStoerungNeu(b)) banner(importBericht(b));
   }
   // v178: Kam oben ein Nachlauf, meldet dieser Bericht den AELTEREN Lauf
   // nach dem des Nachlaufs. Beide Banner stehen da; die Reihenfolge ist
@@ -11616,11 +11674,17 @@ async function datenstandSchreibenEinmal(still) {
   // Eintraege lagen wochenlang nur im Geraetespeicher.
   // Der Banner bleibt (sofortige Rueckmeldung), die KARTE ist das Gedaechtnis
   // dazu: vier Sekunden reichen nicht, das hat der 04.09. gezeigt.
+  // v181 (Backlog 42, Stoerung 1): Steht die Karte "Nur auf diesem Geraet"
+  // schon, wiederholt der STILLE Import-Speicher den gleichen Hinweis nicht
+  // bei jeder Rueckkehr. Andreas eigenes Speichern bleibt immer laut, und
+  // "NICHT gespeichert" (auch Geraet versagt) ebenfalls.
+  const karteStandSchon = Boolean(einst.cloudFehlt);
   wolkeMerken(ok);
   // Ehrlich melden (Tobias 04.09.) - jetzt auch für den Fall, dass der
   // GERÄTESPEICHER versagt hat. "Nur auf dem Gerät" war dann eine
   // beruhigende Unwahrheit: in Wahrheit lag der Eintrag NIRGENDWO.
-  if (!(still && ok && aufGeraet)) banner(ok && aufGeraet
+  if (!(still && ok && aufGeraet) &&
+      !(still && !ok && aufGeraet && karteStandSchon)) banner(ok && aufGeraet
     ? "Eingetragen — gesichert auf Gerät + OneDrive."
     : ok ? "⚠ Nur in OneDrive! Gerätespeicher hat abgelehnt — "
            + "bei schlechtem Netz kann der Eintrag fehlen."
