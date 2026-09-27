@@ -1445,8 +1445,16 @@ function sheetEinstellungen() {
     //
     // Erst ab ZWEI Reparaturen - bei einer einzigen steht der Knopf schon
     // in der Zeile, ein zweiter daneben waere Ballast.
+    //
+    // v178 (Backlog 50): befundReparatur() liefert seit v171 eine LISTE.
+    // Bis v177 stand hier .filter(Boolean) - das behielt auch leere Listen,
+    // zaehlte jede Zeile (Andrea sah 11 bei 4+7), fragte "11x undefined"
+    // und brach beim ersten tu.mach() ab. Eingesammelt wird nur, was GENAU
+    // eine Moeglichkeit hat: zwei Moeglichkeiten sind eine Entscheidung
+    // (haken-ohne-book), und die trifft kein Sammelknopf.
     const reparierbar = fehler.concat(hinweise)
-      .map((f) => befundReparatur(f)).filter(Boolean);
+      .map((f) => befundReparatur(f)).filter((l) => l.length === 1)
+      .map((l) => l[0]);
     if (reparierbar.length > 1) {
       const zaehl = {};
       for (const tu of reparierbar) zaehl[tu.text] = (zaehl[tu.text] || 0) + 1;
@@ -1460,7 +1468,13 @@ function sheetEinstellungen() {
         aKnopf.disabled = true;
         // EINMAL speichern statt je Reparatur: datenstandPersistieren()
         // schreibt die ganze Datei, und der Weg geht ueber OneDrive.
-        for (const tu of reparierbar) tu.mach();
+        // Mit await und einzeln abgesichert (Codex 27.09.): eine kuenftige
+        // async-Reparatur liefe sonst unbeobachtet, und eine Ausnahme
+        // braeche die restlichen ab.
+        for (const tu of reparierbar) {
+          try { await tu.mach(); }
+          catch (fehler) { banner("✗ " + tu.text + ": " + String(fehler)); }
+        }
         listeVeraltet = true;
         await datenstandPersistieren();
         pruefen();      // frisch nachrechnen, wie bei der Einzelzeile
@@ -8435,9 +8449,11 @@ async function importAutomatisch() {
   // Rueckkehr (S6-Szenario rueckkehr_serie). Nur HIER, nicht auch in
   // importLauf: zwei Stellen, die nachstarten, starten doppelt (Codex).
   if (b && b.fehler === "läuft bereits") { importNochmal = true; return b; }
-  // Ohne await: dieser Lauf ist fertig (importLaeuft ist frei), der
-  // Nachlauf traegt sich selbst.
-  if (importNochmal) { importNochmal = false; importAutomatisch(); }
+  // Dieser Lauf ist fertig (importLaeuft ist frei). Seit v178 MIT await:
+  // das Versprechen dieses Aufrufs deckt damit die ganze Kette ab, und
+  // importDannPruefen() kann den Bestandslauf wirklich DANACH starten.
+  // Ohne await lief er neben dem Nachlauf her (Codex 27.09., Q6).
+  if (importNochmal) { importNochmal = false; await importAutomatisch(); }
   // Die uebrigen Fehler sind entweder bewusst still (nicht angemeldet, kein
   // Datenstand) oder schon laut: ein gescheitertes Speichern meldet
   // datenstandSchreibenEinmal() selbst, auch im stillen Modus.
@@ -8455,6 +8471,9 @@ async function importAutomatisch() {
       b.ordnerFehlt.length) {
     banner(importBericht(b));
   }
+  // v178: Kam oben ein Nachlauf, meldet dieser Bericht den AELTEREN Lauf
+  // nach dem des Nachlaufs. Beide Banner stehen da; die Reihenfolge ist
+  // der Preis dafuer, dass die Kette als Ganzes abwartbar ist.
   // v177: Neuzeichnen haengt nicht mehr am Banner - rueckt nur ein Merker
   // weiter, verschwindet "noch nicht gelesen", und die Liste muss es zeigen.
   if (b.uebernommen || b.merker || b.befunde.length || b.probleme.length ||
@@ -8466,6 +8485,41 @@ async function importAutomatisch() {
     else listeVeraltet = true;
   }
   return b;
+}
+
+// ERST EINLESEN, DANN PRUEFEN (v178, Codex 27.09., Q6). Bis v177 liefen
+// Import und Bestandslauf bei der Rueckkehr GLEICHZEITIG an, beide ohne
+// await. importLauf() aendert datenstand.marken Book fuer Book - die rote
+// Karte "Daten pruefen hat etwas gefunden" sah deshalb den Stand VOR dem
+// Import oder einen halben (am 27.09. am Geraet gesehen).
+//
+// "läuft bereits": dieser Aufruf hat nur den Nachlauf vorgemerkt. Der
+// laufende Aufruf wartet seit v178 auf den Nachlauf und prueft danach -
+// hier ein zweites Mal zu pruefen hiesse wieder: waehrend des Imports.
+//
+// Preis: "noch nicht gelesen" erscheint erst nach dem Import. Gewollt -
+// nach einem gelungenen Import IST nichts mehr ungelesen; was scheitert
+// oder zurueckgestellt wird, bleibt ungelesen und wird dann auch gezeigt.
+function importDannPruefen() {
+  return importAutomatisch().then((b) => {
+    if (b && b.fehler === "läuft bereits") return;
+    return bestandNachziehen();
+  });
+}
+
+// Bestandslauf + Neuzeichnen. Eine Stelle fuer Start und Rueckkehr.
+// Bei offenem Sheet nur vormerken: popstate zeichnet beim Schliessen neu.
+// Fehler bleiben still wie bisher - der Lauf ist eine Anzeige, kein Schreiben.
+function bestandNachziehen() {
+  return bestandStillPruefen().then((neu) => {
+    if (document.getElementById("schleier")) {
+      if (neu) listeVeraltet = true;
+      return;
+    }
+    if (!bookGeaendert.size && !neu) return;
+    listeVeraltet = false;
+    render();
+  }).catch(() => {});
 }
 
 function bookWerte(m) {
@@ -11832,13 +11886,16 @@ window.addEventListener("hashchange", render);
 window.addEventListener("od-ready", async () => {
   try { await laden(); } catch (_) { /* Fehlerbild steht schon */ }
   render();
-  // Stiller Bestandslauf (v137). Hier und nicht in laden(): vorher ist
-  // OneDrive nicht verbunden, die Ordner waeren nicht lesbar und der Lauf
-  // muesste schweigen. BEWUSST ohne await - der Start wartet nicht darauf,
-  // bei Befund zeichnet er selbst nach.
-  bestandStillPruefen().then((neu) => {
-    if (neu && !document.getElementById("schleier")) render();
-  });
+  // Kaltstart = Rueckkehr (v178, Backlog 45). visibilitychange feuert beim
+  // frischen Start NICHT - die Seite beginnt schon sichtbar. Wischte
+  // Android die App weg, wartete eine Word-Aenderung deshalb bis zur
+  // naechsten Rueckkehr (am 27.09. am Geraet: Teaballs, Brotliebling).
+  // Hier und nicht in laden(): vorher ist OneDrive nicht verbunden.
+  // Dieselbe Reihenfolge wie abgleichBeiRueckkehr(): erst wartende
+  // App-Eintraege ins Book, dann lesen, dann pruefen. BEWUSST ohne await -
+  // der Start wartet nicht darauf, das Ergebnis zeichnet sich selbst nach.
+  outboxAbarbeiten();
+  importDannPruefen();
 });
 
 // Persistenter Speicher (Phase 4): sonst darf der Browser IndexedDB bei
@@ -12007,19 +12064,11 @@ async function abgleichBeiRueckkehr() {
   // Wartende Book-Eintraege nachtragen (v103). Der richtige Moment:
   // Andrea kommt gerade aus Word zurueck, die Sperre ist gefallen.
   outboxAbarbeiten();
-  // Vier Ordner-Abrufe, kein Download. BEWUSST ohne await: die Rueckkehr
-  // soll nicht darauf warten, das Ergebnis zeichnet sich selbst nach.
-  // Seit v137 laeuft hier der ganze Bestandslauf, nicht nur der
-  // Book-Waechter: er holt dieselbe Dateiliste, und die Warnkarte waere
-  // sonst bis zum naechsten echten Neustart veraltet - behebt Andrea etwas,
-  // waehrend die App offen bleibt, saehe man es nicht.
-  bestandStillPruefen().then((neu) => {
-    if (document.getElementById("schleier")) return;
-    if (!bookGeaendert.size && !neu) return;
-    listeVeraltet = false;
-    render();
-  });
-  // S6: den Word-Stand von selbst holen. Ebenfalls ohne await - die Rückkehr
+  // Der Bestandslauf (seit v137 hier, vier Ordner-Abrufe) steht seit v178
+  // HINTER dem Import, in importDannPruefen() - vorher lief er gleichzeitig
+  // und sah den Stand vor dem Import.
+  //
+  // S6: den Word-Stand von selbst holen. Ohne await - die Rückkehr
   // soll nicht darauf warten. Läuft NACH outboxAbarbeiten(), damit wartende
   // App-Einträge zuerst ins Book gehen; überschneiden sich beide trotzdem,
   // serialisiert bookKettig() je Marke, und eine Marke mit offenem Auftrag
@@ -12034,7 +12083,7 @@ async function abgleichBeiRueckkehr() {
   // Die Tragweite bleibt: den Knopf drückt jemand bewusst, diese Zeile läuft
   // bei JEDER Rückkehr in die App - nach einem Leser-Versionssprung über
   // alle Books.
-  importAutomatisch();
+  importDannPruefen();
   if (datenstand && datenstand !== vorher) {
     listeVeraltet = true;
     banner("Neuerer Stand von einem anderen Gerät geladen.");
