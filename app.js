@@ -603,7 +603,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v183"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v184"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2057,10 +2057,13 @@ function meldungMerken(text) {
 }
 
 // Als Text, neueste zuerst - so liest man es im Zweifel.
+// Zeit eigene Zeile, Leerzeile zwischen den Meldungen (Tobias 27.09.): am
+// Handy brechen lange Meldungen um, eine Zeile je Meldung liess nicht
+// erkennen, wo die naechste anfaengt.
 function meldungenText() {
   return meldungenLesen().slice().reverse()
-    .map((m) => String(m.zeit || "").replace("T", " ") + "  " + m.text)
-    .join("\n");
+    .map((m) => String(m.zeit || "").replace("T", " ") + "\n" + m.text)
+    .join("\n\n");
 }
 
 function achtungDatei() {
