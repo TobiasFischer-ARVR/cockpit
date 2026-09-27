@@ -583,7 +583,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v178"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v179"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -715,6 +715,7 @@ const REITER = {
   // beide ERSETZEN den Stand und sichern vorher.
   "Andreas Stand holen": "Sicherung",
   "Pfad Brand-Books": "OneDrive",
+  "Grundpfad": "OneDrive",           // v179, Backlog 49
   "Pfad Datenbank": "OneDrive",
   // Warteliste (v103). Im Einstellungs-Sheet ein eigener Reiter; das
   // Warteliste-Sheet selbst wird NICHT geteilt - eine Liste braucht keine
@@ -1005,11 +1006,23 @@ function pfadAbschnitt(titel, schluessel, standard, basis, pruefer, hilfe) {
   const zeigeStand = () => {
     stand.textContent = "Aktuell: " + basis().split("root:")[1];
   };
-  const setzen = (pfad) => {
+  const setzen = async (pfad) => {
+    // v179: Datenbank und Brand-Books ueber pfadeUebernehmen() - dieselbe
+    // Sperre wie beim Grundpfad (Warteliste, "Nur auf diesem Geraet",
+    // Geraetekopie leeren + neu laden). Bis v178 stellte dieser Knopf den
+    // Datenbank-Ordner einfach um, und der Stand des ALTEN Ordners landete
+    // beim naechsten Speichern im neuen (Codex 27.09., nachgewiesen).
+    if (schluessel === "datenPfad" || schluessel === "bookPfad") {
+      const erg = await pfadeUebernehmen({ [schluessel]: pfad });
+      ergebnis.textContent = erg === "ok" ? "" : pfadWechselText(erg);
+      zeigeStand();
+      return erg === "ok";
+    }
     einst[schluessel] = pfad;
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
     ergebnis.textContent = "";
     zeigeStand();
+    return true;
   };
   const angemeldet = () => typeof OD !== "undefined" && OD.konto();
 
@@ -1033,7 +1046,7 @@ function pfadAbschnitt(titel, schluessel, standard, basis, pruefer, hilfe) {
       koerper.innerHTML = "";
       ordnerBrowser(koerper,
         String(einst[schluessel] || standard).split("/").filter(Boolean),
-        (pfad) => { setzen(pfad); normal(); pruefen(); },
+        async (pfad) => { normal(); if (await setzen(pfad)) pruefen(); },
         normal);
     };
     const pKnopf = el("button", "chip", "Prüfen");
@@ -1709,6 +1722,8 @@ function sheetEinstellungen() {
   // getippt, sondern durchgeklickt (Tobias 06.09.). Beide Abschnitte
   // kommen aus derselben Funktion - zwei Bedienungen fuer dieselbe Sache
   // waeren Unsinn, und der halbe Abschnitt war ohnehin schon doppelt.
+  // v179 (Backlog 49): Grundpfad VOR den Einzelpfaden - erst grob, dann fein.
+  wrap.append(grundpfadAbschnitt());
   wrap.append(pfadAbschnitt("Pfad Datenbank",
     "datenPfad", DATEN_BASIS_STD, datenBasis, pruefeCockpit,
     "Hier liegen die Daten fürs Dashboard (snapshot.json) und der " +
@@ -9306,6 +9321,212 @@ function excelNachbar(unter) {
     .replace(/^\/+|\/+$/g, "");
   if (roh) return "/me/drive/root:/" + roh;
   return datenBasis().replace(/\/[^/]+$/, "") + "/" + unter;
+}
+
+// ================================================ Grundpfad (v179, Backlog 49)
+// Tobias 27.09.: sechs Ordner einzeln zu waehlen kostet Zeit, sie liegen
+// alle unter EINEM Grundpfad. Gewaehlt wird er einmal, daraus werden alle
+// sechs Pfade VORGESCHLAGEN, geprueft und - nach "Übernehmen" - als volle
+// Pfade gespeichert. Bewusst KEINE Live-Verknuepfung: die ~20 Lesestellen
+// bleiben unveraendert, und bis zum Tippen verstellt sich nichts.
+const PFAD_ORDNER = [
+  // [Einstellung, Anzeige, Unterordner unter dem Grundpfad]
+  ["datenPfad", "Datenbank", "App/Datenbank"],
+  ["bookPfad", "Brand-Books", "Brand-Books"],
+  ["sicherungsPfad", "Sicherungen", "App/Backups"],
+  ["vorlagePfad", "Excel-Vorlage", "App/Vorlage"],
+  ["exportPfad", "Excel-Export", "App/Export"],
+  ["logPfad", "Logfiles", "App/Logfiles"],
+];
+
+function pfadNorm(p) {
+  return String(p == null ? "" : p).trim().replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+// Der Pfad, den die App JETZT tatsaechlich benutzt - auch wenn die
+// Einstellung leer ist (dann Standard bzw. Nachbar der Datenbank).
+function pfadEffektiv(schluessel) {
+  const voll = { datenPfad: datenBasis, bookPfad: bookBasis,
+    sicherungsPfad: sicherungBasis, vorlagePfad: () => excelNachbar("Vorlage"),
+    exportPfad: () => excelNachbar("Export"), logPfad: logBasis }[schluessel]();
+  return pfadNorm(voll.split("root:")[1]);
+}
+
+function grundVorschlag(grund) {
+  const g = pfadNorm(grund);
+  return PFAD_ORDNER.map(([schluessel, titel, unter]) => ({
+    schluessel, titel, bisher: pfadEffektiv(schluessel),
+    vorschlag: pfadNorm((g ? g + "/" : "") + unter) }));
+}
+
+// ALLE sechs festschreiben (Codex 27.09.): ✓ bekommt den Vorschlag, alles
+// andere den Pfad, den es heute TATSAECHLICH nutzt. Sonst wanderten leere
+// Einstellungen (Vorlage, Export, Logfiles haengen am Datenbank-Ordner)
+// bei einer Teiluebernahme unbemerkt mit.
+function grundNeueEinst(liste, status) {
+  const neu = {};
+  liste.forEach((p, i) => { neu[p.schluessel] = status[i] === "ok" ? p.vorschlag : p.bisher; });
+  return neu;
+}
+
+// Gibt es den Ordner? Die Datenbank zaehlt nur MIT datenstand.json - ein
+// leerer Ordner ist kein Arbeitsstand (Codex 27.09.).
+// "ok" | "fehlt" | "leer" | "?" (Netz, Rechte, Drosselung)
+async function ordnerStatus(pfad, brauchtDatei) {
+  const r = await OD.graphRoh("/me/drive/root:/" + pfadNorm(pfad) +
+    ":/children?$select=name&$top=999");
+  if (!r) return "?";
+  if (r.status === 404) return "fehlt";
+  if (!r.ok) return "?";
+  if (!brauchtDatei) return "ok";
+  let namen = [];
+  try { namen = (((await r.json()).value) || []).map((x) => String(x.name)); }
+  catch (_) { return "?"; }
+  return namen.includes(brauchtDatei) ? "ok" : "leer";
+}
+
+// DER Weg, Pfade zu aendern - fuer Grundpfad UND die einzelnen Knoepfe
+// "Pfad Datenbank" / "Pfad Brand-Books" (Codex: alle Wege dieselbe Sperre).
+//
+// Datenbank-Wechsel ist der gefaehrliche (am 27.09. im Code nachgewiesen,
+// betraf schon den alten Knopf): im Speicher und in der GERAETEKOPIE liegt
+// der Stand des ALTEN Ordners. Nach einem Neustart nimmt datenstandLaden()
+// den neueren von OneDrive und Geraet - und schriebe die Geraetekopie still
+// in den NEUEN Ordner. Deshalb: nur mit leerer Warteliste und ohne "Nur auf
+// diesem Geraet", laufendes Speichern abwarten, Geraetekopie leeren (der
+// Stand liegt sicher im alten Ordner), dann neu laden.
+//
+// Brand-Books-Wechsel: wartende Word-Eintraege liefen sonst ins neue Book.
+//
+// Rueckgabe: "ok" | "neu-laden" | "warteliste" | "nur-geraet" |
+//            "abgebrochen" | "speicher" | "geraet-kopie"
+async function pfadeUebernehmen(neu) {
+  const wirksam = (k, std) => (k in neu ? (pfadNorm(neu[k]) || pfadNorm(std)) : null);
+  const datenNeu = wirksam("datenPfad", DATEN_BASIS_STD);
+  const bookNeu = wirksam("bookPfad", BOOK_BASIS_STD);
+  const datenWechsel = datenNeu !== null && datenNeu !== pfadEffektiv("datenPfad");
+  const bookWechsel = bookNeu !== null && bookNeu !== pfadEffektiv("bookPfad");
+  if ((datenWechsel || bookWechsel) &&
+      ((datenstand && datenstand.ausstehend) || []).length) return "warteliste";
+  if (datenWechsel && einst.cloudFehlt) return "nur-geraet";
+  if (datenWechsel && !confirm("Datenbank-Ordner wechseln?\n\nDie App lädt " +
+      "danach neu und liest nur noch aus\n/" + datenNeu)) return "abgebrochen";
+  // Erst die KOPIE speichern: scheitert localStorage, bleibt einst wie es war.
+  const speichern = () => {
+    const kopie = Object.assign({}, einst, neu);
+    try { localStorage.setItem(EINST_KEY, JSON.stringify(kopie)); }
+    catch (_) { return false; }
+    Object.assign(einst, neu);
+    return true;
+  };
+  if (!datenWechsel) return speichern() ? "ok" : "speicher";
+  // Der ganze Wechsel laeuft IN der Speicher-Kette: laufende Schreibvorgaenge
+  // ins alte Ziel sind vorher fertig. Danach bleibt die Kette bis zum
+  // Neuladen ZU - ein spaeter eingereihtes Speichern schriebe sonst den
+  // alten Stand schon in den neuen Ordner (einst zeigt ja bereits dorthin).
+  // Dritter IndexedDB-Schreiber neben datenstandLaden (Wache: test_v128).
+  return new Promise((antwort) => {
+    persistKettenLauf(async () => {
+      // Sperren HIER nochmal (Codex 27.09., Diff-Review v179): ein Speichern,
+      // das VOR uns in der Kette lief, kann inzwischen gescheitert sein
+      // ("Nur auf diesem Geraet") oder einen Word-Auftrag angelegt haben.
+      if (((datenstand && datenstand.ausstehend) || []).length) {
+        antwort("warteliste"); return;
+      }
+      if (einst.cloudFehlt) { antwort("nur-geraet"); return; }
+      // Alte Geraetekopie merken: scheitert gleich das Speichern der
+      // Einstellung, kommt sie zurueck - sonst waere sie weg, obwohl
+      // "nicht umgestellt" gemeldet wird (Codex 27.09.).
+      let alt;
+      try { alt = await idbLies("datenstand"); } catch (_) { alt = undefined; }
+      try { await idbSchreib("datenstand", null); }
+      catch (_) { antwort("geraet-kopie"); return; }
+      if (!speichern()) {
+        if (alt) await idbSchreib("datenstand", alt).catch(() => {});
+        antwort("speicher"); return;
+      }
+      antwort("neu-laden");
+      location.reload();
+      await new Promise(() => {});      // Kette bleibt zu bis zum Neuladen
+    });
+  });
+}
+
+function pfadWechselText(erg) {
+  return {
+    "ok": "✓ Übernommen.",
+    "neu-laden": "✓ Umgestellt — die App lädt neu …",
+    "warteliste": "✗ Nicht umgestellt: In der Warteliste stehen noch Einträge " +
+      "fürs Word. Erst abarbeiten lassen, dann nochmal.",
+    "nur-geraet": "✗ Nicht umgestellt: Der letzte Stand liegt nur auf diesem " +
+      "Gerät. Erst mit OneDrive abgleichen, dann nochmal.",
+    "abgebrochen": "Nichts geändert.",
+    "speicher": "✗ Nicht umgestellt: Einstellung ließ sich nicht speichern.",
+    "geraet-kopie": "✗ Nicht umgestellt: Gerätekopie ließ sich nicht leeren.",
+  }[erg] || String(erg);
+}
+
+const ORDNER_STATUS_TEXT = { fehlt: "Ordner nicht gefunden",
+  leer: "keine datenstand.json darin", "?": "nicht prüfbar (Netz?)" };
+
+// Der Abschnitt im Reiter OneDrive.
+function grundpfadAbschnitt() {
+  const koerper = el("div");
+  const stand = el("div", "stand", einst.grundPfad
+    ? "Zuletzt gewählt: /" + einst.grundPfad : "Noch kein Grundpfad gewählt.");
+  let lauf = 0;   // Pruefkennung: ein veraltetes Ergebnis darf nichts anzeigen
+  const normal = () => {
+    koerper.innerHTML = "";
+    const w = el("button", "chip aktiv", "📁 Grundpfad wählen");
+    w.onclick = () => {
+      if (typeof OD === "undefined" || !OD.konto()) {
+        stand.textContent = "Zum Auswählen erst bei OneDrive anmelden."; return;
+      }
+      koerper.innerHTML = "";
+      ordnerBrowser(koerper, pfadNorm(einst.grundPfad).split("/").filter(Boolean),
+        (pfad) => { vorschau(pfad); }, normal);
+    };
+    const z = el("div", "chips");
+    z.append(w);
+    koerper.append(z);
+  };
+  const vorschau = async (grund) => {
+    const meinLauf = ++lauf;
+    koerper.innerHTML = "";
+    koerper.append(el("div", "stand", "Prüfe die Ordner unter /" + pfadNorm(grund) + " …"));
+    const liste = grundVorschlag(grund);
+    const status = await Promise.all(liste.map((p) =>
+      ordnerStatus(p.vorschlag, p.schluessel === "datenPfad" ? "datenstand.json" : "")
+        .catch(() => "?")));
+    if (meinLauf !== lauf) return;
+    koerper.innerHTML = "";
+    liste.forEach((p, i) => koerper.append(el("div", "kontext", status[i] === "ok"
+      ? "✓ " + p.titel + ": /" + p.vorschlag
+      : "✗ " + p.titel + ": bleibt /" + p.bisher + " — " +
+        ORDNER_STATUS_TEXT[status[i]] + ", bitte einzeln wählen")));
+    const neu = Object.assign(grundNeueEinst(liste, status), { grundPfad: pfadNorm(grund) });
+    const los = el("button", "chip aktiv", "Übernehmen");
+    const ab = el("button", "chip", "Abbrechen");
+    los.disabled = !status.includes("ok");
+    ab.onclick = () => { lauf++; normal(); };
+    los.onclick = async () => {
+      los.disabled = ab.disabled = true;      // kein Doppelklick
+      const erg = await pfadeUebernehmen(neu);
+      stand.textContent = pfadWechselText(erg);
+      if (erg === "ok") { lauf++; sheetEinstellungen(); return; }  // Pfade neu anzeigen
+      if (erg !== "neu-laden") { los.disabled = ab.disabled = false; }
+    };
+    const z = el("div", "chips");
+    z.append(los, ab);
+    koerper.append(z);
+  };
+  normal();
+  return abschnitt("Grundpfad", koerper, stand, erklaerung("Grundpfad",
+    "Einmal den gemeinsamen Ordner wählen (z. B. /Apps/Cockpit/Testdaten/UGC). " +
+    "Die App schlägt daraus alle sechs Ordner vor, prüft sie und übernimmt nur, " +
+    "was es gibt. Danach lässt sich jeder Ordner unten einzeln ändern. " +
+    "Gilt nur für dieses Gerät."));
 }
 
 // Ordner erreichbar? Bei der Vorlage reicht das nicht - ohne .xlsm darin
