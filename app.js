@@ -453,7 +453,7 @@ function standWahlWarnung() {
   kopf.append(el("span", "pill", "⚠ Achtung"));
   k.append(kopf, el("div", "titel", "Datenstand noch nicht entschieden"),
     el("div", "kontext",
-      "Zwei Stände unterscheiden sich in den Marken. Es wurde nichts "
+      "Zwei Stände unterscheiden sich. Es wurde nichts "
       + "übernommen und nichts gespeichert. Zum Entscheiden hier tippen."));
   k.onclick = () => abgleichBeiRueckkehr();
   return k;
@@ -583,7 +583,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v179"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v180"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1818,7 +1818,7 @@ function backupLaden() {
       banner("Das ist kein Datenstand-Backup (marken fehlt)."); return;
     }
     if (!confirm(`Backup „${datei.name}“ laden?\n` +
-        `Stand: ${String(d.geaendert || "?").replace("T", " ")} · ` +
+        `Stand: ${String(d.geaendert || "?").slice(0, 19).replace("T", " ")} · ` +
         `${d.marken.length} Marken.\n` +
         `Aktuell: ${((datenstand && datenstand.marken) || []).length} Marken.\n` +
         "Ersetzt den aktuellen Datenstand auf Gerät + OneDrive.\n" +
@@ -1976,7 +1976,7 @@ function sheetInfo() {
       updateSuchKnopf(),
       zeile(datenstand
         ? `Datenstand: ${datenstand.marken.length} Marken · Stand ` +
-          `${String(datenstand.geaendert).replace("T", " ")} · ` +
+          `${String(datenstand.geaendert).slice(0, 19).replace("T", " ")} · ` +
           `Quelle: ${datenstandQuelle}`
         : "Datenstand: noch nicht geladen"),
       zeile("Ohne Internet zeigt die App den zuletzt geladenen Stand — " +
@@ -3754,6 +3754,24 @@ function lokalIso() {
   const d = new Date();
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
     .toISOString().slice(0, 19);
+}
+
+// v180 (Backlog 52): Stempel fuer datenstand.geaendert MIT Millisekunden.
+// lokalIso() loest nur Sekunden auf: speichert die App online, verliert das
+// Netz und speichert in DERSELBEN Sekunde noch einmal, tragen Cloud (alter
+// Inhalt) und Geraet (neuer Inhalt) denselben Stempel - und beim Start
+// gewann die Cloud, still. Gefunden vom Lasttest mit Persistenz (Seed 31337).
+//
+// Nur fuer den Datenstand-Stempel. Alle Vergleiche darauf sind
+// Textvergleiche, und "…:05.123" sortiert richtig zwischen "…:05" und
+// "…:06" - alte Stempel und die der PC-Werkzeuge (Sekunden) bleiben
+// vergleichbar. EIN Date-Objekt fuer beides: aus zwei getrennten
+// Aufrufen koennte ein Sekundenwechsel dazwischen "…:05.001" nach
+// "…:05.999" erzeugen, also rueckwaerts.
+function stempelJetzt() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 23);
 }
 
 // ISO-Datum (YYYY-MM-DD) heute + t Tage, in Lokalzeit gerechnet
@@ -11561,7 +11579,7 @@ async function datenstandSchreibenEinmal(still) {
   // unter, bekommt das Geraet den alten und die Cloud den neuen Stand.
   // Zeitstempel ZUERST aufs globale Objekt - datenstandUebernehmen()
   // vergleicht dagegen und wuerde sonst einen fremden Stand durchlassen.
-  datenstand.geaendert = lokalIso();
+  datenstand.geaendert = stempelJetzt();   // v180: mit Millisekunden
   datenstand.geaendert_von = "Cockpit-App";
   kontoStempeln();
   // Dann eine KOPIE, nicht nur dieselbe Referenz (Codex 16.09., Fund 1):
@@ -11678,6 +11696,27 @@ function idbSchreib(schluessel, wert) {
 // Schwellwert, kein "irgendein Unterschied". Zwei Staende mit denselben
 // Marken, aber verschiedenen Ereignissen, werden NICHT erkannt - das ist die
 // bekannte Luecke, kein Versehen. Es wird auch nicht gemerged.
+//
+// v180 (Backlog 52, Tobias 27.09.): EIN zweiter Ausloeser - GLEICHER Stempel,
+// ANDERER Inhalt. Dann hat der Zeitstempel gar nichts entschieden, sondern
+// die zufaellige Reihenfolge der Quellen (OneDrive vor Geraet), und die
+// verlorene Fassung war die neuere. Mit Millisekunden-Stempeln (stempelJetzt)
+// kommt das praktisch nur noch bei Staenden von vor v180 vor. Bewusst
+// Frage statt stiller Regel - Tobias: "ja, user fragen".
+function gleichstandAnders(a, b) {
+  return Boolean(a && b) && String(a.geaendert || "") === String(b.geaendert || "")
+    && JSON.stringify(a) !== JSON.stringify(b);
+}
+
+// Welche Marken stehen in beiden, aber mit anderem Inhalt? Nur fuer den
+// Fragetext - "Kena, Onelife" hilft beim Entscheiden, "irgendwas" nicht.
+function markenAnders(a, b) {
+  const dort = new Map(((b && b.marken) || []).map((m) => [schluessel(m.name), m]));
+  return ((a && a.marken) || []).filter((m) => {
+    const x = dort.get(schluessel(m.name));
+    return x && JSON.stringify(x) !== JSON.stringify(m);
+  }).map((m) => m.name);
+}
 
 // Welche Marken hat `b`, die `a` nicht hat? Zurueck kommen NAMEN, nicht
 // Schluessel: die Frage muss lesbar sein ("Kena, Onelife"). Verglichen wird
@@ -11715,8 +11754,13 @@ function verlustKandidat(kandidaten, verworfen) {
     if (weg.has(String(paar[0].geaendert || ""))) continue;
     const fehlt = markenFehlen(gewinner[0], paar[0]);
     if (fehlt.length) alle.push({ verlierer: paar, fehlt: fehlt });
+    else if (gleichstandAnders(gewinner[0], paar[0]))   // v180, Backlog 52
+      alle.push({ verlierer: paar, fehlt: [], gleichstand: true });
   }
   if (!alle.length) return null;
+  // Fehlende Marken zuerst - ein Gleichstand (0 fehlend) wird nur dann
+  // selbst gefragt, wenn es keinen Markenverlust gibt; sonst steht er als
+  // "weiterer Stand" im Text und wird mitgesichert.
   alle.sort((a, b) => b.fehlt.length - a.fehlt.length);
   // Gefragt wird zur groessten Luecke - gesichert wird spaeter JEDER
   // ungewaehlte Stand. Die erste Fassung gab nur den groessten Verlierer
@@ -11724,7 +11768,8 @@ function verlustKandidat(kandidaten, verworfen) {
   // naechsten. Falsch (Codex 18.09., Fund 1): nach dem Persistieren sind
   // Geraet und Cloud schon ueberschrieben - der dritte Stand waere dann weg,
   // ohne je gezeigt worden zu sein. Deshalb `alle`.
-  return { verlierer: alle[0].verlierer, fehlt: alle[0].fehlt, alle: alle };
+  return { verlierer: alle[0].verlierer, fehlt: alle[0].fehlt, alle: alle,
+           gleichstand: Boolean(alle[0].gleichstand) };
 }
 
 // ponytail: der ZEIT-GEWINNER wird nie uebersprungen, auch wenn er schon
@@ -11755,9 +11800,21 @@ async function standWahlKlaeren(kandidaten) {
   const fall = verlustKandidat(kandidaten, einst.standVerworfen);
   if (!fall) { standWahlOffen = false; return true; }
   const gewinner = kandidaten[0], aelter = fall.verlierer;
+  const gleicheZeit =
+    String(gewinner[0].geaendert || "") === String(aelter[0].geaendert || "");
+  // Laeuft schon ein NEUERER Stand als beide Gleichstaende (warmer Pfad,
+  // letztes Speichern ging weder aufs Geraet noch in die Cloud), ist der
+  // Gleichstand ohne Belang: der normale Weg lehnt beide ab und reicht den
+  // laufenden Stand nach. Fragen hiesse, ihn durch einen aelteren zu
+  // ersetzen (Codex v180, Fund 2a).
+  if (gleicheZeit && datenstand &&
+      String(datenstand.geaendert || "") > String(gewinner[0].geaendert || "")) {
+    standWahlOffen = false;
+    return true;
+  }
   const standStempelVorher = String((datenstand && datenstand.geaendert) || "");
   const zeile = (p) => p[1] + ", " +
-    String(p[0].geaendert || "?").replace("T", " ") + " · " +
+    String(p[0].geaendert || "?").slice(0, 19).replace("T", " ") + " · " +
     ((p[0].marken || []).length) + " Marken";
   // BEIDE Richtungen nennen (Codex 18.09., Fund 2). Die erste Fassung
   // versprach "den AELTEREN mit allen Marken" - das stimmt nur, wenn der
@@ -11767,12 +11824,30 @@ async function standWahlKlaeren(kandidaten) {
   // Ein dritter Stand mit eigenen Marken wird nicht zur Wahl gestellt -
   // aber er wird GENA"\n\n"T und gesichert, damit er nicht stillschweigend
   // verschwindet.
-  const dritte = fall.alle.slice(1).map((x) =>
-    x.verlierer[1] + " (" + x.fehlt.join(", ") + ")");
+  const dritte = fall.alle.slice(1).map((x) => x.verlierer[1] + " (" +
+    (x.gleichstand ? "gleiche Uhrzeit, anderer Inhalt" : x.fehlt.join(", ")) + ")");
   logZeile("stand-verlust-gefragt", { quelle: aelter[1],
-    ...logMehr({ fehlt: fall.fehlt.join(", "), weitere: dritte.join(" · ") }) });
-  const nimmAelteren = confirm(
-    "Die Datenstände unterscheiden sich in den Marken." + "\n\n" +
+    ...logMehr({ fehlt: fall.fehlt.join(", "), weitere: dritte.join(" · "),
+                 gleichstand: fall.gleichstand }) });
+  // v180 (Backlog 52): gleicher Stempel - "neuer/aelter" gibt es dann nicht.
+  // Die Liste der abweichenden Marken ist der einzige Anhaltspunkt, den
+  // Andrea hat ("wo habe ich zuletzt etwas eingetragen?"). OK nimmt den
+  // Verlierer der Sortierung - bei Gleichstand ist das das Geraet, und das
+  // ist auf einem einzelnen Handy fast immer der richtige.
+  const anders = fall.gleichstand ? markenAnders(gewinner[0], aelter[0]) : [];
+  const nimmAelteren = confirm(fall.gleichstand
+    ? "Zwei Datenstände tragen dieselbe Uhrzeit, unterscheiden sich aber." +
+      "\n\n" +
+      "1 — " + zeile(gewinner) + "\n" +
+      "2 — " + zeile(aelter) + "\n\n" +
+      "Unterschiedlich: " + (anders.length
+        ? anders.slice(0, 6).join(", ") + (anders.length > 6 ? " …" : "")
+        : "keine Marke (Warteliste o. Ä.)") + "\n\n" +
+      (dritte.length ? "Weiterer Stand: " + dritte.join(" · ") +
+         " — wird gesichert, aber nicht übernommen." + "\n\n" : "") +
+      "OK = Stand „" + aelter[1] + "“ nehmen" + "\n" +
+      "Abbrechen = jetzt nicht entscheiden"
+    : "Die Datenstände unterscheiden sich in den Marken." + "\n\n" +
     "NEUER — " + zeile(gewinner) + "\n" +
     "   hier fehlen: " + fall.fehlt.join(", ") + "\n\n" +
     "ÄLTER — " + zeile(aelter) + "\n" +
@@ -11792,8 +11867,10 @@ async function standWahlKlaeren(kandidaten) {
     gewaehlt = aelter;
   } else if (confirm(
       "Es wurde nichts übernommen." + "\n\n" +
-      "OK = den NEUEREN Stand behalten (" + zeile(gewinner) + ") und " +
-      "nicht mehr danach fragen" + "\n" +
+      (fall.gleichstand
+        ? "OK = den ANDEREN Stand nehmen (" + zeile(gewinner) + ")"
+        : "OK = den NEUEREN Stand behalten (" + zeile(gewinner) + ") und " +
+          "nicht mehr danach fragen") + "\n" +
       "Abbrechen = später noch einmal fragen")) {
     gewaehlt = gewinner;
   } else {
@@ -11841,13 +11918,37 @@ async function standWahlKlaeren(kandidaten) {
     return false;
   }
   const vorStempel = String(gewaehlt[0].geaendert || "");
-  if (nimmAelteren) {
+  // v180: bei Gleichstand wird JEDE Wahl direkt gesetzt, auch der
+  // Sortier-Gewinner. Der normale Weg liefe sonst in Bremse 1 ("nicht neuer
+  // als der laufende Stand" - gleich IST nicht neuer): die Wahl waere
+  // wirkungslos, Geraet und Cloud blieben verschieden, und die Frage kaeme
+  // bei jeder Rueckkehr wieder.
+  // gleicheZeit statt fall.gleichstand (Codex v180, Fund 3): auch ein
+  // Markenverlust-Fall kann denselben Stempel tragen - dann verpuffte die
+  // Wahl des Sortier-Gewinners genauso an Bremse 1.
+  const direkt = nimmAelteren || gleicheZeit;
+  // Offenes Sheet: KEIN Objekttausch darunter (v108-Regel, die
+  // datenstandUebernehmen() sonst selbst prueft). Waehrend der Sicherungs-
+  // Uploads kann Andrea im warmen Pfad eine Marke angetippt haben
+  // (Codex v180, Fund 2b; bestand fuer "aelteren nehmen" seit v136).
+  if (direkt && document.getElementById("schleier")) {
+    logZeile("stand-verlust-abgebrochen", { grund: "Sheet offen" });
+    banner("Eine Marke ist gerade offen — es wurde nichts übernommen. "
+           + "Die Frage kommt nach dem Schließen wieder.");
+    standWahlOffen = true;
+    return false;
+  }
+  if (direkt) {
     // Den aelteren nehmen heisst: an Bremse 1 vorbei. datenstandUebernehmen()
     // wuerde ihn wegen "nicht neuer" STILL ablehnen - die Wahl waere
     // wirkungslos und niemand saehe warum. Deshalb hier direkt setzen und
     // sofort neu stempeln (Entwurf B), damit der gewaehlte Stand auch
     // gegenueber Geraet und Cloud gewinnt.
-    [datenstand, datenstandQuelle] = aelter;
+    [datenstand, datenstandQuelle] = gewaehlt;
+    // Wie datenstandUebernehmen(): unterbrochene Auftraege wieder anstellen
+    // (Codex v180, Fund 4 - fehlte bisher auch beim "aelteren nehmen").
+    for (const e of (datenstand && datenstand.ausstehend) || [])
+      if (e.grund === "laeuft") e.grund = "wartet";
     await datenstandPersistieren();
   }
   // Gemerkt werden die Stempel ALLER abgelehnten Staende - aber niemals der
@@ -11865,10 +11966,10 @@ async function standWahlKlaeren(kandidaten) {
   standWahlOffen = false;
   logZeile("stand-verlust-entschieden", { quelle: gewaehlt[1],
     ...logMehr({ verworfen: andere.map((p) => p[1]).join(" · ") }) });
-  if (nimmAelteren) { versionsSicherung(); autoBackupPruefen(); }
+  if (direkt) { versionsSicherung(); autoBackupPruefen(); }
   // Gewinner bleibt Gewinner: der normale Weg macht weiter, er tut ohnehin
   // genau das Richtige.
-  return !nimmAelteren;
+  return !direkt;
 }
 
 function datenstandUebernehmen(paar) {
