@@ -1316,7 +1316,78 @@ function sheetEinstellungen() {
     }
     return [];
   };
+  // Word|App-Auswahl je Feld (v178, Backlog 44, Variante B). Erst alle
+  // abweichenden Felder waehlen, dann EIN "Übernehmen" - warum, steht bei
+  // abgleichAnwenden(). Kein Eintrag in befundReparatur(): das ist eine
+  // Entscheidung, keine Reparatur, und gehoert nie in "Alles nachtragen".
+  const abgleichZeile = (f, nochmal) => {
+    const zeile = el("div", null, "• " + f.name + ":");
+    const m = markeZuName(f.name);
+    const gesperrt = abgleichGesperrt(m,
+      (datenstand && datenstand.ausstehend) || [], bookImFlug);
+    if (gesperrt) {
+      zeile.append(" " + f.text, el("div", "kontext", gesperrt));
+      return zeile;
+    }
+    const wahl = {};
+    const los = el("button", "chip aktiv", "Übernehmen");
+    los.disabled = true;
+    const bereit = () => { los.disabled = !f.abw.every((a) => wahl[a.feld]); };
+    for (const a of f.abw) {
+      const paar = RATING_PAARE.find(([label]) => label === a.feld);
+      const wordOk = !!paar && wordWertInApp(paar[1], a.book) !== null;
+      const reihe = el("div", "chips");
+      const wKnopf = el("button", "chip", "Word: " + a.book);
+      const aKnopf = el("button", "chip", "App: " + a.excel);
+      reihe.append(el("span", null, a.feld + " "), wKnopf, aKnopf);
+      if (!wordOk) {
+        wKnopf.disabled = true;
+        reihe.append(el("span", "kontext", " Wert im Word unklar"));
+      }
+      const setze = (w) => {
+        wahl[a.feld] = w;
+        wKnopf.classList.toggle("aktiv", w === "word");
+        aKnopf.classList.toggle("aktiv", w === "app");
+        bereit();
+      };
+      wKnopf.onclick = () => setze("word");
+      aKnopf.onclick = () => setze("app");
+      zeile.append(reihe);
+    }
+    los.onclick = async () => {
+      los.disabled = true;
+      // Beim Tippen NOCHMAL: seit dem Anzeigen kann ein Word-Auftrag
+      // entstanden sein (Codex 27.09.).
+      const jetztGesperrt = abgleichGesperrt(m,
+        (datenstand && datenstand.ausstehend) || [], bookImFlug);
+      if (jetztGesperrt) { banner(jetztGesperrt); nochmal(); return; }
+      const erg = await abgleichAnwenden(m, wahl, f.abw);
+      if (erg === "abgebrochen" || erg === "laeuft") { bereit(); return; }
+      if (erg !== "ok") {
+        banner(erg === "veraltet"
+          ? "„" + m.name + "“: Stand hat sich inzwischen geändert — neu geprüft."
+          : "„" + m.name + "“: nicht übernommen (" + erg + ").");
+        nochmal();
+        return;
+      }
+      listeVeraltet = true;
+      await datenstandPersistieren();
+      // App-Stand = vollstaendige Entscheidung: jetzt ALLE Werte ins Word.
+      // Auch jede Wiederholung aus der Warteliste schreibt ab hier richtig.
+      bookKerninfosMelden(m);
+      banner("„" + m.name + "“ übernommen: " + f.abw.map((a) =>
+        a.feld + (wahl[a.feld] === "word" ? " aus Word" : " aus der App"))
+        .join(", ") + ".");
+      nochmal();
+    };
+    const fuss = el("div", "chips");
+    fuss.append(los);
+    zeile.append(fuss);
+    return zeile;
+  };
+
   const befundZeile = (f, nochmal) => {
+    if (f.art === "word-app" && f.abw) return abgleichZeile(f, nochmal);
     const zeile = el("div", null, "• " + f.name + ": " + f.text);
     const knoepfe = befundReparatur(f);
     if (!knoepfe.length) return zeile;
@@ -4214,6 +4285,83 @@ function ratingAbweichung(m) {
   return raus;
 }
 
+// ------------------------------------ Word gilt / App gilt (v178, Backlog 44)
+// Andrea entscheidet je Feld, welche Seite gilt - die App kann es nicht
+// wissen (Entscheidung 18.09.), Andrea schon (Tobias 27.09.).
+//
+// VARIANTE B (Tobias 27.09., Codex bestaetigt): erst ALLE abweichenden
+// Felder waehlen, dann EIN "Uebernehmen". Grund: bookKerninfosMelden()
+// schreibt immer alle vier Werte. "App gilt" fuer ein Feld wuerde ein
+// noch unentschiedenes zweites Feld im Word still mit ueberschreiben -
+// und die Warteliste wiederholt spaeter ebenfalls alle vier. Erst wenn die
+// App die VOLLSTAENDIGE Entscheidung haelt, ist "alles schreiben" richtig.
+
+// Word-Wert -> App-Schreibweise. null = im Word steht nichts Eindeutiges;
+// dann gibt es fuer dieses Feld keine Word-Wahl. ratingStufe() allein ist
+// kein Pruefer: "3.5", "-2" oder "7" liefen sonst ungeprueft in .repeat()
+// (Codex 27.09.). Skala wie im Formular: ganze Zahlen 1-5.
+const RATING_ZEICHEN = { brandfit: "⭐", begeisterung: "❤️", erfolgschance: "⭐" };
+function wordWertInApp(feld, wert) {
+  const t = String(wert == null ? "" : wert).trim();
+  if (feld === "rating") return /^[A-D]$/i.test(t) ? t.toUpperCase() : null;
+  const n = ratingStufe(t);
+  if (!Number.isInteger(n) || n < 1 || n > 5) return null;
+  return RATING_ZEICHEN[feld].repeat(n);
+}
+
+// Darf fuer diese Marke gerade entschieden werden? null = ja, sonst der
+// Grund in Worten (steht dann statt der Knoepfe in der Zeile).
+//   * ohne Haken "Brand Book": ein Rating-Wechsel verschoebe das Book
+//     nicht - das B-Brand laege im A-Ordner (Tobias 27.09.)
+//   * offener Word-Auftrag: der schriebe beim naechsten Anlauf den
+//     ALTEN App-Stand ins Word, mitten in die Entscheidung
+function abgleichGesperrt(m, ausstehend, imFlug) {
+  if (!m || !m.brandrating) return "Marke nicht gefunden.";
+  if (!String(m.brandrating.brandbook || "").trim())
+    return "Erst den Haken „Brand Book“ setzen (Hinweis unten).";
+  if (auftraegeMitFlug(m.name, offeneAuftraege(m, ausstehend), imFlug).length)
+    return "Wartet noch auf Word (Warteliste) — danach entscheiden.";
+  return null;
+}
+
+// Die Entscheidung anwenden. `gezeigt` = die Abweichungen, die Andrea
+// gesehen hat; `wahl` = { "Rating (A-D)": "word" | "app", ... }.
+// Reihenfolge: ALLES pruefen und bestaetigen, DANN aendern - ein
+// Abbruch (D-Rueckfrage, veralteter Stand) hinterlaesst nichts halb.
+// Rueckgabe: "ok" | "veraltet" | "unvollstaendig" | "ungueltig" |
+//            "abgebrochen" | "laeuft". Persistieren und das Schreiben ins
+// Word macht der Aufrufer (wie beim Formular).
+async function abgleichAnwenden(m, wahl, gezeigt) {
+  // 1. Steht noch dasselbe da? Zwischen Anzeigen und Tippen kann ein
+  //    Import den Word-Spiegel geaendert haben (Codex 27.09.).
+  if (JSON.stringify(ratingAbweichung(m)) !== JSON.stringify(gezeigt))
+    return "veraltet";
+  const br = m.brandrating;
+  const werte = { rating: br.rating, brandfit: br.brandfit,
+                  begeisterung: br.begeisterung, erfolgschance: br.erfolgschance };
+  let wordDabei = false;
+  for (const a of gezeigt) {
+    const paar = RATING_PAARE.find(([label]) => label === a.feld);
+    const w = wahl[a.feld];
+    if (!paar || (w !== "word" && w !== "app")) return "unvollstaendig";
+    if (w === "app") continue;
+    const neu = wordWertInApp(paar[1], a.book);
+    if (neu === null) return "ungueltig";
+    werte[paar[1]] = neu;
+    wordDabei = true;
+  }
+  // 2. D-Rueckfrage wie im Formular - VOR jeder Aenderung.
+  if (werte.rating === "D" && String(br.rating || "").trim() !== "D" &&
+      !confirm(`„${m.name}“ auf D setzen?
+` +
+        "D = inaktiv/Archiv — die Brand verschwindet aus der " +
+        "Pitchliste, bleibt aber im Brand Rating.")) return "abgebrochen";
+  // 3. Nur "App gilt": am App-Stand aendert sich nichts, es wird nur
+  //    geschrieben. Sonst DERSELBE Weg wie das Formular.
+  if (wordDabei && await ratingSetzen(m, werte) === null) return "laeuft";
+  return "ok";
+}
+
 // Alle Marken auf einmal - fuer die Pruefung in den Einstellungen.
 function ratingAbweichungen(marken) {
   return (marken || []).map((m) => ({ marke: m, abw: ratingAbweichung(m) }))
@@ -4413,7 +4561,10 @@ function bestandBefunde(marken) {
     // --- 1. Word-Book gegen App (gab es schon) ---
     const abw = ratingAbweichung(m);
     if (abw.length) {
-      fehler.push({ name: m.name, art: "word-app",
+      // `abw` strukturiert dazu (v178): "Daten pruefen" baut daraus die
+      // Auswahl Word|App je Feld (Backlog 44). `text` bleibt fuer Karte
+      // und Protokoll.
+      fehler.push({ name: m.name, art: "word-app", abw,
         text: abw.map((a) => `${a.feld}: Word ${a.book} / App ${a.excel}`)
           .join(" · ") });
     }
@@ -4595,6 +4746,69 @@ function ratingWechselEintragen(m, alt, neu, datum) {
   return true;
 }
 
+// DER Weg, ein Rating zu aendern (v178, aus ratingFormular() herausgeloest).
+// Zwei Aufrufer: das Formular und "Word gilt" in "Daten pruefen"
+// (Backlog 44). Vorher stand der Ablauf inline im Speichern-Knopf - ein
+// zweiter Aufrufer haette ihn kopieren muessen, und zwei Kopien laufen
+// auseinander (das Muster, an dem dieses Projekt dreimal hing).
+//
+// `werte` in App-Schreibweise: { rating, brandfit, begeisterung,
+// erfolgschance } - Buchstabe bzw. "⭐⭐⭐"/"❤️❤️". Rueckfragen (D) und
+// Pruefungen gehoeren VOR den Aufruf: ab hier wird geaendert.
+//
+// Nicht hier: Persistieren und bookKerninfosMelden() - das macht der
+// Aufrufer, wie bisher (bookKerninfosMelden NACH dem Verschieben, sonst
+// schreibt es in den alten Ordner, v121).
+//
+// Liefert null, wenn fuer DIESE Marke schon ein Wechsel laeuft. Zwei
+// Bedienwege (Formular, Daten pruefen) duerfen sich nicht ueberholen:
+// der zweite laese `alt = m.bookordner`, bevor der erste ihn nachzieht -
+// der "Besser im Glas"-Schaden (06.09.) ueber zwei Wege statt zwei Klicks.
+const ratingLaeuft = new Set();
+async function ratingSetzen(m, werte) {
+  const k = schluessel(m.name);
+  if (ratingLaeuft.has(k)) {
+    banner("„" + m.name + "“: Rating wird gerade gespeichert — kurz warten.");
+    return null;
+  }
+  ratingLaeuft.add(k);
+  try {
+    const br = m.brandrating;
+    const altRating = String(br.rating || "").trim();
+    Object.assign(br, werte);
+    if (m.pitchliste)
+      Object.assign(m.pitchliste, { rating: br.rating, geaendert: lokalIso() });
+
+    // Wechsel festhalten (v92). Vorher gab es keinerlei Rating-Historie -
+    // die Frage "war das mal ein B?" war schlicht nicht beantwortbar.
+    const gewechselt =
+      ratingWechselEintragen(m, altRating, br.rating, deDatum(isoInTagen(0)));
+
+    // Book in den Ordner des neuen Ratings ziehen. bookordner wird IMMER
+    // gesetzt - auch wenn das Verschieben scheitert, dann eben auf den
+    // alten Ordner. Sonst wandert der berechnete Pfad mit dem Rating, die
+    // Datei aber nicht ("Besser im Glas", 06.09.). Ziel und Ausgang VOR
+    // dem await festhalten (24.3).
+    if (gewechselt && br.brandbook) {
+      const alt = m.bookordner || altRating;
+      const ziel = br.rating;
+      const erg = await bookVerschieben(m, alt, ziel);
+      m.bookordner = erg === "verschoben" ? ziel : alt;
+      if (erg === "verschoben")
+        banner(`Book nach „${ziel} Brands“ verschoben.`);
+      else if (erg === "nicht gefunden")
+        banner(`Book nicht in „${alt} Brands“ gefunden — bitte von Hand ` +
+               `nach „${ziel} Brands“ schieben.`);
+      else if (erg !== "gleich")
+        banner("Book konnte nicht verschoben werden — es bleibt in " +
+               `„${alt} Brands“.`);
+    }
+    return gewechselt;
+  } finally {
+    ratingLaeuft.delete(k);
+  }
+}
+
 // Stufe 2 erledigt = Brand hat eine Pitchzeile - eine Bedingung fuer
 // Statuszeile und Knopf. Seit v104 reicht der Datenstand: der Snapshot
 // fuehrt keine Pitchliste mehr.
@@ -4672,54 +4886,18 @@ function ratingFormular(m, fertig) {
         !confirm(`„${m.name}“ auf D setzen?\n` +
           "D = inaktiv/Archiv — die Brand verschwindet aus der " +
           "Pitchliste, bleibt aber im Brand Rating.")) return;
-    const altRating = String(br.rating || "").trim();
-    Object.assign(br, { rating: f.rating,
+    // v178: Der eigentliche Wechsel steht in ratingSetzen() - DERSELBE Weg
+    // wie "Word gilt" in "Daten pruefen" (Backlog 44). Die Werte werden VOR
+    // dem await in eine const gezogen: die Chips bleiben waehrend des
+    // Verschiebens anklickbar (24.3, Wache 1g in test_invarianten.js).
+    const werte = { rating: f.rating,
       brandfit: "⭐".repeat(f.fit || 0),
       begeisterung: "❤️".repeat(f.geist || 0),
-      erfolgschance: "⭐".repeat(f.chance || 0) });
-    if (m.pitchliste)
-      Object.assign(m.pitchliste, { rating: f.rating, geaendert: lokalIso() });
-
-    // Wechsel festhalten (v92). Vorher gab es keinerlei Rating-Historie -
-    // die Frage "war das mal ein B?" war schlicht nicht beantwortbar,
-    // man konnte sie nur aus dem Widerspruch Book/Excel erschliessen.
-    const gewechselt =
-      ratingWechselEintragen(m, altRating, f.rating, deDatum(isoInTagen(0)));
-
-    // Book in den Ordner des neuen Ratings ziehen. bookordner wird IMMER
-    // gesetzt - auch wenn das Verschieben scheitert, dann eben auf den
-    // alten Ordner. Sonst wandert der berechnete Pfad mit dem Rating,
-    // die Datei aber nicht, und das Book ist unauffindbar. Genau so ist
-    // "Besser im Glas" entstanden (gefunden 06.09.).
-    if (gewechselt && br.brandbook) {
-      // Knopf sperren, solange der PATCH laeuft (Review-Fund 23.09.).
-      // Ein zweiter Klick liest `alt = m.bookordner`, BEVOR der erste ihn
-      // nachzieht - am Ende zeigt der gemerkte Ordner auf den alten,
-      // waehrend die Datei im neuen liegt. Das ist der "Besser im
-      // Glas"-Schaden vom 06.09., nur ueber zwei Klicks statt ueber zwei
-      // Felder. Muster wie beim Import-Knopf (app.js:1297).
-      ok.disabled = true;
-      try {
-      const alt = m.bookordner || altRating;
-      // 24.3 (23.09.): Das Ziel VOR dem await festhalten. `f` gehoert dem
-      // noch offenen Formular - die Rating-Chips bleiben waehrend des PATCH
-      // anklickbar. Wer f.rating danach ERNEUT liest, kann die Datei nach B
-      // schieben und sich C merken; ab da zeigt bookPfad() ins Leere.
-      // Dieselbe Fehlerklasse wie v122/v129: geschrieben hier, gelesen dort.
-      // Wache 1g in test_invarianten.js haelt die Stelle fest.
-      const ziel = f.rating;
-      const erg = await bookVerschieben(m, alt, ziel);
-      m.bookordner = erg === "verschoben" ? ziel : alt;
-      if (erg === "verschoben")
-        banner(`Book nach „${ziel} Brands“ verschoben.`);
-      else if (erg === "nicht gefunden")
-        banner(`Book nicht in „${alt} Brands“ gefunden — bitte von Hand ` +
-               `nach „${ziel} Brands“ schieben.`);
-      else if (erg !== "gleich")
-        banner("Book konnte nicht verschoben werden — es bleibt in " +
-               `„${alt} Brands“.`);
-      } finally { ok.disabled = false; }
-    }
+      erfolgschance: "⭐".repeat(f.chance || 0) };
+    ok.disabled = true;
+    try {
+      if (await ratingSetzen(m, werte) === null) return;   // laeuft schon
+    } finally { ok.disabled = false; }
     listeVeraltet = true;
     datenstandPersistieren();
     // Fix B (v121): das Book verschieben allein reichte nie - im Dokument
