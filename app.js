@@ -603,7 +603,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v182"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v183"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3013,7 +3013,7 @@ function sheetPitch(p) {
                               kontaktKnopf, true));
     wrap.append(bereichSonstiges(mv, bau));
 
-    if (mv && mv.erstellt) wrap.append(bereichLoeschen(mv));
+    if (mv) wrap.append(bereichVerwaltung(mv));
     zuReitern(wrap, "reiterPitch");
     // NACH zuReitern: das haengt die Knoten noch einmal um, und vorher
     // gesetztes scrollTop waere danach wieder weg.
@@ -3853,6 +3853,14 @@ function markeFrischOeffnen(m, sheet) {
 function markeZuName(name) {
   const s = schluessel(name);
   return (datenstand.marken || []).find((m) => schluessel(m.name) === s) || null;
+}
+
+// Gibt es den Namen schon - ausser bei `ausser` selbst? Anlegen und
+// Umbenennen (C4) pruefen nach derselben Regel.
+function markeExistiert(name, ausser) {
+  const s = schluessel(name);
+  return (datenstand.marken || []).some(
+    (x) => x !== ausser && schluessel(x.name) === s);
 }
 
 // Die Pitchliste kommt seit v104 ausschliesslich aus dem Datenbestand.
@@ -5298,9 +5306,33 @@ function kontaktFormular(m, fertig) {
 // Pitchlisten- und Brand-Rating-Sheet (seit v42 landen neue Brands erst
 // nach "Brand-Book befüllt" in der Pitchliste - loeschen muss vorher
 // schon gehen).
-function bereichLoeschen(m) {
+// C4 (27.09.): "Umbenennen" steht bei ALLEN Brands, auch importierten
+// (Tobias) - Loeschen bleibt App-angelegten vorbehalten.
+function bereichVerwaltung(m) {
   const frag = document.createDocumentFragment();
   const lz = el("div", "chips");
+  const uk = el("button", "chip", "✏️ Umbenennen");
+  uk.onclick = async () => {
+    const eingabe = prompt(`Neuer Name für „${m.name}“:`, m.name);
+    if (eingabe === null || eingabe.trim() === m.name) return;
+    // Schliessen nur, wenn DIESES Sheet noch offen ist - wie beim Loeschen.
+    const schleier = document.getElementById("schleier");
+    uk.disabled = true;
+    try {
+      const fehler = await markeUmbenennen(m, eingabe);
+      if (fehler) { banner(fehler); return; }
+      banner(`Umbenannt in „${m.name}“.`);
+      if (document.getElementById("schleier") === schleier) history.back();
+    } catch (e) {
+      logZeile("brand-umbenennen-ausnahme", { marke: m.name, warum: String(e) });
+      banner("Umbenennen fehlgeschlagen (" + e.message + ").");
+    } finally { uk.disabled = false; }
+  };
+  lz.append(uk);
+  if (!m.erstellt) {
+    frag.append(abschnitt("Verwaltung", lz));
+    return frag;
+  }
   const lk = el("button", "chip", "🗑 Brand löschen");
   lk.onclick = async () => {
     if (!confirm(`„${m.name}“ komplett löschen?\n` +
@@ -5577,7 +5609,7 @@ function sheetBrandrating(m) {
     wrap.append(markenDetails(quelleZuName(m.name), true, m,
       datenstand ? formularKnopf(z, bau, "kontakt", "✎ Kontaktdaten") : null));
     wrap.append(bereichSonstiges(m, bau));
-    if (m.erstellt) wrap.append(bereichLoeschen(m));
+    if (datenstand) wrap.append(bereichVerwaltung(m));
     zuReitern(wrap, "reiterRating");
   }
 
@@ -7150,10 +7182,7 @@ function sheetNeueBrand() {
     const n = name.value.trim();
     if (!n) { banner("Name fehlt."); return; }
     if (!bookNameOk(n)) { banner(BOOK_NAME_HINWEIS); return; }
-    if ((datenstand.marken || []).some(
-        (m) => schluessel(m.name) === schluessel(n))) {
-      banner("Diese Brand gibt es schon."); return;
-    }
+    if (markeExistiert(n)) { banner("Diese Brand gibt es schon."); return; }
     brandAnlegen(n, kategorie.value.trim(), f);
     history.back(); // Sheet zu, popstate zeichnet die Liste frisch
   };
@@ -7347,6 +7376,196 @@ async function brandLoeschen(m) {
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
+}
+
+// C4 · Brand umbenennen (27.09., Andrea: "falls ich mich vertippt habe").
+// Rueckgabe: Meldung fuer banner() oder null = umbenannt.
+//
+// Der Name steckt in m.name, m.quelle, im DATEINAMEN und im Book-Feld
+// "Name". Die DATEI entscheidet, nicht der Book-Haken (Lehre vom 11.09.,
+// siehe brandLoeschen). Je ein GET auf den alten und den neuen Dateinamen:
+//   alt da, neu = andere Datei -> Abbruch, nichts geaendert
+//   alt da                     -> PATCH per Datei-ID. Per ID, nicht per
+//                                 Pfad (Codex 27.09.): eine Pfad-Kontrolle
+//                                 faende bei Gross/klein-Korrektur die alte
+//                                 Datei und haelt sie fuer die neue
+//   alt weg, neu da            -> SELBSTHEILUNG (Tobias 27.09.): die Datei
+//                                 heisst schon so - App stuerzte nach dem
+//                                 PATCH ab oder der Stand wurde getauscht.
+//                                 Nochmal umbenennen zieht nur die App nach.
+//                                 Nur wenn neu.id === m.bookImport.itemId,
+//                                 sonst ist es eine fremde Datei -> Abbruch
+//   beide weg                  -> mit Haken/quelle Abbruch, sonst nur die App
+//
+// Gesperrt (Tobias 27.09.) ohne OneDrive, waehrend Import/Warteliste
+// laufen und solange fuer die Marke ein Word-Auftrag offen ist:
+// outboxAbarbeiten() loescht Auftraege, deren Marke es nicht mehr gibt.
+// Importierte Books duerfen umbenannt werden (Tobias 27.09.) - die
+// Grundregel "importierte Books fasst die App nie an" gilt hier nicht.
+//
+// Bewusst hingenommen (27.09.): snap.historie/snap.kerninfos aus dem
+// PC-Export sind nach der ALTEN quelle geschluesselt. Bis zum naechsten
+// PC-Export fehlt deren Anteil im Sheet; m.events und m.kerninfos (das,
+// was der App-Import liest) ziehen sofort mit.
+//
+// Bekannte Grenzen (Codex-Code-Review 27.09., beide mit Meldung, nicht still):
+//  * PATCH durch, Antwort UND Nachkontrolle verloren, und genau in dieser
+//    Sekunde entsteht ein Word-Auftrag unter dem alten Namen: der zweite
+//    Versuch sperrt wegen der Warteliste, der Auftrag laeuft ins Leere
+//    ("braucht dich"). Drei Zufaelle zugleich.
+//  * Stand-Tausch waehrend des PATCH, und im neuen Stand hat die Marke ohne
+//    bookordner ein ANDERES Rating: der zweite Versuch sucht im falschen
+//    Ordner und meldet "nicht gefunden". "Daten pruefen" findet die Datei.
+// Immer nur EIN Umbenennen zur Zeit (Codex 27.09.): Sheet zu, neu auf,
+// nochmal umbenennen - zwei PATCHes mit vertauschten Antworten liessen
+// Datei und App still auseinanderlaufen.
+let umbenennungLaeuft = false;
+async function markeUmbenennen(m, eingabe) {
+  if (umbenennungLaeuft)
+    return "Es läuft schon ein Umbenennen — bitte kurz warten.";
+  umbenennungLaeuft = true;
+  try { return await markeUmbenennenEinmal(m, eingabe); }
+  finally { umbenennungLaeuft = false; }
+}
+
+async function markeUmbenennenEinmal(m, eingabe) {
+  const neu = String(eingabe || "").trim();
+  const alt = m.name;
+  if (!neu) return "Name fehlt.";
+  if (neu === alt) return "Der Name ist unverändert.";
+  if (!bookNameOk(neu)) return BOOK_NAME_HINWEIS;
+  if (markeExistiert(neu, m)) return "Diese Brand gibt es schon.";
+  if (typeof OD === "undefined" || !OD.konto())
+    return "Ohne OneDrive-Anmeldung kann nicht umbenannt werden — es " +
+      "wurde nichts geändert.";
+  if (importLaeuft || outboxLaeuft)
+    return "Gerade läuft ein Abgleich mit OneDrive — bitte gleich " +
+      "nochmal versuchen. Es wurde nichts geändert.";
+  const s = schluessel(alt);
+  if (bookImFlug.has(s) || outbox().some((e) => schluessel(e.marke) === s))
+    return "Für diese Brand ist noch ein Word-Auftrag offen (Warteliste). " +
+      "Erst wenn er durch ist, kann sie umbenannt werden — es wurde " +
+      "nichts geändert.";
+
+  // Ordner VOR dem ersten await festhalten und nach dem Umbenennen als
+  // bookordner eintragen: dort liegt die Datei nachweislich.
+  // Ohne Brandrating und bookordner gibt es keinen Ordner und kein Book -
+  // bookOrdner() wuerde dann werfen (Review 27.09.; im Bestand 0 von 120).
+  const ordner = m.bookordner || m.brandrating ? bookOrdner(m) : null;
+  const dateiInfo = async (name) => {
+    if (!ordner || !bookNameOk(name)) return null;   // kann kein Book haben
+    const r = await OD.graphRoh(bookDateiPfad(ordner, name) +
+                                "?$select=id,name");
+    if (r && r.status === 404) return null;
+    return r && r.ok ? r.json() : undefined;  // undefined: unklar
+  };
+  const vorher = await dateiInfo(alt);
+  const ziel = await dateiInfo(neu);
+  if (vorher === undefined || ziel === undefined)
+    return "OneDrive hat nicht sauber geantwortet (Netz?) — es wurde " +
+      "nichts geändert, bitte nochmal versuchen.";
+
+  // Welche Datei ist UNSERE? Kennt der Import die ID (Bestand 68/68), zaehlt
+  // nur sie - auch fuer die Datei am alten Pfad (Codex 27.09.: eine Kopie
+  // mit dem Markennamen am erwarteten Ort, das echte Book woanders - die
+  // App haette die Kopie umbenannt). Sonst ist es die am alten Pfad.
+  // Eine Datei unter dem neuen Namen mit anderer ID ist fremd, auch fuer
+  // die Selbstheilung (Zufallstest 27.09.: die App uebernahm sie still).
+  // ponytail: ein frisch angelegtes, noch nie importiertes Book hat keine
+  // itemId - bricht genau dann der PATCH-Moment ab, heilt erst der Import.
+  const importId = m.bookImport && m.bookImport.itemId;
+  if (vorher && importId && vorher.id !== importId)
+    return "Am erwarteten Ort liegt ein anderes Brand-Book als das zuletzt " +
+      "eingelesene. Bitte die App einmal schließen und neu öffnen (Books " +
+      "werden neu eingelesen) oder „Daten prüfen“ — es wurde nichts geändert.";
+  const eigeneId = importId || (vorher && vorher.id);
+  if (ziel && ziel.id !== eigeneId)
+    return `„Brand-Book ${neu}.docx“ gibt es in „${ordner} Brands“ ` +
+      "schon — es wurde nichts geändert.";
+
+  let datei = false;               // hat die Marke hinterher ein Book?
+  if (vorher) {
+    const dateiName = `Brand-Book ${neu}.docx`;
+    const item = "/me/drive/items/" + vorher.id;
+    const r = await OD.graphRoh(item, { method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: dateiName }) });
+    logZeile("brand-umbenennen-datei", { alt, neu, ordner,
+      status: r ? r.status : 0, code: await logFehlerCode(r) });
+    let ok = !!(r && r.ok);
+    if (!r) {
+      // Keine Antwort heisst nicht "nicht passiert" - per ID nachsehen.
+      const k = await OD.graphRoh(item + "?$select=name");
+      ok = !!(k && k.ok && (await k.json()).name === dateiName);
+    }
+    if (!ok) {
+      if (!r) return "Umbenennen nicht bestätigt — keine Antwort von " +
+        "OneDrive. Bitte nochmal umbenennen; war es schon durch, zieht " +
+        "die App nur noch nach.";
+      // Codex 27.09.: dass Word ein Umbenennen sperrt, ist nicht
+      // nachgemessen - deshalb "vermutlich".
+      return r.status === 423
+        ? "Umbenennen abgelehnt — das Brand-Book ist gesperrt, vermutlich " +
+          "weil es in Word offen ist. In Word schließen und nochmal " +
+          "versuchen. Es wurde nichts geändert."
+        : "Umbenennen abgelehnt — OneDrive antwortete mit Fehler " +
+          r.status + ". Es wurde nichts geändert.";
+    }
+    datei = true;
+  } else if (ziel) {
+    datei = true;
+    logZeile("brand-umbenennen-nachgezogen", { alt, neu, ordner });
+  } else if ((m.brandrating && m.brandrating.brandbook) || m.quelle ||
+             importId) {
+    // Haken, quelle ODER Import-ID: alle sagen "es gibt ein Book". Nur der
+    // Haken reichte nicht - Zufallstest 27.09.: Book im falschen Ordner,
+    // Haken weg, quelle da -> die App benannte still nur sich um (im
+    // Bestand 1 Marke mit quelle ohne Haken). Die ID: Codex 27.09.
+    return `Brand-Book nicht gefunden (erwartet in „${ordner} Brands“) — ` +
+      "es wurde nichts geändert.";
+  }
+
+  // Waehrend des Wartens kann der Stand getauscht worden sein (Laden,
+  // Import). Dann NICHT per Namen nachraten (Codex 27.09.: traefe ggf. die
+  // falsche Marke) - nochmal umbenennen heilt ueber "alt weg, neu da".
+  if (!datenstand || !datenstand.marken.includes(m)) {
+    logZeile("brand-umbenennen-abbruch", { alt, neu, datei,
+      warum: "Datenstand waehrend des Wartens getauscht" });
+    return "Der Datenstand wurde zwischendurch neu geladen. Bitte die " +
+      "Brand nochmal öffnen und nochmal umbenennen.";
+  }
+  m.name = neu;
+  if (datei) {
+    m.quelle = "Brand-Book " + neu;
+    m.bookordner = ordner;
+    // Datei nachweislich da, Haken fehlt -> mitsetzen (Tobias 27.09.), wie
+    // "Haken setzen" in "Daten pruefen" (book-ohne-haken). Ohne Haken
+    // verwirft bookKerninfos() den Name-Nachtrag still als "kein-book".
+    if (m.brandrating && !String(m.brandrating.brandbook || "").trim()) {
+      m.brandrating.brandbook = "✔️";
+      logZeile("brand-umbenennen-haken", { alt, neu });
+    }
+  }
+  for (const p of [datenstand.letzteAktion, datenstand.letztesBook])
+    if (p && schluessel(p.name) === s) p.name = neu;
+  // Netz fuers Wartefenster (Codex 27.09.): ein Auftrag, der WAEHREND des
+  // PATCH unter dem alten Namen entstand, zieht mit - sonst loescht
+  // outboxAbarbeiten() ihn als "Marke weg". Der Schluessel beginnt immer
+  // mit schluessel(name), siehe outboxSchluessel().
+  // ponytail: bookKette/bookImFlug behalten fuer diesen Moment den alten
+  // Schluessel - ein Word-Vorgang aus genau diesem Fenster kann parallel
+  // zu einem neuen laufen. Sperre ueber die ganze App, falls das je auftritt.
+  for (const e of outbox()) if (schluessel(e.marke) === s) {
+    e.marke = neu;
+    e.k = schluessel(neu) + e.k.slice(s.length);
+  }
+  listeVeraltet = true;
+  datenstandPersistieren();
+  logZeile("brand-umbenannt", { alt, neu, datei });
+  // Feld "Name" im Book - ueber den normalen Kerninfos-Weg, scheitert es,
+  // steht der Auftrag in der Warteliste (Tobias 27.09.).
+  if (datei) bookKerninfosMelden(m);
+  return null;
 }
 
 // -------------------------------------- Rating abgeschlossen (Phase 5)
@@ -10666,11 +10885,11 @@ function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
 async function bookKerninfosEinmal(m, versuch) {
   const pfad = bookPfad(m);
   const t0 = Date.now();
-  // "Name" bleibt draussen: der Name steckt AUCH im Dateinamen, und ein
-  // Book, in dem ein anderer Name steht als auf der Datei, ist schlimmer
-  // als eins mit altem Namen. Umbenennen ist ein eigener Punkt, der beides
-  // zusammen macht - dann wird hier nur das Weglassen entfernt.
-  const { Name, ...werte } = bookWerte(m);
+  // "Name" schreibt seit C4 (27.09.) mit: markeUmbenennen() benennt die
+  // Datei zuerst um und ruft erst DANN hierher - Datei und Feld tragen also
+  // denselben Namen. Bis dahin blieb "Name" draussen, weil ein Book mit
+  // anderem Namen als auf der Datei schlimmer ist als eins mit altem.
+  const werte = bookWerte(m);
   const grund = { marke: m.name, aktion: KERNINFOS_AKTION, pfad,
                   versuch: versuch || 1 };
   try {
