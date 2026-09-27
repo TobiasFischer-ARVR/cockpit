@@ -593,17 +593,17 @@ function kopfzeile(titel, zurueckSichtbar) {
   document.getElementById("titel").textContent = titel;
   document.getElementById("zurueck").style.visibility =
     zurueckSichtbar ? "visible" : "hidden";
-  // Hauptmenue ohne Update-Knopf (Tobias 29.08.) - der lebt in den
-  // Bereichen (UGC, Buecher), nicht auf der Startseite
-  document.getElementById("update").style.visibility =
-    zurueckSichtbar ? "visible" : "hidden";
+  // v182: Update-Knopf (↻) entfernt (Tobias 27.09.). Er holte nur den
+  // Datenstand - dasselbe passiert seit v69 bei jeder Rueckkehr in die App,
+  // seit v177/v178 samt Einlesen der Books. Seine Meldung "Aktueller Stand
+  // aus OneDrive" zeigte zudem das Datum des Snapshots, nicht des Datenstands.
 }
 
 // ------------------------------------------------------------ Einstellungen
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v181"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v182"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2734,7 +2734,7 @@ function bereichHistorie(m, quelle) {
     // ist das geparste Word die Herkunft und ein Update kann wirklich
     // etwas nachliefern. Ohne Book waere derselbe Rat schlicht falsch.
     leer.push(el("div", "leerzustand kompakt", quelle
-      ? "Keine Historie im Snapshot — einmal Update (↻) drücken."
+      ? "Keine Historie im Snapshot — App einmal schließen und neu öffnen."
       : "Noch keine Ereignisse — der erste Pitch erscheint hier, sobald " +
         "du ihn in der Pitchliste erledigst."));
   }
@@ -4182,7 +4182,7 @@ function renderPitchliste() {
   if (!alle.length) {
     c.append(el("div", "leerzustand",
       "Noch keine Pitchlisten-Einträge im Datenbestand — "
-      + "einmal Update (↻) drücken."));
+      + "App einmal schließen und neu öffnen."));
     return;
   }
 
@@ -11749,7 +11749,7 @@ function idbSchreib(schluessel, wert) {
 // dem neuen Objekt, Pitchlisten-Eintrag in der verwaisten Marke, beim
 // Speichern verloren. Deshalb steht die Prüfung jetzt UNMITTELBAR vor der
 // Zuweisung - hinter jedem await und damit für ALLE Aufrufer zugleich
-// (abgleichBeiRueckkehr, update/↻, Start). Test: tests/test_v108.js
+// (abgleichBeiRueckkehr, Start). Test: tests/test_v108.js
 // ---------------------------------- Markenverlust beim Laden (v136)
 // Der Zeitstempel entscheidet, welcher Stand gewinnt - er sagt aber nichts
 // darueber, ob der Gewinner auch ALLES enthaelt. Ein Stand, der zwei Marken
@@ -12582,27 +12582,6 @@ async function laden() {
   zi = wieder >= 0 ? wieder : 0;
 }
 
-async function update() {
-  const btn = document.getElementById("update");
-  btn.disabled = true;
-  try {
-    // Bis v88 ging hier ein POST /update an server.py, der die Books am PC
-    // neu einlas. Der Heimserver ist seit dem Umzug auf GitHub Pages
-    // (29.08.) ueberfluessig und am 06.09. geloescht worden - der Aufruf
-    // schlug seither ohnehin immer fehl und lief in genau diesen Zweig.
-    // Books neu einlesen macht jetzt der PC (datenstand.py /
-    // export_snapshot.py), das Ergebnis kommt ueber OneDrive hier an.
-    await laden();
-    render();
-    banner("Aktueller Stand aus OneDrive: " +
-      String(snap.erzeugt || "?").replace("T", " "));
-  } catch (fehler) {
-    banner("Keine Datenquelle erreichbar: " + fehler.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
 document.getElementById("einstellungen").onclick = sheetEinstellungen;
 document.getElementById("info").onclick = sheetInfo;
 
@@ -12620,7 +12599,6 @@ document.getElementById("zurueck").onclick = () => {
   location.hash =
     h.startsWith("#/ugc/") || UGC_UNTER.indexOf(h) >= 0 ? "#/ugc" : "#/";
 };
-document.getElementById("update").onclick = update;
 window.addEventListener("hashchange", render);
 // Nach dem (asynchronen) MSAL-Start einmal neu laden + rendern: die
 // OneDrive-Karte zeigt dann den Login-Zustand, und laden() kann jetzt
