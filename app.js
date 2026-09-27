@@ -467,7 +467,20 @@ function standWahlWarnung() {
 // DIESES Geraet zu konservieren, die beim naechsten Start ohnehin neu
 // entsteht - und die Andreas Handy nach ihrer eigenen Korrektur noch als
 // alte Warnung zeigen wuerde.
-let bestandFehlerDa = false;
+// v178 (Backlog 46): die LISTE statt nur ja/nein - die Karte nennt Marke
+// und Unterschied. Verglichen wird der Inhalt, nicht nur "ob": wechselt
+// der Befund von Marke A zu Marke B, bliebe ein ja/nein-Vergleich auf
+// "ja" stehen und die alte Karte haengen (Codex 27.09.).
+let bestandFehler = [];
+
+// EINE Stelle fuer beide Schreiber (stiller Lauf, Daten pruefen im Sheet).
+// true = anders als vorher, dann muss die Ansicht neu gezeichnet werden.
+function bestandFehlerSetzen(liste) {
+  const neu = liste.map((f) => ({ name: f.name, text: f.text || f.art || "" }));
+  const anders = JSON.stringify(neu) !== JSON.stringify(bestandFehler);
+  bestandFehler = neu;
+  return anders;
+}
 
 // Laeuft gerade ein Bestandslauf? Sperre nach dem Muster von abgleichLaeuft
 // / abgleichNachholen (v95).
@@ -510,9 +523,7 @@ async function bestandStillPruefen() {
   await bookAenderungenPruefen();          // fuellt bookDateien
   const daten = bestandBefunde(datenstand.marken);
   const dateien = bestandDateiBefunde(datenstand.marken, bookDateien);
-  const vorher = bestandFehlerDa;
-  bestandFehlerDa = (daten.fehler.length + dateien.fehler.length) > 0;
-  return bestandFehlerDa !== vorher;
+  return bestandFehlerSetzen(daten.fehler.concat(dateien.fehler));
   } finally { bestandLaeuft = false; }
 }
 
@@ -521,16 +532,32 @@ async function bestandStillPruefen() {
 // sie nicht wegwischen koennen. Und beheben kann sie es jetzt wirklich, der
 // Knopf sitzt seit v137 am Befund.
 function bestandWarnung() {
-  if (!bestandFehlerDa) return null;
+  if (!bestandFehler.length) return null;
   const k = el("div", "karte block warnung tippbar");
   const kopf = el("div", "kopf");
   kopf.append(el("span", "pill", "\u26a0 Achtung"));
-  k.append(kopf, el("div", "titel", "Daten pr\u00fcfen hat etwas gefunden"),
-    el("div", "kontext",
-      "Buch, Brand Rating und Pitchliste widersprechen sich an mindestens "
-      + "einer Stelle. Zum Ansehen hier tippen."));
+  k.append(kopf, el("div", "titel", "Daten pr\u00fcfen hat etwas gefunden"));
+  for (const z of bestandZeilen(bestandFehler)) k.append(el("div", "kontext", z));
+  k.append(el("div", "kontext", "Zum Ansehen und Entscheiden hier tippen."));
   k.onclick = sheetEinstellungen;
   return k;
+}
+
+// Welche Marke, was genau (v178, Backlog 46, Tobias 27.09.). Nach MARKEN
+// gruppiert, hoechstens drei - "+ N weitere" zaehlt Marken, nicht
+// Befunde (Codex 27.09.).
+function bestandZeilen(liste, max = 3) {
+  const jeMarke = new Map();
+  for (const f of liste) {
+    if (!jeMarke.has(f.name)) jeMarke.set(f.name, []);
+    jeMarke.get(f.name).push(f.text);
+  }
+  const namen = [...jeMarke.keys()];
+  const zeilen = namen.slice(0, max)
+    .map((n) => n + " \u00b7 " + jeMarke.get(n).join(" \u00b7 "));
+  const rest = namen.length - max;
+  if (rest > 0) zeilen.push("+ " + rest + " weitere Marke" + (rest === 1 ? "" : "n"));
+  return zeilen;
 }
 
 // Merker setzen/loeschen. Schreibt nur bei WECHSEL in den Geraetespeicher,
@@ -556,7 +583,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v177"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v178"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -694,7 +721,11 @@ const REITER = {
   // Reiter. Seine drei Abschnitte stehen hier trotzdem, weil der
   // Invariantentest in test_bookpfad.js statisch JEDEN abschnitt()-Aufruf
   // in app.js prueft und einen fehlenden Eintrag als vergessen wertet.
-  "Datenlogging": "OneDrive",
+  // v178 (Backlog 47/48, Tobias 27.09.): eigener Reiter "Logfiles" -
+  // Schalter, Pfad und die letzten Meldungen an EINER Stelle.
+  "Datenlogging": "Logfiles",
+  "Pfad Logfiles": "Logfiles",
+  "ACHTUNG Logfile": "Logfiles",
   "Warteliste": "Warteliste",
   "Nichts offen": "Warteliste",
   "Braucht dich": "Warteliste",
@@ -1205,6 +1236,35 @@ function sheetEinstellungen() {
       "erweitert: zusätzlich SOLL/IST und welche Schutzregel gegriffen hat. " +
       "Eine Datei je Tag und Gerät.")));
 
+  // Pfad Logfiles (v178, Backlog 48) - direkt beim Schalter. Leer =
+  // Nachbar "Logfiles" des Datenbank-Ordners wie seit v103.
+  wrap.append(pfadAbschnitt("Pfad Logfiles",
+    "logPfad", EXCEL_BASIS_STD.Logfiles, logBasis,
+    () => pruefeExcelOrdner("Logfiles"),
+    "Hier landen die Tageslogs und das ACHTUNG Logfile. Den Ordner am "
+    + "besten vorher anlegen und mit „Prüfen“ testen. „Standard“ nimmt wieder den Ordner „Logfiles“ neben der Datenbank. "
+    + "Gilt nur für dieses Gerät."));
+
+  // ACHTUNG Logfile (v178, Backlog 47): die letzten Meldungen, die oben
+  // nach 4 s verschwinden. Neueste oben, mit Download.
+  const mListe = meldungenLesen().slice().reverse();
+  const wann = (z) => { const s = String(z || "");
+    return s.slice(8, 10) + "." + s.slice(5, 7) + ". " + s.slice(11, 16); };
+  const mZeile = el("div", "chips");
+  const mKnopf = el("button", "chip", "⭳ Herunterladen");
+  mKnopf.disabled = !mListe.length;
+  mKnopf.onclick = meldungenHerunterladen;
+  mZeile.append(mKnopf);
+  wrap.append(abschnitt("ACHTUNG Logfile",
+    el("div", "stand", mListe.length
+      ? "Die letzten " + mListe.length + " Meldungen, neueste oben."
+      : "Noch keine Meldungen."),
+    ...mListe.map((m) => el("div", "kontext", wann(m.zeit) + " · " + m.text)),
+    mZeile,
+    el("div", "stand", logStufe()
+      ? "Liegt auch in OneDrive: " + achtungDatei().split("/").pop()
+      : "In OneDrive nur bei eingeschaltetem Datenlogging.")));
+
   // Warteliste (v103): fest erreichbar. Das Fenster geht von allein nur
   // auf, wenn ein Eintrag Andreas Zutun braucht - alles andere traegt sich
   // selbst nach. Trotzdem muss sie jederzeit nachsehen koennen, was noch
@@ -1356,17 +1416,32 @@ function sheetEinstellungen() {
     }
     los.onclick = async () => {
       los.disabled = true;
-      // Beim Tippen NOCHMAL: seit dem Anzeigen kann ein Word-Auftrag
+      // Beim Tippen die Marke FRISCH aufloesen, nicht das `m` von der
+      // Anzeige nehmen: wurde der Datenstand inzwischen ersetzt (z. B.
+      // "Andreas Stand holen" im selben Sheet), gehoerte es zum alten
+      // Objekt - die Entscheidung verschoebe das Book, gespeichert wuerde
+      // der neue Stand ohne sie (Codex 27.09., Diff-Review).
+      const mJetzt = markeZuName(f.name);
+      // Und die Sperre NOCHMAL: seit dem Anzeigen kann ein Word-Auftrag
       // entstanden sein (Codex 27.09.).
-      const jetztGesperrt = abgleichGesperrt(m,
+      const jetztGesperrt = abgleichGesperrt(mJetzt,
         (datenstand && datenstand.ausstehend) || [], bookImFlug);
       if (jetztGesperrt) { banner(jetztGesperrt); nochmal(); return; }
-      const erg = await abgleichAnwenden(m, wahl, f.abw);
+      let erg;
+      try {
+        erg = await abgleichAnwenden(mJetzt, wahl, f.abw);
+      } catch (fehler) {
+        // Kam die Ausnahme nach dem Aendern, steht die Entscheidung schon
+        // im Datenstand - also trotzdem speichern und ins Word nachtragen,
+        // statt sie still im Speicher liegen zu lassen.
+        banner("„" + f.name + "“: Fehler beim Übernehmen — " + String(fehler));
+        erg = "ok";
+      }
       if (erg === "abgebrochen" || erg === "laeuft") { bereit(); return; }
       if (erg !== "ok") {
         banner(erg === "veraltet"
-          ? "„" + m.name + "“: Stand hat sich inzwischen geändert — neu geprüft."
-          : "„" + m.name + "“: nicht übernommen (" + erg + ").");
+          ? "„" + f.name + "“: Stand hat sich inzwischen geändert — neu geprüft."
+          : "„" + f.name + "“: nicht übernommen (" + erg + ").");
         nochmal();
         return;
       }
@@ -1374,8 +1449,8 @@ function sheetEinstellungen() {
       await datenstandPersistieren();
       // App-Stand = vollstaendige Entscheidung: jetzt ALLE Werte ins Word.
       // Auch jede Wiederholung aus der Warteliste schreibt ab hier richtig.
-      bookKerninfosMelden(m);
-      banner("„" + m.name + "“ übernommen: " + f.abw.map((a) =>
+      bookKerninfosMelden(mJetzt);
+      banner("„" + f.name + "“ übernommen: " + f.abw.map((a) =>
         a.feld + (wahl[a.feld] === "word" ? " aus Word" : " aus der App"))
         .join(", ") + ".");
       nochmal();
@@ -1479,9 +1554,7 @@ function sheetEinstellungen() {
     // entweder einen Befund nicht an, den sie gerade gefunden hat, oder
     // warnte weiter vor etwas, das erledigt ist - beides genau der Fehler,
     // den dieses Paket abstellen soll.
-    const warVorher = bestandFehlerDa;
-    bestandFehlerDa = fehler.length > 0;
-    if (bestandFehlerDa !== warVorher) listeVeraltet = true;
+    if (bestandFehlerSetzen(fehler)) listeVeraltet = true;
     if (wordNeu.length) {
       listeVeraltet = true;
       pStatus.append(el("div", null, "⭳ Noch nicht gelesen: "
@@ -1914,9 +1987,96 @@ function bannerStapel() {
 }
 
 function banner(text) {
+  meldungMerken(text);
   const b = el("div", "banner", text);
   bannerStapel().append(b);
   setTimeout(() => b.remove(), 4000);
+}
+
+// ---------------------------------------- ACHTUNG Logfile (v178, Backlog 47)
+// Banner verschwinden nach 4 s - "1 geändert · 1 übernommen" war am 27.09.
+// am Geraet nicht zu Ende lesbar (Tobias). Deshalb bleiben die letzten 20
+// hier stehen: Einstellungen -> Reiter "Logfiles", mit Download, und bei
+// eingeschaltetem Datenlogging als eigene Datei neben den Tageslogs.
+//
+// Alles hier darf die Meldung selbst NIE verhindern: kaputtes JSON,
+// voller oder gesperrter Speicher -> still weiter (Codex 27.09.). Und
+// nichts hier ruft banner() - sonst Kreis.
+const MELDUNGEN_KEY = "cockpit-meldungen";
+const MELDUNGEN_MAX = 20;
+
+function meldungenLesen() {
+  try {
+    const l = JSON.parse(localStorage.getItem(MELDUNGEN_KEY) || "[]");
+    return Array.isArray(l) ? l : [];
+  } catch (_) { return []; }
+}
+
+function meldungMerken(text) {
+  try {
+    const liste = meldungenLesen()
+      .concat([{ zeit: lokalIso(), text: String(text) }]).slice(-MELDUNGEN_MAX);
+    localStorage.setItem(MELDUNGEN_KEY, JSON.stringify(liste));
+    achtungSichernBald();
+  } catch (_) { /* Meldung trotzdem zeigen */ }
+}
+
+// Als Text, neueste zuerst - so liest man es im Zweifel.
+function meldungenText() {
+  return meldungenLesen().slice().reverse()
+    .map((m) => String(m.zeit || "").replace("T", " ") + "  " + m.text)
+    .join("\n");
+}
+
+function achtungDatei() {
+  return logBasis() + "/" + lokalIso().slice(0, 10) + " ACHTUNG Logfile " +
+    logGeraet() + ".txt";
+}
+
+// Nach OneDrive nur bei eingeschaltetem Datenlogging - dasselbe Schalter-
+// Prinzip wie die Tageslogs. Gesammelt statt je Banner (mehrere Meldungen
+// kommen oft im selben Moment), und immer nur EIN Upload gleichzeitig:
+// jeder liest den Ring erst beim Senden, der letzte traegt also den
+// neuesten Stand - ein langsamer alter kann keinen neueren ueberschreiben,
+// weil er nie parallel laeuft (Codex 27.09.).
+let achtungTimer = null, achtungLaeuft = false, achtungNochmal = false;
+function achtungSichernBald() {
+  if (!logStufe() || achtungTimer) return;
+  achtungTimer = setTimeout(() => { achtungTimer = null; achtungSichern(); }, 3000);
+}
+
+async function achtungSichern() {
+  // Schalter JEDES Mal pruefen, auch im Nachlauf: wurde das Logging
+  // zwischen Meldung und Upload ausgeschaltet, geht nichts mehr raus
+  // (Codex 27.09., Diff-Review).
+  if (!logStufe()) { achtungNochmal = false; return; }
+  if (typeof OD === "undefined" || !OD.konto()) return;
+  if (achtungLaeuft) { achtungNochmal = true; return; }
+  achtungLaeuft = true;
+  try {
+    const ziel = achtungDatei() + ":/content?@microsoft.graph.conflictBehavior=replace";
+    const senden = () => OD.graphRoh(ziel, { method: "PUT",
+      body: meldungenText() + "\n", headers: { "Content-Type": "text/plain" } });
+    const put = await senden();
+    if (put && put.status === 404 && await logOrdnerAnlegen()) await senden();
+  } catch (_) {
+    // wie logSichern(): Logging darf die App nie stoeren
+  } finally {
+    achtungLaeuft = false;
+    if (achtungNochmal) { achtungNochmal = false; achtungSichern(); }
+  }
+}
+
+// Download aufs Geraet: Textdatei, neueste Meldung oben.
+function meldungenHerunterladen() {
+  const blob = new Blob([meldungenText() + "\n"], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = lokalIso().slice(0, 10) + " ACHTUNG Logfile.txt";
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function zeitraum() {
@@ -8697,7 +8857,12 @@ function bestandNachziehen() {
     if (!bookGeaendert.size && !neu) return;
     listeVeraltet = false;
     render();
-  }).catch(() => {});
+  }).catch((fehler) => {
+    // Nicht mehr spurlos (Codex 27.09., Diff-Review): ins Protokoll. Die
+    // Karte bleibt auf dem letzten Stand - ein Banner bei jeder Rueckkehr
+    // waere Tapete (Backlog 42).
+    logZeile("bestand-ausnahme", { marke: "", warum: String(fehler) });
+  });
 }
 
 function bookWerte(m) {
@@ -9128,9 +9293,13 @@ function xlsxSortiertPitch(marken) {
 // nicht"). Deshalb seit v158 einzeln waehlbar, mit derselben Bedienung wie
 // die drei anderen Pfade. Leerer Eintrag = weiter der Nachbar, damit ein
 // Geraet ohne Einstellung sich verhaelt wie bisher.
-const EXCEL_PFAD_KEY = { Export: "exportPfad", Vorlage: "vorlagePfad" };
+// v178 (Backlog 48): Logfiles nach demselben Muster - leer = weiter der
+// Nachbar "Logfiles" des Datenbank-Ordners, wie seit v103.
+const EXCEL_PFAD_KEY = { Export: "exportPfad", Vorlage: "vorlagePfad",
+                         Logfiles: "logPfad" };
 const EXCEL_BASIS_STD = { Export: "/UGC/App/Export",
-                          Vorlage: "/UGC/App/Vorlage" };
+                          Vorlage: "/UGC/App/Vorlage",
+                          Logfiles: "/UGC/App/Logfiles" };
 
 function excelNachbar(unter) {
   const roh = String(einst[EXCEL_PFAD_KEY[unter]] || "").trim()
@@ -9650,7 +9819,16 @@ const LOG_STUFEN = [["", "aus"], ["einfach", "einfach"],
 function logStufe() { return einst.logStufe || ""; }
 
 // Geschwisterordner der Datenbank: /UGC/App/Datenbank -> /UGC/App/Logfiles
+// Seit v178 waehlbar (Backlog 48, einst.logPfad; leer = wie bisher).
+// Bewusst NICHT ueber excelNachbar(): logBasis() wird in Tests und im
+// Generator einzeln herausgeschnitten, und drei Zeilen sind billiger als
+// eine neue Abhaengigkeit dort. Ergebnis ist dasselbe.
+// ponytail: ein Pfadwechsel MITTEN in der Sitzung schreibt den ganzen
+// Puffer in die neue Datei (lag dort schon eine Datei von heute, wird sie
+// ersetzt). Nur Diagnose-Log; ab dem naechsten Start sauber getrennt.
 function logBasis() {
+  const roh = String(einst.logPfad || "").trim().replace(/^\/+|\/+$/g, "");
+  if (roh) return "/me/drive/root:/" + roh;
   return datenBasis().replace(/\/[^/]+$/, "/Logfiles");
 }
 
