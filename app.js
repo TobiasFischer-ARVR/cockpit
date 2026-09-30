@@ -563,6 +563,30 @@ function bestandWarnung() {
   return k;
 }
 
+// Kundenauftrag an einer Marke, die NUR im Brand Rating steht (v188, Tobias
+// 30.09.). "+ Kunde" ist fuer neue Namen gedacht; hat Andrea doch eine
+// Brand-Rating-Marke erwischt, bleibt diese Karte stehen, bis sie den
+// Auftrag beendet - ohne Pitchzeile gibt es keinen Rueckweg. Abgeleitet,
+// kein Merker: ueber "in Kundenauftraege verschieben" kommt nur, wer eine
+// Pitchzeile hat, der Fall entsteht also nur ueber "+ Kunde".
+// Folgeauftraege an Pitchlisten-Marken sind gewollt und warnen NICHT.
+function auftraegeOhnePitch() {
+  return (datenstand ? datenstand.marken || [] : [])
+    .filter((m) => m.kundenauftrag && m.brandrating && !m.pitchliste);
+}
+function auftragWarnung() {
+  const liste = auftraegeOhnePitch();
+  if (!liste.length) return null;
+  const k = el("div", "karte block warnung tippbar");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "\u26a0 Achtung"));
+  k.append(kopf, el("div", "titel", "Kundenauftrag an einer Brand-Rating-Marke"),
+    el("div", "kontext", liste.map((m) => m.name).join(", ") +
+      " \u2014 steht auch im Brand Rating. Zum Beenden des Auftrags hier tippen."));
+  k.onclick = () => auftragOeffnen(liste[0].name);
+  return k;
+}
+
 // Welche Marke, was genau (v178, Backlog 46, Tobias 27.09.). Nach MARKEN
 // gruppiert, hoechstens drei - "+ N weitere" zaehlt Marken, nicht
 // Befunde (Codex 27.09.).
@@ -603,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v187"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v188"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3084,7 +3108,9 @@ function sheetPitch(p) {
     for (const h of hist) {
       const zeile = el("div", "stand",
         `${h.datum} · ` +
-        (h.richtung === "hinein" ? "in den Auftrag" : "zurück in die Pitchliste") +
+        (h.richtung === "hinein" ? "in den Auftrag"
+          : h.richtung === "beendet" ? "Auftrag beendet"
+          : "zurück in die Pitchliste") +
         (h.grund ? ` — ${h.grund}` : "") +
         (h.naechsterPitch ? ` · nächster Pitch am ${deDatum(h.naechsterPitch)}` : ""));
       frag.append(zeile);
@@ -3273,7 +3299,33 @@ function sheetPitch(p) {
       zZeile);
     const zAussen = el("div", "chips");
     zAussen.append(zKnopf);
-    frag.append(zAussen, zForm);
+    // Ohne Pitchzeile (v188) scheitert ruecksprungAufPitch(), Andrea saehe
+    // nur "bitte neu laden". Deshalb:
+    //   * Pitchzeile da          -> Rueckweg wie gehabt
+    //   * nur Brand Rating       -> "Auftrag beenden" (Marke bleibt dort)
+    //   * ganz neuer Kunde       -> nichts; entfernen ueber "Löschen" in der
+    //                               Verwaltung (sonst bliebe eine Marke
+    //                               uebrig, die in keiner Liste steht)
+    if (m.pitchliste) frag.append(zAussen, zForm);
+    else if (m.brandrating) {
+      const bKnopf = el("button", "chip", "\u2715 Auftrag beenden");
+      bKnopf.onclick = () => {
+        const offen = (ka.checkliste || []).filter((z) => z && !z.erledigt);
+        if (!confirm(`Auftrag für „${m.name}“ beenden?\n\n` +
+            (offen.length ? `${offen.length} Punkt(e) der Checkliste sind ` +
+              "noch offen — sie werden archiviert, nicht erledigt.\n\n" : "") +
+            "Die Marke bleibt im Brand Rating.")) return;
+        if (!auftragBeenden(m)) {
+          banner("Das ging nicht — bitte die Liste einmal neu laden.");
+          return;
+        }
+        banner("Auftrag beendet.");
+        bau();
+      };
+      const bZeile = el("div", "chips");
+      bZeile.append(bKnopf);
+      frag.append(bZeile);
+    }
 
     return abschnitt("Kundenauftrag", frag);
   }
@@ -4410,11 +4462,17 @@ function renderKundenauftraege() {
   // die liegt im Auftrag still.
   const alle = kundenauftraegeAktuell()
     .map((p) => ({ ...p, ...ampel(p.naechsterTermin || "", heute) }));
+  // "+ Kunde" (v188, Backlog 54) - auch bei leerer Liste, sonst kaeme man
+  // an den ersten von Hand angelegten Auftrag gar nicht heran.
+  const neuBtn = el("button", "chip", "＋ Kunde");
+  neuBtn.onclick = sheetNeuerKunde;
   if (!alle.length) {
-    c.append(el("div", "leerzustand",
+    const z = el("div", "chips");
+    z.append(neuBtn);
+    c.append(z, el("div", "leerzustand",
       "Noch keine Kundenaufträge. Marken kommen hierher über " +
       "„in Kundenaufträge verschieben“ im Pitchlisten-Eintrag — erst nach " +
-      "einer positiv eingetragenen Antwort."));
+      "einer positiv eingetragenen Antwort — oder von Hand über „＋ Kunde“."));
     return;
   }
   const suche = el("input", "suche");
@@ -4440,7 +4498,7 @@ function renderKundenauftraege() {
   };
   const sortBtn = sortierKnopf(SORT_KUNDEN, () => kf.sortierung,
     (w) => { kf.sortierung = w; }, () => zeichnen());
-  knopfZeile.append(filterBtn, sortBtn);
+  knopfZeile.append(neuBtn, filterBtn, sortBtn);
   c.append(knopfZeile);
 
   const rumpf = el("div");
@@ -4470,6 +4528,112 @@ function renderKundenauftraege() {
     for (const p of liste) karten.append(pitchKarte(p, true));
     rumpf.append(karten);
   }
+}
+
+// Kundenauftrag von Hand anlegen (v188, Backlog 54, Tobias 30.09.).
+//   Neuer Name     -> neue Marke NUR mit Kundenauftrag: kein Brandrating,
+//                     keine Pitchzeile, kein Book. Andrea traegt vorerst
+//                     alles von Hand ein (Kontakt & Infos, Checkliste).
+//   Vorhandener    -> Folgeauftrag an dieser Marke. Aus der Pitchliste
+//                     verschwindet sie nur in der ANSICHT
+//                     (pitchlisteAktuell), der Rueckweg bleibt wie gehabt.
+// Auftrags-Objekt und Historie wie in kundenauftragVerschieben() - aendert
+// sich dort die Form, hier mitziehen. Ohne Zusage-Pruefung: genau die soll
+// dieser Weg umgehen.
+// Rueckgabe: die Marke, oder ein Text, warum es nicht ging.
+function kundeAnlegen(name, jetzt) {
+  const n = String(name == null ? "" : name).trim();
+  if (!n) return "Name fehlt.";
+  if (!bookNameOk(n)) return BOOK_NAME_HINWEIS;
+  jetzt = jetzt || lokalIso();
+  let m = markeZuName(n);
+  if (m && m.kundenauftrag) return "„" + m.name + "“ steht schon in den Kundenaufträgen.";
+  if (!m) {
+    m = { name: n, quelle: "", gruppe: "", kerninfos: {}, events: [],
+          pitchliste: null, erstellt: jetzt };   // erstellt -> darf geloescht werden
+    datenstand.marken.push(m);
+  }
+  const heute = deDatum(isoInTagen(0));
+  m.kundenauftrag = { seit: heute, prio: null, checkliste: [], geaendert: jetzt };
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "hinein", datum: heute });
+  ruecknahmeEntwerten(m);
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return m;
+}
+
+// Auftrag beenden OHNE Rueckweg (v188) - nur fuer Marken, die im Brand
+// Rating stehen, aber keine Pitchzeile haben (siehe auftragWarnung()).
+// Archiv wie in kundenauftragZurueck() - aendert sich dort die Form, hier
+// mitziehen. Eigene Richtung "beendet" statt "zurueck": zusageVerbraucht()
+// liest nur "zurueck", eine Zusage wird hier also nicht verbraucht.
+function auftragBeenden(m, jetzt) {
+  if (!m || !m.kundenauftrag || m.pitchliste || !m.brandrating) return false;
+  ruecknahmeEntwerten(m);
+  const ka = m.kundenauftrag;
+  const archiv = {
+    seit: ka.seit || "",
+    prio: ka.prio == null ? null : ka.prio,
+    checkliste: (ka.checkliste || []).filter(Boolean).map(   // Codex R2: null-Zeile
+      (z) => ({ text: z.text || "", datum: z.datum || "",
+                erledigt: !!z.erledigt })),
+  };
+  delete m.kundenauftrag;
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "beendet", datum: deDatum(isoInTagen(0)),
+            geaendert: jetzt || lokalIso(), archiv });
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+
+// Detailansicht eines Auftrags oeffnen - mit denselben Zusatzfeldern wie
+// die Karte in renderKundenauftraege().
+function auftragOeffnen(name) {
+  const p = kundenauftraegeAktuell().find((x) => x.name === name);
+  if (p) sheetPitch({ ...p, ...ampel(p.naechsterTermin || "", heuteNull()) });
+}
+
+// Erst der Name, dann sofort die normale Detailansicht - leer, zum
+// Ausfuellen (Tobias: genau so wie jetzt, aber die Felder sind leer).
+function sheetNeuerKunde() {
+  const wrap = el("div");
+  const name = el("input", "suche");
+  name.placeholder = "Name des Kunden";
+  name.setAttribute("list", "kunden-marken");
+  const dl = el("datalist");   // Folgeauftrag: vorhandene Marken vorschlagen
+  dl.id = "kunden-marken";
+  for (const x of (datenstand ? datenstand.marken || [] : [])
+      .filter((m) => !m.kundenauftrag).map((m) => m.name).sort(nameVgl)) {
+    const o = el("option");
+    o.value = x;
+    dl.append(o);
+  }
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip aktiv", "✓ Anlegen");
+  ok.onclick = () => {
+    if (!datenstand) { banner("Kein Datenstand geladen."); return; }
+    // Rueckfrage (Tobias 30.09.): "+ Kunde" ist fuer neue Namen. Eine
+    // Marke nur im Brand Rating geht trotzdem - mit bleibender Karte.
+    const vorh = markeZuName(name.value.trim());
+    if (vorh && vorh.brandrating && !vorh.pitchliste && !vorh.kundenauftrag &&
+        !confirm(`„${vorh.name}“ steht schon im Brand Rating.\n\n` +
+          "„＋ Kunde“ ist für neue Kunden gedacht. Trotzdem anlegen? Dann " +
+          "bleibt eine Achtung-Karte stehen, bis du den Auftrag beendest.")) return;
+    const m = kundeAnlegen(name.value);
+    if (typeof m === "string") { banner(m); return; }
+    // Ueber sheetEbene statt direkt oeffnen: so ersetzt die Detailansicht
+    // dieses Sheet, statt eine zweite Zurueck-Stufe anzuhaengen.
+    sheetEbene = () => auftragOeffnen(m.name);
+    history.back();
+  };
+  okZ.append(ok);
+  wrap.append(name, dl, okZ, erklaerung("Neuer Kunde",
+    "Neuer Name: der Kunde steht nur in den Kundenaufträgen — nicht im " +
+    "Brand Rating, nicht in der Pitchliste, ohne Brand-Book. Gibt es die " +
+    "Marke schon, hängt der Auftrag an ihr (Folgeauftrag)."));
+  sheetOeffnen("Neuer Kunde", erklaerungenAnsEnde(wrap));   // kein abschnitt()
 }
 
 // ------------------------------------------------------------ Brand Rating
@@ -5881,6 +6045,8 @@ function renderHauptmenu() {
   if (ordner) c.append(ordner);
   const bef = bestandWarnung();
   if (bef) c.append(bef);
+  const auftr = auftragWarnung();   // v188
+  if (auftr) c.append(auftr);
 
   const ugc = el("div", "karte menue-karte" + (snap ? "" : " leer"));
   ugc.append(el("div", "titel", "UGC"),
@@ -6042,6 +6208,8 @@ function renderUgc() {
   if (ordner) c.append(ordner);
   const bef = bestandWarnung();
   if (bef) c.append(bef);
+  const auftr = auftragWarnung();   // v188
+  if (auftr) c.append(auftr);
   if (snap.zeitraeume.length > 1) c.append(chipZeile());
   // Pflicht-Hinweis (Briefing Abschnitt 5): Gefiltertes wird gezaehlt,
   // sonst haelt man die Ansicht fuer vollstaendig.
@@ -7711,8 +7879,12 @@ const BOOK_ORDNER = ["A", "B", "C", "D"];
 // Fehlalarm auf jede fremde .docx im Ordner.
 const BOOK_DATEI = /^Brand-Book (.+)\.docx$/i;
 
+// Ohne Brandrating (von Hand angelegter Kunde, v188): "" statt Absturz.
+// Bis v187 warf das hier - und importLauf() ruft es fuer JEDE Marke, ein
+// einziger solcher Kunde haette den Word-Import fuer alle abgebrochen.
 function bookOrdner(m) {
-  return m.bookordner || String(m.brandrating.rating).trim();
+  return m.bookordner ||
+    (m.brandrating ? String(m.brandrating.rating).trim() : "");
 }
 
 // ENTFALLEN mit v154: der geraetespezifische cTag-Merker (CTAG_KEY,
@@ -9905,7 +10077,9 @@ async function excelErzeugen() {
   try {
     inhalt = await xlsxBefuellen(await datei.arrayBuffer(), [
       { name: "Brand Rating", kopfzeile: 3,
-        zeilen: (namen) => xlsxSortiertRating(marken).map(
+        // Filter wie in renderBrandrating(): von Hand angelegte Kunden
+        // (v188) haben kein Brandrating und gehoeren nicht in dieses Blatt.
+        zeilen: (namen) => xlsxSortiertRating(marken.filter((m) => m.brandrating)).map(
           (m) => xlsxRatingZeile(m, namen.map(ratingSpalte))) },
       { name: "Pitchliste", kopfzeile: 3,
         zeilen: (namen) => xlsxSortiertPitch(marken).map(
