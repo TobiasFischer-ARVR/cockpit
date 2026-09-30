@@ -603,7 +603,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v184"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v185"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -9946,12 +9946,18 @@ async function excelErzeugen() {
 // "info @ beispiel.de". Gemessen am echten Bestand: 17 von 541 Wertzellen.
 // Deshalb wordText(absatz, "") fuer Werte - das ist genau das, was
 // python-docx (und damit ugc_core) liefert.
+// fromCodePoint statt fromCharCode (Backlog 32, Fall 5): ein Emoji ab
+// U+10000 als Entitaet kam sonst als falsches Zeichen an. Ungueltige
+// Nummern bleiben stehen, wie sie sind - fromCodePoint wuerde dort werfen.
+// Am 30.09. im Bestand: 11 Books mit Emoji, alle roh, keins als Entitaet.
 function wordText(s, trenner) {
+  const zeichen = (m, n) => (n > 0 && n <= 0x10FFFF && (n < 0xD800 || n > 0xDFFF)
+    ? String.fromCodePoint(n) : m);
   return (String(s).match(/<w:t[^>]*>[^<]*<\/w:t>/g) || [])
     .map((t) => t.replace(/<[^>]+>/g, ""))
     .join(trenner === undefined ? " " : trenner)
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (m, n) => zeichen(m, Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (m, n) => zeichen(m, parseInt(n, 16)))
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
     .replace(/&amp;/g, "&");
@@ -9960,13 +9966,35 @@ function wordText(s, trenner) {
 // Zelle mit neuem Text, Formatierung der Vorlage behalten: Zellen-
 // Eigenschaften (tcPr), Absatz-Eigenschaften (pPr) und die Zeichen-
 // Formatierung (rPr) des ersten echten Runs werden uebernommen.
-function zelleSetzen(tc, text) {
+//
+// null = NICHT schreiben (Backlog 32, Fall 3). Die Zelle wird komplett neu
+// gebaut; Bild, Textmarke, Kommentar, Feld, Inhaltssteuerelement oder eine
+// Tabelle darin waeren danach still weg. Dann lieber "Handarbeit". Am
+// 30.09. im Bestand (71 Books): 0 solche Zellen.
+// Ein HYPERLINK sperrt bewusst nicht: 13 Wertzellen in 12 Books (E-Mail,
+// Website, Social Media) haben einen. Aendert Andrea die Adresse, MUSS der
+// alte Link weg - er zeigte sonst weiter auf die alte. Mitgenommen wird
+// nur seine Formatvorlage nicht: sonst sieht der neue Text blau und
+// unterstrichen aus, ohne klickbar zu sein (6 der 13 Zellen).
+// Ausnahme Textmarke "_GoBack": die setzt Word beim Speichern selbst an die
+// zuletzt bearbeitete Stelle. Sie zu verlieren ist harmlos; sie zu sperren
+// machte jede Zelle, die Andrea zuletzt im Word angefasst hat, zur Handarbeit.
+// `kopf`: der Teil der Zelle, der tatsaechlich neu gebaut wird - daraus
+// kommen Pruefung UND Formatierung. Nur zelleErsteZeileSetzen() schraenkt
+// ihn ein: dort bleiben die Folgeabsaetze Zeichen fuer Zeichen stehen,
+// duerfen nicht sperren und ihre Absatzformatierung nicht an Zeile 1
+// vererben (Codex 30.09., zwei Runden; am Bestand 4/4 Zellen gleich).
+function zelleSetzen(tc, text, kopf = tc) {
+  if (/<w:(drawing|pict|object|commentRangeStart|commentReference|fldChar|fldSimple|sdt|tbl)[\s>\/]/
+      .test(kopf) ||
+      /<w:bookmarkStart\b(?![^>]*w:name="_GoBack")/.test(kopf)) return null;
   const tcPr = (tc.match(/<w:tcPr>[\s\S]*?<\/w:tcPr>/) || [""])[0];
-  const pPr = (tc.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [""])[0];
+  const pPr = (kopf.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [""])[0];
   // rPr erst NACH dem pPr suchen - im pPr steckt das rPr der Absatzmarke,
   // nicht das des Textes.
-  const rest = pPr ? tc.slice(tc.indexOf(pPr) + pPr.length) : tc;
-  const rPr = (rest.match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [""])[0];
+  const rest = pPr ? kopf.slice(kopf.indexOf(pPr) + pPr.length) : kopf;
+  const rPr = (rest.match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [""])[0]
+    .replace(/<w:rStyle w:val="Hyperlink"\/>/, "");
   return "<w:tc>" + tcPr + "<w:p>" + pPr + "<w:r>" + rPr +
     '<w:t xml:space="preserve">' + xmlText(text) + "</w:t></w:r></w:p></w:tc>";
 }
@@ -9995,32 +10023,53 @@ function zelleSetzen(tc, text) {
 //     "info@beispiel.de" wird "info @ beispiel.de".
 // Zusammen betrafen die beiden 16 von 60 Books: die App haette dort bei
 // JEDEM Speichern hochgeladen, ohne etwas zu aendern.
+// Auch der leere Absatz in Kurzform <w:p/> zaehlt als Absatz (Codex 30.09.):
+// sonst galt der ZWEITE Absatz als erster und wurde ueberschrieben.
 function ersteZeileText(tc) {
-  const erster = (String(tc).match(/<w:p[\s>][\s\S]*?<\/w:p>/) || [tc])[0];
+  const erster = (String(tc).match(/<w:p\b[^>]*\/>|<w:p\b[^>]*>[\s\S]*?<\/w:p>/) || [tc])[0];
   return wordText(erster, "").trim();
 }
 
 function zelleErsteZeileSetzen(tc, text) {
-  const absaetze = tc.match(/<w:p[\s>][\s\S]*?<\/w:p>/g) || [];
+  const absaetze = tc.match(/<w:p\b[^>]*\/>|<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || [];
   // <w:cr/> ist der zweite Umbruch, den Word kennt (Backlog 32, Fall 1).
   // Er verhaelt sich hier genau wie <w:br/>: beide Zeilen stehen in EINEM
   // Absatz. Ohne ihn mitzupruefen haette zelleSetzen() alles hinter dem
   // Umbruch weggeworfen - im echten Bestand am 17.09. 0 Treffer, aber das
   // gilt nur, bis Andrea die Zelle einmal mit Strg+Enter umbricht.
   if (/<w:(br|cr)[ />]/.test(absaetze[0] || tc)) return null;
-  const eins = zelleSetzen(tc, text);
+  // Die Folgeabsaetze werden unten unveraendert wieder angehaengt. Das ist nur
+  // dann verlustfrei, wenn hinter Absatz 1 WIRKLICH nur diese Absaetze stehen
+  // - ein Textfeld (Absatz im Absatz) oder eine Tabelle zwischen zwei
+  // Absaetzen fiele sonst still heraus. Am 30.09.: 4 Zellen mit mehreren
+  // Absaetzen, alle sauber. Gebaut und geprueft wird dann nur der Kopf.
+  let kopf = tc;
+  if (absaetze.length >= 2) {
+    const ab = tc.indexOf(absaetze[1], tc.indexOf(absaetze[0]) + absaetze[0].length);
+    if (tc.slice(ab, -"</w:tc>".length) !== absaetze.slice(1).join("")) return null;
+    kopf = tc.slice(0, ab);
+  }
+  const eins = zelleSetzen(tc, text, kopf);
+  if (!eins) return null;                         // Backlog 32, Fall 3
   return absaetze.length < 2 ? eins
     : eins.slice(0, -"</w:tc>".length) + absaetze.slice(1).join("") + "</w:tc>";
 }
 
 // Neue Zeile aus einer Vorlagen-Zeile bauen (Spalte 1 Datum, 2 Aktion,
 // weitere Spalten unveraendert - Andreas Template hat genau zwei).
+// null bei einem Inhaltssteuerelement UM eine Zelle (Codex 30.09.): die
+// Zeile wird aus trPr + Zellen neu gebaut, das <w:sdt> fiele weg. Ebenso
+// bei verbundenen Zellen (gridSpan/vMerge): dann ist "Zelle 2" nicht mehr
+// die Spalte "Aktion". Gleiche Wache in antwortZeileBauen.
+// Am 30.09. im Bestand: je 0.
 function zeileBauen(vorlage, datum, aktion) {
+  if (/<w:(sdt|gridSpan|vMerge)[\s>\/]/.test(vorlage)) return null;
   const trPr = (vorlage.match(/<w:trPr>[\s\S]*?<\/w:trPr>/) || [""])[0];
   const zellen = vorlage.match(/<w:tc>[\s\S]*?<\/w:tc>/g) || [];
   if (zellen.length < 2) return null;
-  return "<w:tr>" + trPr + zelleSetzen(zellen[0], datum) +
-    zelleSetzen(zellen[1], aktion) + zellen.slice(2).join("") + "</w:tr>";
+  const a = zelleSetzen(zellen[0], datum), b = zelleSetzen(zellen[1], aktion);
+  if (a === null || b === null) return null;      // Backlog 32, Fall 3
+  return "<w:tr>" + trPr + a + b + zellen.slice(2).join("") + "</w:tr>";
 }
 
 // Ereignis in die Historien-Tabelle eintragen (entfernen=true: wieder
@@ -10038,7 +10087,11 @@ function historieXml(xml, datum, aktion, entfernen) {
       .toLowerCase();
     return kopf.includes("datum") && kopf.includes("aktion");
   });
-  if (!tbl) return null;
+  // Tabelle IN der Tabelle (Backlog 32, Fall 2): die nicht-gierigen Muster
+  // endeten am inneren </w:tbl> bzw. </w:tc> - zerschnittenes XML. Dann gar
+  // nicht schreiben. Gleiche Wache in antwortXml und kerninfosXml.
+  // Am 30.09. im Bestand (71 Books): 0.
+  if (!tbl || /<w:tbl[\s>]/.test(tbl.slice(1))) return null;
   const zeilen = tbl.match(/<w:tr[\s>][\s\S]*?<\/w:tr>/g) || [];
   if (zeilen.length < 2) return null;
   let tblNeu;
@@ -10078,7 +10131,12 @@ function historieXml(xml, datum, aktion, entfernen) {
       j > 0 && historieSchluessel(wordText(z)) === suche);
     if (schon) return "dublette";
     const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
-    const neu = zeileBauen(zeilen[zeilen.length - 1], datum, aktion);
+    // Vorlage ist die Zeile, die ERSETZT wird - nur so sehen die Wachen in
+    // zeileBauen, was verloren ginge (Codex 30.09.: eine Leerzeile ohne Text,
+    // aber mit Bild galt als leer, geprueft wurde die letzte Zeile). Am
+    // 30.09. hatten Leerzeile und letzte Zeile in 108 von 108 Tabellen
+    // dasselbe Format - sichtbar aendert sich nichts.
+    const neu = zeileBauen(zeilen[leer > 0 ? leer : zeilen.length - 1], datum, aktion);
     if (!neu) return null;
     tblNeu = leer > 0
       ? tbl.replace(zeilen[leer], () => neu)
@@ -10148,15 +10206,14 @@ function antwortZelltext(s) {
 // bleibt wie sie ist. Gebraucht beim Korrigieren, wo Andreas nachgetragener
 // Bemerkungstext stehen bleiben muss (siehe antwortXml).
 function antwortZeileBauen(vorlage, werte) {
+  if (/<w:(sdt|gridSpan|vMerge)[\s>\/]/.test(vorlage)) return null; // wie zeileBauen
   const trPr = (vorlage.match(/<w:trPr>[\s\S]*?<\/w:trPr>/) || [""])[0];
   const zellen = wordZellen(vorlage);
   if (zellen.length < 4) return null;
-  return "<w:tr>" + trPr +
-    zellen.slice(0, 4)
-      .map((z, i) => werte[i] === null
-        ? z
-        : zelleSetzen(z, antwortZelltext(werte[i]))).join("") +
-    zellen.slice(4).join("") + "</w:tr>";
+  const neu = zellen.slice(0, 4).map((z, i) => werte[i] === null
+    ? z : zelleSetzen(z, antwortZelltext(werte[i])));
+  if (neu.includes(null)) return null;            // Backlog 32, Fall 3
+  return "<w:tr>" + trPr + neu.join("") + zellen.slice(4).join("") + "</w:tr>";
 }
 
 // Gibt die neue XML zurueck, "dublette" (steht schon da) oder null
@@ -10164,7 +10221,7 @@ function antwortZeileBauen(vorlage, werte) {
 // statt es kaputtzuschreiben. Gleiche drei Ausgaenge wie historieXml.
 function antwortXml(xml, datum, positiv, negativ, bemerkung) {
   const tbl = antwortTabelle(xml);
-  if (!tbl) return null;
+  if (!tbl || /<w:tbl[\s>]/.test(tbl.slice(1))) return null;  // Backlog 32, Fall 2
   const zeilen = wordZeilen(tbl);
   if (zeilen.length < 2) return null;
   // Steht die Antwort schon da? Verglichen werden NUR Datum und die beiden
@@ -10224,7 +10281,8 @@ function antwortXml(xml, datum, positiv, negativ, bemerkung) {
     tblNeu = tbl.replace(zeilen[treffer], () => neu);
   } else {
     const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
-    const neu = antwortZeileBauen(zeilen[zeilen.length - 1], werte);
+    // Vorlage = die ersetzte Zeile, wie in historieXml (Codex 30.09.).
+    const neu = antwortZeileBauen(zeilen[leer > 0 ? leer : zeilen.length - 1], werte);
     if (!neu) return null;
     tblNeu = leer > 0
       ? tbl.replace(zeilen[leer], () => neu)
@@ -10288,7 +10346,7 @@ function kerninfosTabelle(xml) {
 
 function kerninfosXml(xml, werte) {
   const tbl = kerninfosTabelle(xml);
-  if (!tbl) return null;
+  if (!tbl || /<w:tbl[\s>]/.test(tbl.slice(1))) return null;  // Backlog 32, Fall 2
   // Nur nicht-leere Werte, auf den Vergleichsschluessel gezogen (Regel 1).
   const gesucht = new Map();
   for (const [label, wert] of Object.entries(werte)) {
@@ -10306,10 +10364,15 @@ function kerninfosXml(xml, werte) {
     if (ersteZeileText(zellen[1]) === wert) continue;         // Regel 2
     const zelleNeu = zelleErsteZeileSetzen(zellen[1], wert);
     if (!zelleNeu) { handarbeit.push(label); continue; }
-    // Funktions-Ersatz an beiden Stellen: ein "$&" im Wert (kommt in
+    // Die Wertzelle ueber ihre POSITION ersetzen, nicht per Suche (Backlog
+    // 32, Fall 4): sieht die Labelzelle XML-gleich aus, traf ein
+    // z.replace(zellen[1]) die Labelzelle. Am 30.09. im Bestand: 0.
+    // Funktions-Ersatz beim Tabellen-Ersatz: ein "$&" im Wert (kommt in
     // Instagram-Links vor) wuerde sonst als Rueckverweis gelesen und den
     // gefundenen Text einsetzen statt den Wert.
-    tblNeu = tblNeu.replace(z, () => z.replace(zellen[1], () => zelleNeu));
+    const pos = z.indexOf(zellen[1], z.indexOf(zellen[0]) + zellen[0].length);
+    const zNeu = z.slice(0, pos) + zelleNeu + z.slice(pos + zellen[1].length);
+    tblNeu = tblNeu.replace(z, () => zNeu);
     geaendert.push(label);
   }
   return { xml: geaendert.length ? xml.replace(tbl, () => tblNeu) : xml,
