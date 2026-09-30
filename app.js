@@ -359,7 +359,7 @@ function pfadWarnung() {
   kopf.append(el("span", "pill", "⚠ Achtung"));
   k.append(kopf, el("div", "titel", "Daten-Ordner nicht erreichbar"),
     el("div", "kontext", datenPfadFehler + " Zum Ändern hier tippen."));
-  k.onclick = sheetEinstellungen;
+  k.onclick = () => sheetEinstellungen("OneDrive");
   return k;
 }
 
@@ -438,7 +438,7 @@ function wolkenWarnung() {
     el("div", "kontext",
       "Die letzte Änderung ist nicht in OneDrive angekommen. Geht das "
       + "Gerät verloren, sind die Einträge weg. Zum Prüfen hier tippen."));
-  k.onclick = sheetEinstellungen;
+  k.onclick = () => sheetEinstellungen("Sicherung");
   return k;
 }
 
@@ -458,7 +458,7 @@ function ordnerWarnung() {
     el("div", "kontext",
       "Änderungen in diesen Books werden nicht eingelesen. "
       + "Zum Prüfen hier tippen."));
-  k.onclick = sheetEinstellungen;
+  k.onclick = () => sheetEinstellungen("OneDrive");
   return k;
 }
 
@@ -559,7 +559,7 @@ function bestandWarnung() {
   k.append(kopf, el("div", "titel", "Daten pr\u00fcfen hat etwas gefunden"));
   for (const z of bestandZeilen(bestandFehler)) k.append(el("div", "kontext", z));
   k.append(el("div", "kontext", "Zum Ansehen und Entscheiden hier tippen."));
-  k.onclick = sheetEinstellungen;
+  k.onclick = () => sheetEinstellungen("OneDrive");
   return k;
 }
 
@@ -603,7 +603,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v185"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v186"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1139,7 +1139,13 @@ async function pruefeBooks() {
     : "✓ Ordner gefunden — Unterordner und Templates sind da.";
 }
 
-function sheetEinstellungen() {
+// reiter (v186): Warnkarten oeffnen den Reiter, in dem die Loesung steht.
+// Bis v185 ging das Sheet auf dem zuletzt benutzten Reiter auf - Tobias
+// landete bei der Befund-Karte z.B. in "Darstellung" und musste suchen.
+// typeof-Pruefung, weil das Zahnrad die Funktion direkt als onclick
+// bekommt und dann ein Klick-Ereignis hereinreicht.
+function sheetEinstellungen(reiter) {
+  if (typeof reiter === "string") einst.reiterEinst = reiter;
   const wrap = el("div");
   wrap.append(abschnitt("Darstellung",
     einstZeile("Schriftgröße", EINST_GROESSEN, "groesse"),
@@ -1413,15 +1419,23 @@ function sheetEinstellungen() {
   // abweichenden Felder waehlen, dann EIN "Übernehmen" - warum, steht bei
   // abgleichAnwenden(). Kein Eintrag in befundReparatur(): das ist eine
   // Entscheidung, keine Reparatur, und gehoert nie in "Alles nachtragen".
-  const abgleichZeile = (f, nochmal) => {
+  // haken (v186): der Hinweis "Haken fehlt" derselben Marke, falls es ihn
+  // gibt. Dann sitzt sein Knopf direkt in der gesperrten Zeile - bis v185
+  // stand dort nur "(Hinweis unten)", und Tobias fand keinen Knopf.
+  const abgleichZeile = (f, nochmal, haken) => {
     const zeile = el("div", null, "• " + f.name + ":");
     const m = markeZuName(f.name);
     const gesperrt = abgleichGesperrt(m,
       (datenstand && datenstand.ausstehend) || [], bookImFlug);
     if (gesperrt) {
       zeile.append(" " + f.text, el("div", "kontext", gesperrt));
+      if (haken) zeile.append(befundZeile(haken, nochmal));
       return zeile;
     }
+    // Ohne diese Zeile standen nur zwei Knoepfe da - Andrea wuesste nicht,
+    // dass sie entscheiden soll (Tobias, 30.09.).
+    zeile.append(el("div", "kontext",
+      "Bitte wählen: Welcher Wert stimmt? Dann „Übernehmen“ tippen."));
     const wahl = {};
     const los = el("button", "chip aktiv", "Übernehmen");
     los.disabled = true;
@@ -1494,8 +1508,8 @@ function sheetEinstellungen() {
     return zeile;
   };
 
-  const befundZeile = (f, nochmal) => {
-    if (f.art === "word-app" && f.abw) return abgleichZeile(f, nochmal);
+  const befundZeile = (f, nochmal, haken) => {
+    if (f.art === "word-app" && f.abw) return abgleichZeile(f, nochmal, haken);
     const zeile = el("div", null, "• " + f.name + ": " + f.text);
     const knoepfe = befundReparatur(f);
     if (!knoepfe.length) return zeile;
@@ -1662,7 +1676,8 @@ function sheetEinstellungen() {
     if (fehler.length) {
       pStatus.append(el("div", null, `⚠ ${fehler.length} Abweichung(en):`));
       for (const f of fehler) {
-        pStatus.append(befundZeile(f, pruefen));
+        pStatus.append(befundZeile(f, pruefen, hinweise.find((h) =>
+          h.art === "book-ohne-haken" && h.name === f.name)));
       }
       // Die Anweisung MUSS der PC-Weg sein (Tobias 07.09., v93): "↻ Book
       // aktualisieren" stand hier bis v92 - der Knopf ist fuer genau diese
