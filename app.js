@@ -603,7 +603,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v186"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v187"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1679,13 +1679,6 @@ function sheetEinstellungen(reiter) {
         pStatus.append(befundZeile(f, pruefen, hinweise.find((h) =>
           h.art === "book-ohne-haken" && h.name === f.name)));
       }
-      // Die Anweisung MUSS der PC-Weg sein (Tobias 07.09., v93): "↻ Book
-      // aktualisieren" stand hier bis v92 - der Knopf ist fuer genau diese
-      // Marken aber nie erreichbar. Er wird nur zwischen Stufe 1 und 2
-      // angeboten, Book und App driften jedoch erst DANACH auseinander.
-      pStatus.append(el("div", "stand",
-        "Das Book hält meist den älteren Stand. Im Word korrigieren, dann " +
-        "am PC nachziehen (ziehe_books_nach.py)."));
     }
     if (hinweise.length) {
       pStatus.append(el("div", null, `ℹ ${hinweise.length} Hinweis(e):`));
@@ -4037,6 +4030,12 @@ function brandPasst(m, s) {
   return (!bf.rating.length || bf.rating.includes(br.rating)) &&
     (!bf.hatRating || (bf.hatRating === "mit") === hat) &&
     (!bf.book || s || (bf.book === "mit") === Boolean(br.brandbook)) &&
+    // Befuellt (v187, Tobias 30.09.): = Stufe 2 gedrueckt. Beide Chips
+    // zeigen nur Marken MIT Book - "Nicht befuellt" ist Andreas
+    // Arbeitsliste (Book da, noch nicht in der Pitchliste), keine zweite
+    // Fassung von "Ohne Brand-Book". Suche gewinnt wie beim Book-Filter.
+    (!bf.befuellt || s || (Boolean(br.brandbook) &&
+      (bf.befuellt === "mit") === inPitchliste(m))) &&
     (!bf.fit || symAnzahl(br.brandfit) >= bf.fit) &&
     (!bf.geist || symAnzahl(br.begeisterung) >= bf.geist) &&
     (!bf.chance || symAnzahl(br.erfolgschance) >= bf.chance) &&
@@ -4479,8 +4478,8 @@ function renderKundenauftraege() {
 // Marken mit Brandrating-Zeile aus dem Datenstand, alphabetisch. Hier
 // entstehen neue Brands ("+ Neue Brand", seit v32 hierher verlegt) und
 // hier kommt in Phase 5 der "Rating abgeschlossen"-Knopf dazu.
-const bf = { rating: [], hatRating: "", book: "", fit: "", geist: "",
-             chance: "", suche: "", sortierung: "" };
+const bf = { rating: [], hatRating: "", book: "", befuellt: "", fit: "",
+             geist: "", chance: "", suche: "", sortierung: "" };
 
 // Skalenwert aus der Symbol-Kette des Brandrating-Blatts ("⭐⭐⭐" -> 3)
 function symAnzahl(s) {
@@ -5818,6 +5817,9 @@ function renderBrandrating() {
     wrap.append(filterGruppe("Brand-Book",
       [["ohne", "Ohne Brand-Book"], ["mit", "Brand-Book ✓"]],
       () => bf.book, (w) => { bf.book = w; }, zeichnen));
+    wrap.append(filterGruppe("Befüllt",
+      [["ohne", "Nicht befüllt"], ["mit", "Befüllt"]],
+      () => bf.befuellt, (w) => { bf.befuellt = w; }, zeichnen));
     wrap.append(filterGruppe("Brand Fit", skalenChips(),
       () => bf.fit, (w) => { bf.fit = w; }, zeichnen));
     wrap.append(filterGruppe("Begeisterung", skalenChips(),
@@ -5836,7 +5838,8 @@ function renderBrandrating() {
   zeichnen();
 
   function zeichnen() {
-    const n = [bf.rating, bf.hatRating, bf.book, bf.fit, bf.geist, bf.chance]
+    const n = [bf.rating, bf.hatRating, bf.book, bf.befuellt, bf.fit,
+      bf.geist, bf.chance]
       .filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
