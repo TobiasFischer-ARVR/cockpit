@@ -231,7 +231,7 @@ function kpiZeitraum(historien, von, bis) {
                   rating: marke.brandrating
                     ? String(marke.brandrating.rating || "").trim() : "",
                   gruppe: marke.bookordner
-                    ? marke.bookordner + " Brands"
+                    ? bookOrdnerName(marke.bookordner)
                     : (marke.gruppe || ""), ...k });
   }
   return { gesamt, marken };
@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v190"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v191"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1155,7 +1155,9 @@ async function pruefeBooks() {
   if (!r.ok) return graphFehlerText(r.status,
     "✗ Ordner nicht gefunden — neu auswählen.");
   const da = new Set((((await r.json()).value) || []).map((x) => x.name));
-  const fehlt = ["A Brands", "B Brands", "C Brands", "D Brands",
+  // "Kundenaufträge" seit v191; den Unterordner "Archiv" sieht dieses Listing
+  // nicht - fehlt er, meldet ihn bookListe() als nicht lesbar.
+  const fehlt = ["A Brands", "B Brands", "C Brands", "D Brands", "Kundenaufträge",
     "Template Brand-Book A Brand.docx", "Template Brand-Book B-C Brand.docx"]
     .filter((n) => !da.has(n));
   return fehlt.length
@@ -1430,8 +1432,10 @@ function sheetEinstellungen(reiter) {
     // bookErstelltDaten(), damit quelle und bookordner mitkommen; ohne die
     // beiden meldete der naechste Lauf denselben Befund erneut.
     if (f.art === "book-ohne-haken" && m.brandrating) {
+      // Der Befund kennt den echten Ort - der gewinnt ueber den Rating-Ordner
+      // (v191, z.B. ein Book in "Kundenaufträge"; Code-Review 01.10.).
       return [{ text: "Haken setzen",
-                mach: () => { bookErstelltDaten(m, false, lokalIso()); } }];
+                mach: () => { bookErstelltDaten(m, false, lokalIso(), f.ordner); } }];
     }
     if (f.art === "book-falscher-ordner" && f.ordner) {
       return [{ text: "Ordner nachtragen",
@@ -4553,10 +4557,7 @@ function kundeAnlegen(name, jetzt) {
           pitchliste: null, erstellt: jetzt };   // erstellt -> darf geloescht werden
     datenstand.marken.push(m);
   }
-  const heute = deDatum(isoInTagen(0));
-  m.kundenauftrag = { seit: heute, prio: null, checkliste: [], geaendert: jetzt };
-  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
-    .push({ richtung: "hinein", datum: heute });
+  auftragBeginnen(m, jetzt);
   ruecknahmeEntwerten(m);
   listeVeraltet = true;
   datenstandPersistieren();
@@ -5191,19 +5192,22 @@ async function ratingSetzen(m, werte) {
     // alten Ordner. Sonst wandert der berechnete Pfad mit dem Rating, die
     // Datei aber nicht ("Besser im Glas", 06.09.). Ziel und Ausgang VOR
     // dem await festhalten (24.3).
-    if (gewechselt && br.brandbook) {
-      const alt = m.bookordner || altRating;
+    // Liegt das Book in einem Kundenauftrags-Ordner (v191), sagt sein Ort
+    // nichts ueber das Rating - es bleibt, wo es ist. Sonst zoege ein
+    // Rating-Wechsel es lautlos aus dem Auftrag heraus (Code-Review 01.10.).
+    const alt = m.bookordner || altRating;
+    if (gewechselt && br.brandbook && istRatingOrdner(alt)) {
       const ziel = br.rating;
       const erg = await bookVerschieben(m, alt, ziel);
       m.bookordner = erg === "verschoben" ? ziel : alt;
       if (erg === "verschoben")
         banner(`Book nach „${ziel} Brands“ verschoben.`);
       else if (erg === "nicht gefunden")
-        banner(`Book nicht in „${alt} Brands“ gefunden — bitte von Hand ` +
+        banner(`Book nicht in „${bookOrdnerName(alt)}“ gefunden — bitte von Hand ` +
                `nach „${ziel} Brands“ schieben.`);
       else if (erg !== "gleich")
         banner("Book konnte nicht verschoben werden — es bleibt in " +
-               `„${alt} Brands“.`);
+               `„${bookOrdnerName(alt)}“.`);
     }
     return gewechselt;
   } finally {
@@ -5763,7 +5767,9 @@ function sheetBrandrating(m) {
       // auseinanderlaufen zu lassen.
       ["Book liegt in",
         m.bookordner && m.bookordner !== String(br.rating).trim()
-          ? `${m.bookordner} Brands (Rating ist inzwischen ${br.rating})` : ""],
+          ? bookOrdnerName(m.bookordner) + (istRatingOrdner(m.bookordner)
+              ? ` (Rating ist inzwischen ${br.rating})` : "")
+          : ""],
       ["Notizen", br.notizen],
       // Die "extra:"-Spalten (Paid Ad Aktivität, Adventskalender 2026, …)
       // standen hier seit v82 - damals der einzige Ort, an dem sie ueber-
@@ -7196,18 +7202,38 @@ function verschiebenErlaubt(m) {
   return !zusageVerbraucht(m);
 }
 
+// Interne Kennung eines Auftrags (v191, Backlog 58): je Marke gezaehlt,
+// 1, 2, 3 ... Ein Kunde kann mehrere Auftraege nacheinander haben, und jeder
+// bekommt spaeter sein eigenes Nutzungsrecht - dafuer braucht der Auftrag eine
+// Kennung, die bleibt, auch wenn er laengst abgeschlossen ist. Gezaehlt wird
+// ueber ALLES, was je eine Kennung trug (laufend, fertig, Verlauf), damit
+// eine Nummer nie zweimal vergeben wird. Auftraege von vor v191 haben keine
+// Kennung und zaehlen als 1 - sonst bekaeme der naechste Auftrag einer
+// Marke mit Vorgeschichte noch einmal die 1.
+// Neuer laufender Auftrag + Verlaufseintrag - EIN Weg fuer "aus der
+// Pitchliste", "＋ Kunde" und (Release 3) "Neuer Auftrag".
+function auftragBeginnen(m, jetzt) {
+  const heute = deDatum(isoInTagen(0));
+  const kennung = auftragKennungNeu(m);
+  m.kundenauftrag = { kennung, seit: heute, prio: null, checkliste: [],
+                      geaendert: jetzt };
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "hinein", kennung, datum: heute });
+}
+function auftragKennungNeu(m) {
+  const alle = [m.kundenauftrag, ...(m.auftraege || []),
+                ...(m.kundenauftragHistorie || [])].filter(Boolean);
+  return 1 + Math.max(0, ...alle.map((x) => Number(x.kennung) || 1));
+}
+
 function kundenauftragVerschieben(m, jetzt) {
   if (!verschiebenErlaubt(m)) return false;
-  const heute = deDatum(isoInTagen(0));
   // geaendert: die Zeitspur AN DER MARKE (Audit A9, 17.09.). "seit" und der
   // Historien-Eintrag tragen nur ein Datum ohne Uhrzeit; beim Nachsehen, in
   // welcher Reihenfolge an einem Tag etwas passiert ist, half das nicht.
   // Der Parameter `jetzt` wurde bis dahin entgegengenommen und nirgends
   // benutzt - hier ist die Stelle, fuer die er gedacht war.
-  m.kundenauftrag = { seit: heute, prio: null, checkliste: [],
-                      geaendert: jetzt || lokalIso() };
-  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
-    .push({ richtung: "hinein", datum: heute });
+  auftragBeginnen(m, jetzt || lokalIso());
   // Ab hier beschreibt ein offener Ruecknahmepunkt einen Stand, den es nicht
   // mehr gibt - dieselbe Regel wie in terminSetzenDaten() (v131). Ohne das
   // naehme "Rueckgaengig" die Marke aus dem Auftrag heraus, ohne den Auftrag
@@ -7681,7 +7707,7 @@ async function markeUmbenennenEinmal(m, eingabe) {
       "werden neu eingelesen) oder „Daten prüfen“ — es wurde nichts geändert.";
   const eigeneId = importId || (vorher && vorher.id);
   if (ziel && ziel.id !== eigeneId)
-    return `„Brand-Book ${neu}.docx“ gibt es in „${ordner} Brands“ ` +
+    return `„Brand-Book ${neu}.docx“ gibt es in „${bookOrdnerName(ordner)}“ ` +
       "schon — es wurde nichts geändert.";
 
   let datei = false;               // hat die Marke hinterher ein Book?
@@ -7722,7 +7748,7 @@ async function markeUmbenennenEinmal(m, eingabe) {
     // Haken reichte nicht - Zufallstest 27.09.: Book im falschen Ordner,
     // Haken weg, quelle da -> die App benannte still nur sich um (im
     // Bestand 1 Marke mit quelle ohne Haken). Die ID: Codex 27.09.
-    return `Brand-Book nicht gefunden (erwartet in „${ordner} Brands“) — ` +
+    return `Brand-Book nicht gefunden (erwartet in „${bookOrdnerName(ordner)}“) — ` +
       "es wurde nichts geändert.";
   }
 
@@ -7806,7 +7832,7 @@ function bookPfad(m) {
 // eine eigene Kopie. Der Name geht ROH in die Graph-URL; was darin nichts
 // verloren hat, haelt bookNameOk() vor jedem schreibenden Zugriff fern.
 function bookDateiPfad(ordner, name) {
-  return `${bookBasis()}/${ordner} Brands/Brand-Book ${name}.docx`;
+  return `${bookBasis()}/${bookOrdnerName(ordner)}/Brand-Book ${name}.docx`;
 }
 
 // Sicherheits-Review 26.09. (Backlog 14): ein Markenname wie
@@ -7883,7 +7909,20 @@ let bookOrdnerFehlt = [];
 // aus den Marken abgeleitet waren - eine verwaiste Datei liegt aber gerade
 // dort, wo die App keine Marke erwartet. Praktisch aendert das nichts an den
 // vier Abrufen: im echten Bestand sind ohnehin alle vier Ordner belegt.
-const BOOK_ORDNER = ["A", "B", "C", "D"];
+// v191 (Backlog 58): dazu die zwei Kundenauftrags-Ordner. Anders als A-D sagen
+// sie nichts ueber das Rating, sondern ueber den Zustand: laufender Auftrag und
+// Kundenpflege -> "Kundenaufträge", abgeschlossen -> ".../Archiv". m.bookordner
+// speichert wie bei A-D den Ort, an dem die Datei WIRKLICH liegt.
+const BOOK_ORDNER = ["A", "B", "C", "D", "Kundenaufträge", "Kundenaufträge/Archiv"];
+
+// Ordnerkennung -> Ordnername unter Brand-Books. EINE Stelle (v191): A-D
+// heissen "X Brands", die Kundenauftrags-Ordner heissen wie ihre Kennung.
+// Bis v190 haengten fuenf Stellen " Brands" von Hand an - mit einem fuenften
+// Ordner waere daraus "Kundenaufträge Brands" geworden.
+function bookOrdnerName(o) {
+  return istRatingOrdner(o) ? `${o} Brands` : String(o);
+}
+function istRatingOrdner(o) { return /^[A-D]$/i.test(String(o)); }
 
 // Dateiname -> Markenname. Muss zu bookPfad() passen, das genauso baut.
 // ponytail: Books, die NICHT so heissen, sieht die Waisen-Suche nicht. Das
@@ -8037,7 +8076,7 @@ function bestandDateiBefunde(marken, dateien) {
       // Ueberlegung wie beim Zaehler-Befund (test_v139).
       hinweise.push({ name: m.name, art: "book-ohne-haken",
         ordner: ort.ordner,
-        text: "Dokument liegt in \u201e" + ort.ordner + " Brands\u201c, "
+        text: "Dokument liegt in \u201e" + bookOrdnerName(ort.ordner) + "\u201c, "
               + "aber der Haken \u201eBrand Book\u201c fehlt \u2014 "
               + "\u201enoch nicht gelesen\u201c wird f\u00fcr diese Marke "
               + "nie gemeldet" });
@@ -8054,8 +8093,8 @@ function bestandDateiBefunde(marken, dateien) {
         if (String(o).toUpperCase() === soll) gelesen = true;
       if (soll && gelesen) {
         fehler.push({ name: m.name, art: "haken-ohne-book",
-          text: "Haken \u201eBrand Book\u201c gesetzt, aber in \u201e" + soll
-                + " Brands\u201c liegt keine Datei" });
+          text: "Haken \u201eBrand Book\u201c gesetzt, aber in \u201e"
+                + bookOrdnerName(bookOrdner(m)) + "\u201c liegt keine Datei" });
       }
     }
 
@@ -8064,13 +8103,13 @@ function bestandDateiBefunde(marken, dateien) {
     if (!soll || soll === String(ort.ordner).toUpperCase()) continue;
     fehler.push({ name: m.name, art: "book-falscher-ordner",
       ordner: ort.ordner,
-      text: "Datei liegt in \u201e" + ort.ordner + " Brands\u201c, erwartet "
-            + "wurde \u201e" + soll + " Brands\u201c" });
+      text: "Datei liegt in \u201e" + bookOrdnerName(ort.ordner) + "\u201c, erwartet "
+            + "wurde \u201e" + bookOrdnerName(bookOrdner(m)) + "\u201c" });
   }
   for (const paar of gefunden) {
     if (bekannt.has(paar[0])) continue;
     hinweise.push({ name: paar[1].datei, art: "book-verwaist",
-      text: "liegt in \u201e" + paar[1].ordner + " Brands\u201c, dazu gibt es "
+      text: "liegt in \u201e" + bookOrdnerName(paar[1].ordner) + "\u201c, dazu gibt es "
             + "keine Marke" });
   }
   return { fehler: fehler, hinweise: hinweise };
@@ -8632,7 +8671,11 @@ function importMerkerWeiter(m, datei, plan, gespeichert) {
 const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
                      "kundenauftrag", "kundenauftragHistorie", "intervalle",
                      "bookordner", "bookCTag", "bookImport", "erstellt",
-                     "name", "quelle", "gruppe"];
+                     "name", "quelle", "gruppe",
+                     // Kundenauftrags-Paket (v191, Backlog 58): fertige
+                     // Auftraege, Archiv, Kundenpflege - nur die App kennt sie.
+                     // Spiegel: APP_FELDER in werkzeuge/datenstand.py.
+                     "auftraege", "kundenarchiv", "kundenpflege"];
 
 // Zwei Felder der Pitchzeile sind reine RECHENERGEBNISSE aus den
 // Ereignissen - und liefen deshalb still auseinander, seit der Import die
@@ -8817,7 +8860,7 @@ async function bookListe() {
   const fehlt = [];
   for (const o of BOOK_ORDNER) {
     const map = new Map();
-    let pfad = `${bookBasis()}/${o} Brands:/children` +
+    let pfad = `${bookBasis()}/${bookOrdnerName(o)}:/children` +
                "?$select=name,id,cTag,file,parentReference&$top=200";
     let gelesen = false;
     // nextLink abarbeiten. 200 je Seite, 20 Seiten wären 4000 Dateien -
@@ -11879,7 +11922,7 @@ async function bookVerschieben(m, vonOrdner, nachOrdner) {
   if (!bookNameOk(m.name)) return "fehler";             // v176, s. bookNameOk
   const datei = bookDateiPfad(vonOrdner, m.name);
   const zielPfad = "/drive/root:" + bookBasis().split("root:")[1] +
-    "/" + nachOrdner + " Brands";
+    "/" + bookOrdnerName(nachOrdner);
   const r = await OD.graphRoh(datei, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -11926,14 +11969,16 @@ async function bookErzeugen(m, ersetzen) {
 // Haken wie im Excel-Blatt - kein Pitchlisten-Eintrag mehr (seit v42,
 // der kommt mit Stufe 2). Der Stand davor wandert nach letztesBook,
 // damit Rückgängig ihn wiederherstellen kann.
-function bookErstelltDaten(m, bookNeu, jetzt) {
+// ordner: wo die Datei liegt, falls nicht im Rating-Ordner (v191: ein schon
+// vorhandenes Book in "Kundenaufträge", gefunden von "Daten pruefen").
+function bookErstelltDaten(m, bookNeu, jetzt, ordner) {
   datenstand.letztesBook = { name: m.name, zeit: jetzt, stufe: 1, bookNeu,
     vorher: m.brandrating.brandbook || "" };
   m.brandrating.brandbook = "✔️";
   logZeile("book-stufe1", { marke: m.name, ...logMehr({ bookNeu }) });
   // Ordner festhalten, in dem die Datei jetzt liegt - ein spaeteres
   // Rating-Update darf den Zugriff darauf nicht verlieren (siehe bookPfad)
-  m.bookordner = String(m.brandrating.rating).trim();
+  m.bookordner = ordner || String(m.brandrating.rating).trim();
   // quelle mitsetzen (v127, gefunden 15.09. an Andreas echtem Stand):
   // Bis hierher fuellte NUR der PC-Import dieses Feld. Der Bestandswaechter
   // in "Daten pruefen" liest aber `haken && !m.quelle` als "es gibt keine
