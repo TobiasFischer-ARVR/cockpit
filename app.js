@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v189"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v190"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6293,13 +6293,13 @@ function renderUgc() {
       "(organisch / paid ad) je Marke."));
   c.append(rechte);
 
-  // Platzhalter Dauerkunden (Tobias, 01.10.): dritter Ausgang eines
+  // Platzhalter Kundenpflege (Tobias, 01.10.; bis v189 "Dauerkunden"): dritter Ausgang eines
   // Kundenauftrags - Kunde will eine dauerhafte Geschaeftsbeziehung. Wie die
   // Nutzungsrechte: kein Knopf, keine Zahl, bis es eine Datenquelle gibt.
   const bestand = el("div", "karte block zugang platzhalter");
   const bKopf = el("div", "kopf");
   bKopf.append(el("span", "pill", "Geplant"));
-  bestand.append(bKopf, el("div", "titel", "Dauerkunden"),
+  bestand.append(bKopf, el("div", "titel", "Kundenpflege"),
     el("div", "kontext",
       "Noch keine Datenquelle — später Kunden mit dauerhafter " +
       "Geschäftsbeziehung nach einem Auftrag."));
