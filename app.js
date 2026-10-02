@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v191"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v192"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1475,9 +1475,10 @@ function sheetEinstellungen(reiter) {
       const wKnopf = el("button", "chip", "Word: " + a.book);
       const aKnopf = el("button", "chip", "App: " + a.excel);
       reihe.append(el("span", null, a.feld + " "), wKnopf, aKnopf);
-      if (!wordOk) {
+      if (!wordOk || m.kundenauftrag) {
         wKnopf.disabled = true;
-        reihe.append(el("span", "kontext", " Wert im Word unklar"));
+        reihe.append(el("span", "kontext", m.kundenauftrag
+          ? " Im Kundenauftrag bleibt der App-Wert" : " Wert im Word unklar"));
       }
       const setze = (w) => {
         wahl[a.feld] = w;
@@ -1516,6 +1517,8 @@ function sheetEinstellungen(reiter) {
       if (erg !== "ok") {
         banner(erg === "veraltet"
           ? "„" + f.name + "“: Stand hat sich inzwischen geändert — neu geprüft."
+          : erg === "gesperrt"
+          ? "„" + f.name + "“ steht im Kundenauftrag — dort ändert sich das Rating nicht."
           : "„" + f.name + "“: nicht übernommen (" + erg + ").");
         nochmal();
         return;
@@ -2976,6 +2979,27 @@ function sheetPitch(p) {
     // GESPEICHERTEN ueberschreiben - deshalb danach noch einmal (v167).
     const q = mv && mv.pitchliste
       ? { ...p, ...mv.pitchliste, status: statusAnzeige(mv) } : p;
+    // NACH zuReitern: das haengt die Knoten noch einmal um, und vorher
+    // gesetztes scrollTop waere danach wieder weg.
+    const abschluss = () => {
+      zuReitern(wrap, "reiterPitch");
+      if (box && stand) box.scrollTop = stand;
+    };
+    // Schlankes Formular im Kundenauftrag (v192, Andreas Liste in Backlog 58)
+    // als POSITIVLISTE: was bleibt, steht hier - ein neuer Pitch-Baustein
+    // taucht so nicht versehentlich im Auftrag auf. Alles andere wird nur
+    // NICHT GEZEIGT, die Daten bleiben; beim Rueckweg ist alles wieder da.
+    // Auch KEIN "Naechster Schritt" (Tobias, 17.09.): die Checkliste ist im
+    // Auftrag der Terminplan.
+    const imAuftrag = !!(mv && mv.kundenauftrag);
+    // Der Kopfzeilen-Knopf entsteht einmal beim Oeffnen; wechselt die Marke
+    // bei offenem Sheet in den Auftrag, muss er hier verschwinden.
+    if (stift) stift.style.display = imAuftrag ? "none" : "";
+    if (imAuftrag) {
+      wrap.append(bereichKundenauftrag(), bereichAuftragsverlauf(),
+                  bereichVerwaltung(mv));
+      return abschluss();
+    }
     wrap.append(el("div", "kontext",
       ampel(q.datum_naechste_aktion, heuteNull()).text));
 
@@ -3007,15 +3031,10 @@ function sheetPitch(p) {
       zeile.append(el("span", "leise", label), el("span", null, wert));
       tab.append(zeile);
     }
-    // Im Kundenauftrag gibt es KEINEN "Naechster Schritt"-Abschnitt mehr
-    // (Tobias, 17.09.): die Checkliste ist dort der Terminplan, und zwei
-    // Terminquellen nebeneinander waeren genau die Doppeldeutigkeit, die
-    // vermieden werden soll.
-    const imAuftrag = !!(mv && mv.kundenauftrag);
     // Ein Name je Baustein, die Reihenfolge steht in sheetBlockReihenfolge().
-    // Jeder Eintrag bringt seine eigene Bedingung mit: "erledigen" faellt im
-    // Kundenauftrag aus, die uebrigen entscheiden selbst und geben dann
-    // nichts oder ein leeres Fragment zurueck.
+    // Jeder Eintrag bringt seine eigene Bedingung mit und gibt sonst nichts
+    // oder ein leeres Fragment zurueck. Der Kundenauftrag hat oben seinen
+    // eigenen Zweig.
     const bausteine = {
       // Der Book-Knopf steht seit v157 HIER (Tobias, 23.09.): direkt unter
       // der Kennzahlen-Tabelle und damit oberhalb von "Nächster Schritt".
@@ -3028,7 +3047,7 @@ function sheetPitch(p) {
                         bookOeffnenZeile(bookName(quelleZuName(p.name), mv), mv)),
       kundenauftrag:  () => bereichKundenauftrag(),
       startdatum:     () => bereichStartdatum(q),
-      erledigen:      () => (imAuftrag ? null : bereichErledigen(q)),
+      erledigen:      () => bereichErledigen(q),
       antwort:        () => bereichAntwort(q),
       auftragwechsel: () => bereichAuftragWechsel(q),
     };
@@ -3053,10 +3072,7 @@ function sheetPitch(p) {
     wrap.append(bereichSonstiges(mv, bau));
 
     if (mv) wrap.append(bereichVerwaltung(mv));
-    zuReitern(wrap, "reiterPitch");
-    // NACH zuReitern: das haengt die Knoten noch einmal um, und vorher
-    // gesetztes scrollTop waere danach wieder weg.
-    if (box && stand) box.scrollTop = stand;
+    abschluss();
   }
 
   // Startdatum (Andreas Workflow Schritt 7): frisch aus dem Brand Rating
@@ -3109,32 +3125,31 @@ function sheetPitch(p) {
     const m = datenstand ? markeZuName(p.name) : null;
     const hist = (m && m.kundenauftragHistorie) || [];
     if (!hist.length) return frag;
-    for (const h of hist) {
-      const zeile = el("div", "stand",
-        `${h.datum} · ` +
-        (h.richtung === "hinein" ? "in den Auftrag"
-          : h.richtung === "beendet" ? "Auftrag beendet"
-          : "zurück in die Pitchliste") +
-        (h.grund ? ` — ${h.grund}` : "") +
-        (h.naechsterPitch ? ` · nächster Pitch am ${deDatum(h.naechsterPitch)}` : ""));
-      frag.append(zeile);
+    // Je Auftrag gruppiert (v192). Die Kennung bleibt intern (Entscheidung
+    // 6), sichtbar ist nur "Auftrag 1", "Auftrag 2" ...
+    for (const [kennung, eintraege] of auftragsverlaufGruppen(hist)) {
+      frag.append(el("div", "abschnitt", "Auftrag " + kennung));
+      for (const h of eintraege) eintrag(h);
+    }
+    return abschnitt("Verlauf des Auftrags", frag);
+
+    function eintrag(h) {
+      frag.append(el("div", "stand", verlaufZeile(h)));
       // Archivierte Checkliste: offene Punkte bleiben offen (Codex, 17.09.).
       // Sie stehen hier, damit nachvollziehbar ist, was beim Rueckweg
       // liegengeblieben ist.
       const a = h.archiv;
-      if (a && (a.checkliste || []).length) {
-        const offen = a.checkliste.filter((z) => !z.erledigt);
+      if (!a || !(a.checkliste || []).length) return;
+      const offen = a.checkliste.filter((z) => !z.erledigt);
+      frag.append(el("div", "leise",
+        `   archiviert: ${a.checkliste.length} Punkt(e), ` +
+        `${offen.length} davon offen` +
+        (a.prio ? ` · war Prio ${a.prio}` : "")));
+      for (const z of offen) {
         frag.append(el("div", "leise",
-          `   archiviert: ${a.checkliste.length} Punkt(e), ` +
-          `${offen.length} davon offen` +
-          (a.prio ? ` · war Prio ${a.prio}` : "")));
-        for (const z of offen) {
-          frag.append(el("div", "leise",
-            `   ☐ ${z.text}${z.datum ? " — " + deDatum(z.datum) : ""}`));
-        }
+          `   ☐ ${z.text}${z.datum ? " — " + deDatum(z.datum) : ""}`));
       }
     }
-    return abschnitt("Verlauf des Auftrags", frag);
   }
 
   // Der Auftrag selbst (Release 6, Schritt 20). Nur sichtbar, wenn die Marke
@@ -3162,6 +3177,12 @@ function sheetPitch(p) {
     };
 
     frag.append(el("div", "stand", `Im Auftrag seit ${ka.seit || "—"}`));
+
+    // --- Status (v192). chipFilter hebt beim zweiten Tippen auf ("" -> offen).
+    frag.append(el("div", "stand", "Status: " + auftragStatusText(ka.status)),
+      chipFilter(AUFTRAG_STATUS, ka.status, (w) => {
+        if (auftragStatusSetzen(m, w || null, lokalIso())) sichern(false);
+      }, bau));
 
     // --- Prioritaet. Nochmal auf dieselbe Stufe tippen hebt sie auf: ohne
     // das gaebe es keinen Weg zurueck nach "noch nicht eingeordnet".
@@ -3341,19 +3362,9 @@ function sheetPitch(p) {
   function bereichAntwort(q) {
     const frag = document.createDocumentFragment();
     const m = datenstand ? markeZuName(p.name) : null;
+    // Im Kundenauftrag wird nicht geantwortet (Tobias, 17.09.): sheetPitch
+    // ruft diesen Baustein dort gar nicht auf (v192, schlankes Formular).
     if (!m || !m.pitchliste || !q.letzter_kontakt) return frag;
-    // Im Kundenauftrag wird nicht geantwortet (Tobias, 17.09.): eine Antwort
-    // ist ein Vorgang der Pitchliste. Statt des Formulars steht hier der
-    // Verweis auf den einzigen richtigen Weg - sonst haette die Nutzerin
-    // zwei Wege zurueck, und nur einer davon fuehrt Buch.
-    if (m.kundenauftrag) {
-      frag.append(el("div", "stand",
-        "Diese Marke steht im Kundenauftrag — hier wird keine Antwort mehr " +
-        "eingetragen. Soll sie zurück in die Kadenz, führt der Weg über " +
-        "„↩ Zurück in die Pitchliste“ im Abschnitt „Kundenauftrag“; dort " +
-        "wird auch der Grund festgehalten."));
-      return abschnitt("Antwort eintragen", frag);
-    }
 
     // Zwei Chips statt <input type="radio">: die App hat fuer "chip aktiv"
     // schon eine Darstellung, ein Radio braeuchte neues CSS.
@@ -4383,7 +4394,10 @@ function kundenauftraegeAktuell() {
       // zurueckgeschrieben. Zwei Quellen fuer denselben Termin synchron zu
       // halten waere ein Zustand mehr, der auseinanderlaufen kann.
       const cp = naechsterCheckpunkt(m.kundenauftrag);
+      // status = Auftragsstatus als Text (v192), nicht der Pitch-Status: der
+      // sagt im Auftrag nichts mehr.
       return { name: m.name, ...m.pitchliste, ...m.kundenauftrag,
+               status: auftragStatusText(m.kundenauftrag.status),
                naechsterTermin: cp ? cp.datum : "",
                naechsterCheckText: cp ? cp.text : "" };
     });
@@ -4393,7 +4407,7 @@ function kundenauftraegeAktuell() {
 // geteilte Variable hat am 17.09. die Auftragsliste zerlegt: ein dort
 // gesetzter Anzeigen-Filter warf hier einen TypeError, ein
 // Faelligkeitsfilter leerte die Liste still.
-const kf = { suche: "", sortierung: "", prio: "", faellig: "" };
+const kf = { suche: "", sortierung: "", prio: "", faellig: "", status: "" };
 
 // EIGENE Suche statt pitchPasst() - gefunden beim Audit 17.09., zweifach
 // reproduziert:
@@ -4418,6 +4432,7 @@ function kundenPasst(p, s) {
     const hat = p.prio == null || p.prio === "" ? "ohne" : String(p.prio);
     if (hat !== kf.prio) return false;
   }
+  if (kf.status && p.status !== auftragStatusText(kf.status)) return false;
   // Faelligkeit rechnet auf dem CHECKLISTEN-Termin (p.tage kommt aus
   // ampel(naechsterTermin)). Ohne offenen Termin faellt der Auftrag aus
   // jedem Faelligkeitsfilter - dort ist nichts zu tun.
@@ -4495,6 +4510,8 @@ function renderKundenauftraege() {
     w.append(filterGruppe("Priorität",
       [["1", "Prio 1"], ["2", "Prio 2"], ["3", "Prio 3"], ["ohne", "ohne Prio"]],
       () => kf.prio, (x) => { kf.prio = x; }, zeichnen));
+    w.append(filterGruppe("Status", [["offen", "offen"], ...AUFTRAG_STATUS],
+      () => kf.status, (x) => { kf.status = x; }, zeichnen));
     w.append(filterGruppe("Nächster Termin",
       [[0, "fällig"], [7, "≤ 7 Tage"], [14, "≤ 14 Tage"]],
       () => kf.faellig, (x) => { kf.faellig = x; }, zeichnen));
@@ -4510,7 +4527,7 @@ function renderKundenauftraege() {
   zeichnen();
 
   function zeichnen() {
-    const aktiv = [kf.prio, kf.faellig].filter(gesetzt).length;
+    const aktiv = [kf.prio, kf.status, kf.faellig].filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (aktiv ? ` · ${aktiv} aktiv` : "");
     filterBtn.classList.toggle("aktiv", aktiv > 0);
     sortBtn.textContent = "⇅ " + sortLabel(SORT_KUNDEN, kf.sortierung);
@@ -4582,7 +4599,7 @@ function auftragBeenden(m, jetzt) {
   };
   delete m.kundenauftrag;
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
-    .push({ richtung: "beendet", datum: deDatum(isoInTagen(0)),
+    .push({ richtung: "beendet", kennung: ka.kennung, datum: deDatum(isoInTagen(0)),
             geaendert: jetzt || lokalIso(), archiv });
   listeVeraltet = true;
   datenstandPersistieren();
@@ -4753,6 +4770,10 @@ async function abgleichAnwenden(m, wahl, gezeigt) {
     werte[paar[1]] = neu;
     wordDabei = true;
   }
+  // Im Kundenauftrag bleibt das Rating (v192): "Word gilt" waere eine
+  // Aenderung. ratingSetzen() sperrt auch - hier aber VOR der D-Rueckfrage
+  // und mit eigener Meldung statt "läuft schon".
+  if (wordDabei && m.kundenauftrag) return "gesperrt";
   // 2. D-Rueckfrage wie im Formular - VOR jeder Aenderung.
   if (werte.rating === "D" && String(br.rating || "").trim() !== "D" &&
       !confirm(`„${m.name}“ auf D setzen?
@@ -5169,6 +5190,15 @@ function ratingWechselEintragen(m, alt, neu, datum) {
 // der "Besser im Glas"-Schaden (06.09.) ueber zwei Wege statt zwei Klicks.
 const ratingLaeuft = new Set();
 async function ratingSetzen(m, werte) {
+  // Im Kundenauftrag ändert sich das Rating nicht (v192, Backlog 58 b). Die
+  // Knöpfe sind dort ausgeblendet - das hier ist das Netz für jeden Weg,
+  // der trotzdem ankommt (offenes Sheet, Brand-Rating-Sheet, Daten prüfen).
+  // null wie "läuft schon": beide Aufrufer brechen dann ab, ohne zu
+  // speichern oder ins Word zu schreiben - der Banner steht schon.
+  if (m.kundenauftrag) {
+    banner("Im Kundenauftrag ändert sich das Rating nicht.");
+    return null;
+  }
   const k = schluessel(m.name);
   if (ratingLaeuft.has(k)) {
     banner("„" + m.name + "“: Rating wird gerade gespeichert — kurz warten.");
@@ -5741,7 +5771,8 @@ function brKarte(m) {
 function sheetBrandrating(m) {
   const wrap = el("div");
   const z = { modus: null };
-  const stift = datenstand
+  // Im Kundenauftrag kein Rating-Knopf (v192), ratingSetzen() sperrt ohnehin.
+  const stift = datenstand && !m.kundenauftrag
     ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
   bau();
   sheetOeffnen(m.name, wrap, stift);
@@ -7220,6 +7251,59 @@ function auftragBeginnen(m, jetzt) {
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
     .push({ richtung: "hinein", kennung, datum: heute });
 }
+// Status eines laufenden Auftrags (v192, Release 2a). null = "offen" - ein
+// neuer Auftrag startet ohne Wahl (Entscheidung 3). Nochmal auf denselben
+// Status tippen hebt ihn auf (wie Prio). Nur ein ECHTER Wechsel landet im
+// Verlauf; Rueckgabe true, wenn sich etwas geaendert hat.
+const AUFTRAG_STATUS = [["verhandlung", "in Verhandlung"],
+                        ["bestaetigt", "bestätigt"], ["abgebrochen", "abgebrochen"]];
+function auftragStatusText(s) {
+  const t = AUFTRAG_STATUS.find(([k]) => k === s);
+  return t ? t[1] : "offen";
+}
+function auftragStatusSetzen(m, status, jetzt) {
+  const ka = m && m.kundenauftrag;
+  if (!ka || (status !== null && !AUFTRAG_STATUS.some(([k]) => k === status)))
+    return false;
+  const von = ka.status || null;
+  const nach = von === status ? null : status;
+  if (von === nach) return false;
+  ka.status = nach;
+  ka.geaendert = jetzt || lokalIso();
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "status", kennung: ka.kennung, von, nach,
+            datum: deDatum(isoInTagen(0)) });
+  return true;
+}
+
+// Verlauf je Auftrag (v192): Map kennung -> Eintraege, in Reihenfolge.
+// Ein Eintrag ohne Kennung gehoert zum Auftrag davor - vor v191 trug keiner
+// eine (= Auftrag 1), und in v191 hatte der Rueckweg noch keine, obwohl der
+// Auftrag selbst schon eine bekam.
+function auftragsverlaufGruppen(hist) {
+  const gruppen = new Map();
+  let aktuell = 1;
+  for (const h of hist || []) {
+    if (!h) continue;
+    if (h.kennung) aktuell = Number(h.kennung) || 1;
+    if (!gruppen.has(aktuell)) gruppen.set(aktuell, []);
+    gruppen.get(aktuell).push(h);
+  }
+  return gruppen;
+}
+function verlaufZeile(h) {
+  const was = h.richtung === "hinein" ? "in den Auftrag"
+    : h.richtung === "beendet" ? "Auftrag beendet"
+    : h.richtung === "zurueck" ? "zurück in die Pitchliste"
+    : h.richtung === "status"
+      ? `Status: ${auftragStatusText(h.von)} → ${auftragStatusText(h.nach)}`
+    // Unbekannt (neuere App, von Hand bearbeitet): neutral, nicht raten.
+    : "Eintrag" + (h.richtung ? ` „${h.richtung}“` : "");
+  return `${h.datum || "—"} · ${was}` +
+    (h.grund ? ` — ${h.grund}` : "") +
+    (h.naechsterPitch ? ` · nächster Pitch am ${deDatum(h.naechsterPitch)}` : "");
+}
+
 function auftragKennungNeu(m) {
   const alle = [m.kundenauftrag, ...(m.auftraege || []),
                 ...(m.kundenauftragHistorie || [])].filter(Boolean);
@@ -7279,10 +7363,11 @@ function kundenauftragZurueck(m, grund, jetzt, datumIso) {
   // offene Punkte bleiben darin ausdruecklich offen. Archivieren heisst
   // nicht erledigen. Ohne das waere jede zugesagte Aufgabe mit einem Klick
   // spurlos weg - und es gibt dafuer kein Word-Gegenstueck.
+  const kennung = m.kundenauftrag.kennung;
   const archiv = {
     seit: m.kundenauftrag.seit || "",
     prio: m.kundenauftrag.prio == null ? null : m.kundenauftrag.prio,
-    checkliste: (m.kundenauftrag.checkliste || []).map(
+    checkliste: (m.kundenauftrag.checkliste || []).filter(Boolean).map(  // wie auftragBeenden (Codex v192)
       (z) => ({ text: z.text || "", datum: z.datum || "",
                 erledigt: !!z.erledigt })),
   };
@@ -7291,7 +7376,7 @@ function kundenauftragZurueck(m, grund, jetzt, datumIso) {
     // antwortStand: wie viele Antworten gab es JETZT? Daran erkennt
     // verschiebenErlaubt() spaeter, ob eine neue dazugekommen ist (v167).
     // Ein Datumsvergleich traegt hier nicht - beide Seiten sind tagesgenau.
-    .push({ richtung: "zurueck", datum: deDatum(isoInTagen(0)),
+    .push({ richtung: "zurueck", kennung, datum: deDatum(isoInTagen(0)),
             grund: text, naechsterPitch: datumIso,
             antwortStand: antwortStand(m.events), archiv });
   listeVeraltet = true;
