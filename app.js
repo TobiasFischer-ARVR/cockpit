@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v193"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v194"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -719,6 +719,7 @@ const REITER = {
   "In Kundenaufträge": "Aktion",
   "Kundenauftrag": "Aktion",
   "Archiv": "Aktion",          // v193: Marke im Archiv der Kundenauftraege
+  "Kundenpflege": "Aktion",    // v194
   // Bereichswechsel, keine Kontaktereignisse - steht trotzdem bei der
   // Historie, weil es dort gesucht wird.
   "Verlauf des Auftrags": "Historie",
@@ -3006,10 +3007,10 @@ function sheetPitch(p) {
     // bei offenem Sheet in den Auftrag, muss er hier verschwinden.
     const kunde = imKundenbereich(mv);
     if (stift) stift.style.display = kunde ? "none" : "";
-    // EIN Zweig fuer den ganzen Kundenbereich (v193): Auftrag und Archiv
-    // zeichnen sich selbst, der jeweils andere liefert ein leeres Fragment.
+    // EIN Zweig fuer den ganzen Kundenbereich (v193): Auftrag, Archiv und
+    // Kundenpflege zeichnen sich selbst, die anderen liefern ein leeres Fragment.
     if (kunde) {
-      wrap.append(bereichKundenauftrag(), bereichArchiv(),
+      wrap.append(bereichKundenauftrag(), bereichArchiv(), bereichKundenpflege(),
                   bereichAuftragsverlauf(), bereichVerwaltung(mv));
       return abschluss();
     }
@@ -3255,8 +3256,146 @@ function sheetPitch(p) {
     return [zAussen, zForm];
   }
 
-  // Marke im Archiv der Kundenauftraege (v193). Von hier: zurueck in die
-  // Pitchliste. "Neuer Auftrag"/"Auftrag fortsetzen" kommen mit R3.
+  // Checkliste eines Auftrags ODER der Kundenpflege (v194: aus
+  // bereichKundenauftrag herausgeloest - gleiches Feld `checkliste`, damit
+  // checklisteBereinigen und naechsterCheckpunkt fuer beide gelten).
+  function checklisteBlock(obj, sichern) {
+    const teil = document.createDocumentFragment();
+    // --- Checkliste. Gespeichert wird bei onchange, NICHT bei oninput:
+    // sonst schriebe jeder Tastendruck den ganzen Datenstand.
+    obj.checkliste = obj.checkliste || [];
+    // z && ... wie in checklisteBereinigen: ein null aus einem von Hand
+    // bearbeiteten Datenstand wuerde hier werfen, bevor die Bereinigung
+    // ueberhaupt laufen kann.
+    teil.append(el("div", "abschnitt",
+      `Checkliste (${obj.checkliste.filter((z) => z && z.erledigt).length}/` +
+      `${obj.checkliste.length})`));
+    obj.checkliste.forEach((z) => {
+      const zeile = el("div", "fgruppe");
+      const haken = el("input");
+      haken.type = "checkbox";
+      haken.checked = !!z.erledigt;
+      haken.onchange = () => { z.erledigt = haken.checked; sichern(false); bau(); };
+      const txt = el("input", "feld");
+      txt.type = "text";
+      txt.value = z.text || "";
+      txt.placeholder = "z. B. Vertrag unterschrieben";
+      txt.onchange = () => { z.text = txt.value.trim(); sichern(); };
+      const dat = el("input", "datum");
+      dat.type = "date";
+      dat.value = z.datum || "";
+      dat.onchange = () => { z.datum = dat.value; sichern(); };
+      // Keine Anlege-Funktion ohne Loesch-Funktion (Regel aus v96): eine
+      // vertippte Zeile bliebe sonst fuer immer stehen.
+      const weg = el("button", "chip", "✕");
+      weg.onclick = () => {
+        if (z.text && !confirm(`Zeile „${z.text}“ entfernen?`)) return;
+        // Ueber die IDENTITAET loeschen, nicht ueber den Index aus dem
+        // forEach: zwischen Zeichnen und Klick kann checklisteBereinigen()
+        // das Array verkuerzt haben.
+        const stelle = obj.checkliste.indexOf(z);
+        if (stelle >= 0) obj.checkliste.splice(stelle, 1);
+        sichern(false);
+        bau();
+      };
+      const kopf = el("div", "chips");
+      kopf.append(haken, weg);
+      zeile.append(kopf, txt, dat);
+      teil.append(zeile);
+    });
+    const plusZeile = el("div", "chips");
+    const plus = el("button", "chip", "+ Zeile");
+    plus.onclick = () => {
+      // Bewusst ohne sichern(): checklisteBereinigen() wuerde die leere
+      // Zeile im selben Atemzug wieder wegwerfen. Sie wird gespeichert,
+      // sobald Text drinsteht (txt.onchange).
+      obj.checkliste.push({ text: "", datum: "", erledigt: false });
+      bau();
+    };
+    plusZeile.append(plus);
+    teil.append(plusZeile);
+    return teil;
+  }
+
+  // "Neuer Auftrag" / "Auftrag fortsetzen" aus Archiv und Kundenpflege
+  // (v194, Entscheidung 5: Andrea waehlt jedes Mal). Fortsetzen fragt mit
+  // ZWEI Knoepfen, ob die Checkliste zurueckkommt (Tobias, 02.10.) - kein
+  // OK/Abbrechen-Dialog, sonst hiesse "Nein" dasselbe wie "doch nicht".
+  function wiederaufnahmeBlock(m) {
+    const frag = document.createDocumentFragment();
+    const letzter = letzterAuftrag(m);
+    const zeile = el("div", "chips");
+    const neu = el("button", "chip", "＋ Neuer Auftrag");
+    neu.onclick = () => {
+      if (!confirm(`Neuen Auftrag für „${m.name}“ anlegen?\n\n` +
+          "Er bekommt eine eigene Nummer und startet mit leerer Checkliste.")) return;
+      const r = kundeAnlegen(m.name);
+      if (typeof r === "string") { banner(r); return; }
+      banner("Neuer Auftrag angelegt.");
+      bookNachziehen(r);
+      bau();
+    };
+    zeile.append(neu);
+    const frage = el("div", "fgruppe");
+    frage.style.display = "none";
+    const fortsetzen = (mit) => {
+      if (!auftragFortsetzen(m, mit)) {
+        banner("Das ging nicht — bitte die Liste einmal neu laden.");
+        return;
+      }
+      banner("Auftrag fortgesetzt.");
+      bookNachziehen(m);
+      bau();
+    };
+    if (letzter) {
+      const fort = el("button", "chip", "↻ Auftrag fortsetzen");
+      const gespeichert = (letzter.checkliste || []).length;
+      fort.onclick = () => {
+        // Ohne gespeicherte Liste gibt es nichts zu fragen.
+        if (!gespeichert) {
+          if (confirm(`Letzten Auftrag von „${m.name}“ fortsetzen?`)) fortsetzen(false);
+          return;
+        }
+        frage.style.display = frage.style.display === "none" ? "" : "none";
+      };
+      zeile.append(fort);
+      const ja = el("button", "chip aktiv", "Ja");
+      const nein = el("button", "chip", "Nein");
+      ja.onclick = () => fortsetzen(true);
+      nein.onclick = () => fortsetzen(false);
+      const jn = el("div", "chips unter-feld");
+      jn.append(ja, nein);
+      frage.append(el("div", "stand",
+        `Checkliste wiederherstellen? (${gespeichert} Punkt(e) gespeichert)`), jn);
+    }
+    frag.append(zeile, frage);
+    return frag;
+  }
+
+  // Marke in der Kundenpflege (v194, R3): dauerhafte Geschaeftsbeziehung.
+  // Zeigt das Ende des letzten Auftrags, die Aufgaben (Checkliste mit Ampel
+  // in der Liste) und die Wege zurueck in einen Auftrag.
+  function bereichKundenpflege() {
+    const frag = document.createDocumentFragment();
+    const m = datenstand ? markeZuName(p.name) : null;
+    if (!m || !m.kundenpflege) return frag;
+    const kp = m.kundenpflege;
+    const sichern = (neuZeichnen) => {
+      const weg = checklisteBereinigen(kp);
+      kp.geaendert = lokalIso();
+      listeVeraltet = true;
+      datenstandPersistieren();
+      if (weg && neuZeichnen !== false) bau();
+    };
+    frag.append(el("div", "stand",
+      `In der Kundenpflege seit ${kp.seit || "—"} · Ende letzter Auftrag: ` +
+      ((letzterAuftrag(m) || {}).ende || "—")));
+    frag.append(checklisteBlock(kp, sichern), wiederaufnahmeBlock(m));
+    return abschnitt("Kundenpflege", frag);
+  }
+
+  // Marke im Archiv der Kundenauftraege (v193). Von hier: neuer Auftrag,
+  // Auftrag fortsetzen (v194) oder zurueck in die Pitchliste.
   function bereichArchiv() {
     const frag = document.createDocumentFragment();
     const m = datenstand ? markeZuName(p.name) : null;
@@ -3264,6 +3403,7 @@ function sheetPitch(p) {
     frag.append(el("div", "stand",
       `Im Archiv seit ${m.kundenarchiv.seit || "—"} · letzter Auftrag: ` +
       auftragStatusText((letzterAuftrag(m) || {}).status)));
+    frag.append(wiederaufnahmeBlock(m));               // v194
     if (m.pitchliste) frag.append(...rueckwegBlock(m, () => []));
     return abschnitt("Archiv", frag);
   }
@@ -3315,59 +3455,7 @@ function sheetPitch(p) {
     }
     frag.append(el("div", "stand", "Priorität:"), prioZeile);
 
-    // --- Checkliste. Gespeichert wird bei onchange, NICHT bei oninput:
-    // sonst schriebe jeder Tastendruck den ganzen Datenstand.
-    ka.checkliste = ka.checkliste || [];
-    // z && ... wie in checklisteBereinigen: ein null aus einem von Hand
-    // bearbeiteten Datenstand wuerde hier werfen, bevor die Bereinigung
-    // ueberhaupt laufen kann.
-    frag.append(el("div", "abschnitt",
-      `Checkliste (${ka.checkliste.filter((z) => z && z.erledigt).length}/` +
-      `${ka.checkliste.length})`));
-    ka.checkliste.forEach((z, i) => {
-      const zeile = el("div", "fgruppe");
-      const haken = el("input");
-      haken.type = "checkbox";
-      haken.checked = !!z.erledigt;
-      haken.onchange = () => { z.erledigt = haken.checked; sichern(); bau(); };
-      const txt = el("input", "feld");
-      txt.type = "text";
-      txt.value = z.text || "";
-      txt.placeholder = "z. B. Vertrag unterschrieben";
-      txt.onchange = () => { z.text = txt.value.trim(); sichern(); };
-      const dat = el("input", "datum");
-      dat.type = "date";
-      dat.value = z.datum || "";
-      dat.onchange = () => { z.datum = dat.value; sichern(); };
-      // Keine Anlege-Funktion ohne Loesch-Funktion (Regel aus v96): eine
-      // vertippte Zeile bliebe sonst fuer immer stehen.
-      const weg = el("button", "chip", "✕");
-      weg.onclick = () => {
-        if (z.text && !confirm(`Zeile „${z.text}“ entfernen?`)) return;
-        // Ueber die IDENTITAET loeschen, nicht ueber den Index aus dem
-        // forEach: zwischen Zeichnen und Klick kann checklisteBereinigen()
-        // das Array verkuerzt haben.
-        const stelle = ka.checkliste.indexOf(z);
-        if (stelle >= 0) ka.checkliste.splice(stelle, 1);
-        sichern(false);
-        bau();
-      };
-      const kopf = el("div", "chips");
-      kopf.append(haken, weg);
-      zeile.append(kopf, txt, dat);
-      frag.append(zeile);
-    });
-    const plusZeile = el("div", "chips");
-    const plus = el("button", "chip", "+ Zeile");
-    plus.onclick = () => {
-      // Bewusst ohne sichern(): checklisteBereinigen() wuerde die leere
-      // Zeile im selben Atemzug wieder wegwerfen. Sie wird gespeichert,
-      // sobald Text drinsteht (txt.onchange).
-      ka.checkliste.push({ text: "", datum: "", erledigt: false });
-      bau();
-    };
-    plusZeile.append(plus);
-    frag.append(plusZeile);
+    frag.append(checklisteBlock(ka, sichern));
 
     // --- Ausgaenge (v193). Rueckweg nur mit Pitchzeile - ohne sie scheitert
     // ruecksprungAufPitch() (Hand-Kunde, Entscheidung 10). "Auftrag
@@ -3393,6 +3481,28 @@ function sheetPitch(p) {
     };
     const aZeile = el("div", "chips");
     aZeile.append(aKnopf);
+    // --- Dritter Ausgang (v194, R3): dauerhafte Geschaeftsbeziehung. Bei
+    // "abgebrochen" nicht (Entscheidung 2) - die Datenfunktion sperrt auch.
+    if (ka.status !== "abgebrochen") {
+      const pKnopf = el("button", "chip", "★ → Kundenpflege");
+      pKnopf.onclick = () => {
+        const o = offen();
+        if (!confirm(`„${m.name}“ in die Kundenpflege?\n\n` +
+            (o.length ? `${o.length} Punkt(e) der Checkliste sind noch offen — ` +
+              "sie werden archiviert, nicht erledigt.\n\n" : "") +
+            "Der Auftrag wird abgeschlossen, die Marke steht danach in der " +
+            "Kundenpflege mit zwei Aufgaben: nach Verlauf/Performance und nach " +
+            "einer neuen Kooperation fragen.")) return;
+        if (!auftragKundenpflege(m)) {
+          banner("Das ging nicht — bitte die Liste einmal neu laden.");
+          return;
+        }
+        banner("Steht jetzt in der Kundenpflege.");
+        bookNachziehen(m);    // bleibt in "Kundenaufträge" - meist "gleich"
+        bau();
+      };
+      aZeile.append(pKnopf);
+    }
     frag.append(aZeile);
 
     return abschnitt("Kundenauftrag", frag);
@@ -4462,6 +4572,40 @@ function archivAktuell() {
     });
 }
 
+// Kundenpflege (v194, R3). Termin und Text kommen aus ihrer Checkliste wie
+// beim Auftrag (naechsterCheckpunkt), daraus rechnet die Ampel der Karte.
+function kundenpflegeAktuell() {
+  return (datenstand ? datenstand.marken || [] : [])
+    .filter((m) => m.kundenpflege)
+    .map((m) => {
+      const cp = naechsterCheckpunkt(m.kundenpflege);
+      return { name: m.name, ...m.pitchliste, prio: null, seit: m.kundenpflege.seit,
+               status: "seit " + (m.kundenpflege.seit || "—"),
+               naechsterTermin: cp ? cp.datum : "", naechsterCheckText: cp ? cp.text : "" };
+    });
+}
+
+// Bewusst schlicht (ponytail): Liste nach naechstem Termin, keine Filter.
+// Die Kundenpflege ist kurz; Filter kommen, wenn sie lang wird.
+function renderKundenpflege() {
+  kopfzeile("Kundenpflege", true);
+  const c = document.getElementById("inhalt");
+  c.innerHTML = "";
+  const heute = heuteNull();
+  const alle = sortiereKunden(kundenpflegeAktuell()
+    .map((p) => ({ ...p, ...ampel(p.naechsterTermin || "", heute) })), "");
+  if (!alle.length) {
+    c.append(el("div", "leerzustand",
+      "Noch niemand in der Kundenpflege. Marken kommen hierher über " +
+      "„★ → Kundenpflege“ im Kundenauftrag."));
+    return;
+  }
+  const karten = el("div", "karten");
+  for (const p of alle) karten.append(pitchKarte(p, true));
+  c.append(el("div", "stand", `${alle.length} in der Kundenpflege · sortiert nach nächstem Termin`),
+           karten);
+}
+
 // EIGENER Filterzustand, nicht der `pf` der Pitchliste. Genau diese
 // geteilte Variable hat am 17.09. die Auftragsliste zerlegt: ein dort
 // gesetzter Anzeigen-Filter warf hier einen TypeError, ein
@@ -4642,10 +4786,13 @@ function renderKundenauftraege() {
 function kundeAnlegen(name, jetzt) {
   const n = String(name == null ? "" : name).trim();
   if (!n) return "Name fehlt.";
-  if (!bookNameOk(n)) return BOOK_NAME_HINWEIS;
   jetzt = jetzt || lokalIso();
   let m = markeZuName(n);
   if (m && m.kundenauftrag) return "„" + m.name + "“ steht schon in den Kundenaufträgen.";
+  // Namenspruefung nur fuer NEUE Namen (v194, Code-Review): eine vorhandene
+  // Marke heisst schon so - "Neuer Auftrag" aus Archiv/Kundenpflege darf an
+  // ihrem Namen nicht scheitern.
+  if (!m && !bookNameOk(n)) return BOOK_NAME_HINWEIS;
   if (!m) {
     m = { name: n, quelle: "", gruppe: "", kerninfos: {}, events: [],
           pitchliste: null, erstellt: jetzt };   // erstellt -> darf geloescht werden
@@ -4681,10 +4828,87 @@ function auftragAbschliessen(m, jetzt) {
   return true;
 }
 
-// Der fertige Auftrag, zu dem das Archiv gehoert (gleiche Kennung).
+// Der fertige Auftrag, zu dem Archiv bzw. Kundenpflege gehoert (gleiche
+// Kennung).
 function letzterAuftrag(m) {
-  const k = m.kundenarchiv && m.kundenarchiv.kennung;
+  const z = m.kundenarchiv || m.kundenpflege;
+  const k = z && z.kennung;
   return (m.auftraege || []).filter((a) => a && a.kennung === k).pop() || null;
+}
+
+// Checkliste als saubere Kopie (null-Zeilen raus) - EINE Stelle fuer
+// Ablegen, Kundenpflege verlassen und Fortsetzen.
+function checklisteKopie(liste) {
+  return (liste || []).filter(Boolean).map(
+    (z) => ({ text: z.text || "", datum: z.datum || "", erledigt: !!z.erledigt }));
+}
+
+// Archiv bzw. Kundenpflege verlassen (v194) - EIN Ausstieg fuer "Neuer
+// Auftrag" und "Fortsetzen", damit kein kuenftiger Weg das Ablegen vergisst.
+// Die Pflege-Aufgaben wandern in den Verlaufseintrag des Wechsels
+// (Code-Review): archiviert, nicht weggeworfen - einmal, nicht doppelt. Der
+// Verlauf zeigt h.archiv wie die Alt-Eintraege (auftragZuEintrag).
+// Rueckgabe: Zusatzfelder fuer den Verlaufseintrag.
+function kundenbereichVerlassen(m) {
+  const kp = m.kundenpflege;
+  const zusatz = kp && (kp.checkliste || []).length
+    ? { archiv: { seit: kp.seit || "", checkliste: checklisteKopie(kp.checkliste) } } : {};
+  delete m.kundenarchiv;
+  delete m.kundenpflege;
+  return zusatz;
+}
+
+// Die zwei Punkte, die beim Wechsel in die Kundenpflege schon dastehen
+// (Andreas Vorgabe, Entscheidung 7): abhakbar, Datum optional, Ampel.
+const KUNDENPFLEGE_PUNKTE = ["Nach Verlauf/Performance fragen",
+                             "Nach neuer Kooperation fragen"];
+
+// Auftrag -> Kundenpflege (v194, R3): dauerhafte Geschaeftsbeziehung. Der
+// Auftrag wird fertig abgelegt wie beim Abschliessen; das Book bleibt in
+// "Kundenaufträge" (Klaerung e). Bei Status "abgebrochen" NICHT - ein
+// gescheiterter Vertrag ist keine Geschaeftsbeziehung (Entscheidung 2). Die
+// Sperre sitzt hier, nicht nur am Knopf (Codex).
+function auftragKundenpflege(m, jetzt) {
+  if (!m || !m.kundenauftrag || m.kundenauftrag.status === "abgebrochen") return false;
+  ruecknahmeEntwerten(m);
+  const heute = deDatum(isoInTagen(0));
+  const kennung = m.kundenauftrag.kennung;
+  auftragAblegen(m, "kundenpflege", heute);
+  m.kundenpflege = { seit: heute, kennung, geaendert: jetzt || lokalIso(),
+    checkliste: KUNDENPFLEGE_PUNKTE.map((text) => ({ text, datum: "", erledigt: false })) };
+  delete m.kundenauftrag;
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "kundenpflege", kennung, datum: heute });
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+
+// "Auftrag fortsetzen" aus Archiv oder Kundenpflege (v194, Entscheidung 5):
+// der letzte Auftrag lebt mit DERSELBEN Kennung wieder auf - Status, Prio und
+// (spaeter) Nutzungsrecht inklusive. mitCheckliste (Tobias, 02.10.): Ja holt
+// die gespeicherte Liste zurueck, Nein startet leer.
+// Der fertige Auftrag BLEIBT in m.auftraege als Stand dieses Abschnitts
+// (Code-Review): an ihm haengt die archivierte Checkliste, die der Verlauf
+// anzeigt - entfernt waere sie bei "Nein" weg und bei "Ja" im Verlauf
+// verschwunden. Laufend ist der Auftrag trotzdem nur einmal; letzterAuftrag()
+// nimmt bei gleicher Kennung immer den juengsten Stand.
+// "Neuer Auftrag" ist kundeAnlegen()/auftragBeginnen(): neue Kennung, leer.
+function auftragFortsetzen(m, mitCheckliste, jetzt) {
+  if (!m || !(m.kundenarchiv || m.kundenpflege)) return false;
+  const letzter = letzterAuftrag(m);
+  if (!letzter) return false;
+  ruecknahmeEntwerten(m);
+  const { ende, ausgang, ...auftrag } = letzter;
+  m.kundenauftrag = { ...auftrag, geaendert: jetzt || lokalIso(),
+    checkliste: mitCheckliste ? checklisteKopie(letzter.checkliste) : [] };
+  const pflege = kundenbereichVerlassen(m);
+  (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
+    .push({ richtung: "fortgesetzt", kennung: letzter.kennung,
+            datum: deDatum(isoInTagen(0)), checkliste: !!mitCheckliste, ...pflege });
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
 }
 
 // Den laufenden Auftrag als fertiges Objekt nach m.auftraege legen (v193).
@@ -4697,9 +4921,8 @@ function letzterAuftrag(m) {
 // null-Zeilen (von Hand bearbeiteter Stand) fallen raus statt zu werfen.
 function auftragAblegen(m, ausgang, heute) {
   const ka = m.kundenauftrag;
-  const checkliste = (ka.checkliste || []).filter(Boolean).map(
-    (z) => ({ text: z.text || "", datum: z.datum || "", erledigt: !!z.erledigt }));
-  (m.auftraege = m.auftraege || []).push({ ...ka, checkliste, ende: heute, ausgang });
+  (m.auftraege = m.auftraege || [])
+    .push({ ...ka, checkliste: checklisteKopie(ka.checkliste), ende: heute, ausgang });
 }
 
 // Der fertige Auftrag zu einem Verlaufseintrag (Abschluss oder Rueckweg).
@@ -6437,16 +6660,19 @@ function renderUgc() {
       "(organisch / paid ad) je Marke."));
   c.append(rechte);
 
-  // Platzhalter Kundenpflege (Tobias, 01.10.; bis v189 "Dauerkunden"): dritter Ausgang eines
-  // Kundenauftrags - Kunde will eine dauerhafte Geschaeftsbeziehung. Wie die
-  // Nutzungsrechte: kein Knopf, keine Zahl, bis es eine Datenquelle gibt.
-  const bestand = el("div", "karte block zugang platzhalter");
+  // Kundenpflege (v194, R3; bis v193 Platzhalter, bis v189 "Dauerkunden"):
+  // dritter Ausgang eines Kundenauftrags - dauerhafte Geschaeftsbeziehung.
+  const pAnzahl = kundenpflegeAktuell().length;
+  const bestand = el("div", "karte block zugang");
   const bKopf = el("div", "kopf");
-  bKopf.append(el("span", "pill", "Geplant"));
+  bKopf.append(el("span", "pill", "Pflege"),
+               el("span", "badge" + (pAnzahl ? " voll" : ""), String(pAnzahl)));
   bestand.append(bKopf, el("div", "titel", "Kundenpflege"),
-    el("div", "kontext",
-      "Noch keine Datenquelle — später Kunden mit dauerhafter " +
-      "Geschäftsbeziehung nach einem Auftrag."));
+    el("div", "kontext", pAnzahl
+      ? `${pAnzahl} Kunde${pAnzahl === 1 ? "" : "n"} in der Pflege`
+      : "Noch keine — Marken kommen über „★ → Kundenpflege“ aus einem " +
+        "Kundenauftrag hierher."));
+  bestand.onclick = () => { location.hash = "#/kundenpflege"; };
   c.append(bestand);
 
   if (!z.marken.length) {
@@ -6566,7 +6792,7 @@ function renderFehler() {
 // Genau so ist der Fehler vom 18.09. entstanden. test_invarianten vergleicht
 // diese Liste mit den Routen in render(); eine vergessene Ansicht macht den
 // Test rot, statt sich erst beim Tippen zu zeigen.
-const UGC_UNTER = ["#/pitchliste", "#/brandrating", "#/kundenauftraege"];
+const UGC_UNTER = ["#/pitchliste", "#/brandrating", "#/kundenauftraege", "#/kundenpflege"];
 
 function render() {
   sheetEntfernen(); // beim Ansichtswechsel darf kein Sheet haengenbleiben
@@ -6589,6 +6815,8 @@ function render() {
     renderPitchliste();
   } else if (h === "#/kundenauftraege") {
     renderKundenauftraege();
+  } else if (h === "#/kundenpflege") {
+    renderKundenpflege();
   } else if (h === "#/brandrating") {
     renderBrandrating();
   } else if (h === "#/buecher") {
@@ -7336,7 +7564,7 @@ function naechsterCheckpunkt(ka) {
 //      eine neue (Tobias, 25.09.).
 function verschiebenErlaubt(m) {
   // v193: auch aus dem Archiv nicht - von dort geht es ueber "Neuer Auftrag"
-  // (R3) oder zurueck in die Pitchliste, nicht ueber eine alte Zusage.
+  // / "Auftrag fortsetzen" oder zurueck in die Pitchliste, nicht ueber eine alte Zusage.
   if (!m || !m.pitchliste || imKundenbereich(m)) return false;
   if (zusageDatum(m.events) === null) return false;
   return !zusageVerbraucht(m);
@@ -7351,18 +7579,17 @@ function verschiebenErlaubt(m) {
 // Kennung und zaehlen als 1 - sonst bekaeme der naechste Auftrag einer
 // Marke mit Vorgeschichte noch einmal die 1.
 // Neuer laufender Auftrag + Verlaufseintrag - EIN Weg fuer "aus der
-// Pitchliste", "＋ Kunde" und (Release 3) "Neuer Auftrag".
+// Pitchliste", "＋ Kunde" und "Neuer Auftrag" aus Archiv/Kundenpflege.
 function auftragBeginnen(m, jetzt) {
   const heute = deDatum(isoInTagen(0));
   const kennung = auftragKennungNeu(m);
   // Hoechstens EIN Zweig (v193): ein neuer Auftrag holt die Marke aus Archiv
   // bzw. Kundenpflege. Ihr Book zieht der Aufrufer mit bookUmziehen() nach.
-  delete m.kundenarchiv;
-  delete m.kundenpflege;
+  const pflege = kundenbereichVerlassen(m);
   m.kundenauftrag = { kennung, seit: heute, prio: null, checkliste: [],
                       geaendert: jetzt };
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
-    .push({ richtung: "hinein", kennung, datum: heute });
+    .push({ richtung: "hinein", kennung, datum: heute, ...pflege });
 }
 // Status eines laufenden Auftrags (v192, Release 2a). null = "offen" - ein
 // neuer Auftrag startet ohne Wahl (Entscheidung 3). Nochmal auf denselben
@@ -7404,16 +7631,21 @@ function auftragsverlaufGruppen(hist) {
   }
   return gruppen;
 }
-// Punktfarbe wie in der Historie: gruen = in den Auftrag, gelb = Wechsel
-// (wie Rating-Wechsel), blau = zurueck in die Pitchliste, grau = Ende/sonst.
+// Punktfarbe wie in der Historie: gruen = in den Auftrag / fortgesetzt /
+// Kundenpflege, gelb = Wechsel (wie Rating-Wechsel), blau = zurueck in die
+// Pitchliste, grau = Ende/sonst.
 function verlaufPunkt(h) {
-  return { hinein: "punkt-positiv", status: "punkt-rating",
+  return { hinein: "punkt-positiv", fortgesetzt: "punkt-positiv",
+           kundenpflege: "punkt-eigen", status: "punkt-rating",
            zurueck: "punkt-pitch" }[h.richtung] || "punkt-antwort";
 }
 function verlaufText(h) {
   const was = h.richtung === "hinein" ? "in den Auftrag"
     : h.richtung === "beendet" ? "Auftrag beendet"
     : h.richtung === "abgeschlossen" ? "Auftrag abgeschlossen → Archiv"
+    : h.richtung === "kundenpflege" ? "Auftrag beendet → Kundenpflege"
+    : h.richtung === "fortgesetzt"
+      ? "Auftrag fortgesetzt" + (h.checkliste ? " (Checkliste wiederhergestellt)" : "")
     : h.richtung === "zurueck" ? "zurück in die Pitchliste"
     : h.richtung === "status"
       ? `Status: ${auftragStatusText(h.von)} → ${auftragStatusText(h.nach)}`
@@ -8140,7 +8372,7 @@ function bookOrdner(m) {
     (m.brandrating ? String(m.brandrating.rating).trim() : "");
 }
 
-// Steht die Marke im Kundenbereich (Auftrag, Archiv, ab R3 Kundenpflege)?
+// Steht die Marke im Kundenbereich (Auftrag, Archiv, Kundenpflege)?
 // EIN Praedikat fuer alles, was dort gesperrt ist: Pitchliste, Antworten,
 // Verschieben, Rating (v193). Hoechstens einer der drei Zweige existiert.
 function imKundenbereich(m) {
