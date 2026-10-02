@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v194"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v195"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2177,10 +2177,20 @@ function monate() {
   return snap.zeitraeume.slice(1);
 }
 
+// Ohne Kundenbereich (v195, Tobias 02.10.): Marken in Auftrag, Archiv oder
+// Kundenpflege haben oben eigene Kacheln - hier waeren sie doppelt. Und seit
+// die Books mitwandern (v193) entstuenden sonst eigene Gruppen
+// "Kundenaufträge" und "Kundenaufträge/Archiv". Beides wird ausgeblendet,
+// die Kennzahlen-Kacheln zaehlen weiter ueber alle Marken.
+// Die Liste wird HIER gerechnet, nicht als Konstante oben: BOOK_ORDNER steht
+// weiter unten in der Datei und waere beim Laden noch nicht da (Absturz).
 function gruppenMap(z) {
   const map = new Map();
+  const kundenGruppen = BOOK_ORDNER.filter((o) => !istRatingOrdner(o)).map(bookOrdnerName);
   for (const m of z.marken) {
     const g = m.gruppe || "Sonstige";
+    if (kundenGruppen.includes(g) ||
+        imKundenbereich(datenstand && markeZuName(m.name))) continue;
     if (!map.has(g)) map.set(g, []);
     map.get(g).push(m);
   }
