@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v195"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v196"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -709,6 +709,9 @@ function erklaerungenAnsEnde(wurzel) {
 // Welcher Abschnitt in welchen Reiter gehoert (Tobias 03.09. abends,
 // nach dem Handy-Test: Aufklappen war ihm zu unruhig). Was hier fehlt,
 // bekommt einen eigenen Reiter unter seinem eigenen Namen.
+// Reihenfolge der Reiter in den Marken-Sheets (v196): Brand Rating, Pitchliste
+// und Kundenbereich zeigen davon jeweils nur, was sie haben - aber immer so.
+const REITER_REIHENFOLGE = ["Aktion", "Rating", "Kontakt", "Historie", "Sonstiges", "Verwaltung"];
 const REITER = {
   "Wiedervorlage": "Aktion",
   "Startdatum": "Aktion",
@@ -808,7 +811,13 @@ function zuReitern(wrap, merker) {
   wrap.append(...kopf);              // die Referenzen oben bleiben gueltig
   const leiste = el("div", "chips reiter");
   const buehne = el("div", "buehne");
-  const namen = [...gruppen.keys()];
+  // Feste Reihenfolge in ALLEN Marken-Sheets (v196, Tobias: "ich mag's
+  // ordentlich"). Bis dahin galt die Reihenfolge der Abschnitte im Sheet -
+  // im Pitch-Sheet rutschte "Historie" vor "Kontakt", sobald die Marke einen
+  // Auftragsverlauf hatte. Namen ausserhalb der Liste (Einstellungen) behalten
+  // ihre Reihenfolge und kommen danach.
+  const rang = (n) => { const i = REITER_REIHENFOLGE.indexOf(n); return i < 0 ? 99 : i; };
+  const namen = [...gruppen.keys()].sort((a, b) => rang(a) - rang(b));
   let aktiv = null;
   const einsetzen = (name) => {
     aktiv = name;
