@@ -566,7 +566,7 @@ function bestandWarnung() {
 // Kundenauftrag an einer Marke, die NUR im Brand Rating steht (v188, Tobias
 // 30.09.). "+ Kunde" ist fuer neue Namen gedacht; hat Andrea doch eine
 // Brand-Rating-Marke erwischt, bleibt diese Karte stehen, bis sie den
-// Auftrag beendet - ohne Pitchzeile gibt es keinen Rueckweg. Abgeleitet,
+// Auftrag abschliesst (-> Archiv) - ohne Pitchzeile gibt es keinen Rueckweg. Abgeleitet,
 // kein Merker: ueber "in Kundenauftraege verschieben" kommt nur, wer eine
 // Pitchzeile hat, der Fall entsteht also nur ueber "+ Kunde".
 // Folgeauftraege an Pitchlisten-Marken sind gewollt und warnen NICHT.
@@ -582,7 +582,7 @@ function auftragWarnung() {
   kopf.append(el("span", "pill", "\u26a0 Achtung"));
   k.append(kopf, el("div", "titel", "Kundenauftrag an einer Brand-Rating-Marke"),
     el("div", "kontext", liste.map((m) => m.name).join(", ") +
-      " \u2014 steht auch im Brand Rating. Zum Beenden des Auftrags hier tippen."));
+      " \u2014 steht auch im Brand Rating. Zum Abschließen des Auftrags hier tippen."));
   k.onclick = () => auftragOeffnen(liste[0].name);
   return k;
 }
@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v192"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v193"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -718,6 +718,7 @@ const REITER = {
   // anordnen, und genau das wollte Andrea am 20.09.
   "In Kundenaufträge": "Aktion",
   "Kundenauftrag": "Aktion",
+  "Archiv": "Aktion",          // v193: Marke im Archiv der Kundenauftraege
   // Bereichswechsel, keine Kontaktereignisse - steht trotzdem bei der
   // Historie, weil es dort gesucht wird.
   "Verlauf des Auftrags": "Historie",
@@ -1437,6 +1438,16 @@ function sheetEinstellungen(reiter) {
       return [{ text: "Haken setzen",
                 mach: () => { bookErstelltDaten(m, false, lokalIso(), f.ordner); } }];
     }
+    // v193: rechnet frisch in der Schreib-Kette (bookUmziehen), nicht mit dem
+    // Ort von der Anzeige - der kann inzwischen ueberholt sein (Codex).
+    if (f.art === "book-zustand") {
+      return [{ text: "Book verschieben",
+                mach: async () => {
+                  const r = await bookUmziehen(m);
+                  umzugMeldung(r);
+                  return r.erg === "verschoben" || r.erg === "gleich";
+                } }];
+    }
     if (f.art === "book-falscher-ordner" && f.ordner) {
       return [{ text: "Ordner nachtragen",
                 mach: () => { m.bookordner = f.ordner; } }];
@@ -1475,10 +1486,10 @@ function sheetEinstellungen(reiter) {
       const wKnopf = el("button", "chip", "Word: " + a.book);
       const aKnopf = el("button", "chip", "App: " + a.excel);
       reihe.append(el("span", null, a.feld + " "), wKnopf, aKnopf);
-      if (!wordOk || m.kundenauftrag) {
+      if (!wordOk || imKundenbereich(m)) {
         wKnopf.disabled = true;
-        reihe.append(el("span", "kontext", m.kundenauftrag
-          ? " Im Kundenauftrag bleibt der App-Wert" : " Wert im Word unklar"));
+        reihe.append(el("span", "kontext", imKundenbereich(m)
+          ? " Im Kundenbereich bleibt der App-Wert" : " Wert im Word unklar"));
       }
       const setze = (w) => {
         wahl[a.feld] = w;
@@ -2991,13 +3002,15 @@ function sheetPitch(p) {
     // NICHT GEZEIGT, die Daten bleiben; beim Rueckweg ist alles wieder da.
     // Auch KEIN "Naechster Schritt" (Tobias, 17.09.): die Checkliste ist im
     // Auftrag der Terminplan.
-    const imAuftrag = !!(mv && mv.kundenauftrag);
     // Der Kopfzeilen-Knopf entsteht einmal beim Oeffnen; wechselt die Marke
     // bei offenem Sheet in den Auftrag, muss er hier verschwinden.
-    if (stift) stift.style.display = imAuftrag ? "none" : "";
-    if (imAuftrag) {
-      wrap.append(bereichKundenauftrag(), bereichAuftragsverlauf(),
-                  bereichVerwaltung(mv));
+    const kunde = imKundenbereich(mv);
+    if (stift) stift.style.display = kunde ? "none" : "";
+    // EIN Zweig fuer den ganzen Kundenbereich (v193): Auftrag und Archiv
+    // zeichnen sich selbst, der jeweils andere liefert ein leeres Fragment.
+    if (kunde) {
+      wrap.append(bereichKundenauftrag(), bereichArchiv(),
+                  bereichAuftragsverlauf(), bereichVerwaltung(mv));
       return abschluss();
     }
     wrap.append(el("div", "kontext",
@@ -3127,29 +3140,132 @@ function sheetPitch(p) {
     if (!hist.length) return frag;
     // Je Auftrag gruppiert (v192). Die Kennung bleibt intern (Entscheidung
     // 6), sichtbar ist nur "Auftrag 1", "Auftrag 2" ...
+    // Aussehen wie die Historie in Brand Rating und Pitchliste (Tobias,
+    // 02.10.): Tabelle mit Datum links, farbigem Punkt und Text rechts,
+    // Unterueberschrift wie dort "Rating-Wechsel". Kein eigenes CSS.
     for (const [kennung, eintraege] of auftragsverlaufGruppen(hist)) {
-      frag.append(el("div", "abschnitt", "Auftrag " + kennung));
-      for (const h of eintraege) eintrag(h);
+      const tab = el("div", "tabelle");
+      for (const h of eintraege) eintrag(tab, h);
+      frag.append(el("div", "stand", "Auftrag " + kennung), tab);
     }
     return abschnitt("Verlauf des Auftrags", frag);
 
-    function eintrag(h) {
-      frag.append(el("div", "stand", verlaufZeile(h)));
+    function eintrag(tab, h) {
+      const zeile = el("div", "zeile historie");
+      const label = el("span");
+      label.append(el("span", "punkt " + verlaufPunkt(h)),
+                   document.createTextNode(verlaufText(h)));
+      zeile.append(el("span", "num leise datum", h.datum || "—"), label);
+      tab.append(zeile);
       // Archivierte Checkliste: offene Punkte bleiben offen (Codex, 17.09.).
       // Sie stehen hier, damit nachvollziehbar ist, was beim Rueckweg
       // liegengeblieben ist.
-      const a = h.archiv;
+      const a = auftragZuEintrag(m, h);
       if (!a || !(a.checkliste || []).length) return;
       const offen = a.checkliste.filter((z) => !z.erledigt);
-      frag.append(el("div", "leise",
+      tab.append(el("div", "leise",
         `   archiviert: ${a.checkliste.length} Punkt(e), ` +
         `${offen.length} davon offen` +
         (a.prio ? ` · war Prio ${a.prio}` : "")));
       for (const z of offen) {
-        frag.append(el("div", "leise",
+        tab.append(el("div", "leise",
           `   ☐ ${z.text}${z.datum ? " — " + deDatum(z.datum) : ""}`));
       }
     }
+  }
+
+  // Rueckweg in die Pitchliste - aus dem Auftrag UND aus dem Archiv (v193,
+  // vorher Teil von bereichKundenauftrag). offenFn liefert die offenen
+  // Checklisten-Punkte fuer die Rueckfrage (Archiv: keine).
+  // Liefert [Knopfzeile, Formular].
+  function rueckwegBlock(m, offenFn) {
+    // --- Rueckweg. Der Grund ist Pflicht (Workflow): in vier Wochen ist
+    // sonst nicht mehr nachvollziehbar, warum die Marke wieder in der
+    // Kadenz steht. Speichern bleibt inaktiv, solange nichts dasteht.
+    const zKnopf = el("button", "chip", "↩ Zurück in die Pitchliste");
+    const zForm = el("div", "fgruppe");
+    zForm.style.display = "none";
+    const zGrund = el("input", "feld");
+    zGrund.type = "text";
+    zGrund.placeholder = "Warum? (Pflichtangabe)";
+    // Pflicht-Datum (Tobias, 17.09.): ohne gewaehlten Termin war jede
+    // zurueckgeschobene Marke sofort faellig, auch wenn gerade nichts zu tun
+    // war. Sichtbar vorbelegt mit heute - damit ist es kein stiller
+    // Standard mehr, sondern eine Angabe, die Andrea sieht und aendert.
+    const zDatum = el("input", "datum");
+    zDatum.type = "date";
+    zDatum.value = isoInTagen(0);
+    // Dasselbe Muster wie im Termin-Dialog: die Zahl schreibt ins Datumsfeld,
+    // damit es nur EINE Quelle gibt und keine Vorrangregel braucht.
+    const zPlus = el("input", "tage");
+    zPlus.type = "number";
+    zPlus.min = "1";
+    zPlus.inputMode = "numeric";
+    zPlus.placeholder = "z. B. 90";
+    zPlus.oninput = () => {
+      const t = parseInt(zPlus.value, 10);
+      if (t > 0) zDatum.value = isoInTagen(t);
+    };
+    const zOk = el("button", "chip aktiv", "Zurückschieben");
+    zOk.disabled = true;
+    const zPruefen = () => {
+      zOk.disabled = !zGrund.value.trim() || !zDatum.value;
+    };
+    zGrund.oninput = zPruefen;
+    zDatum.onchange = zPruefen;
+    zOk.onclick = () => {
+      const grund = zGrund.value.trim();
+      if (!grund || !zDatum.value) return;
+      // Offene Punkte ausdruecklich nennen (Codex, 17.09.): muessen sie
+      // weiter verfolgt werden, ist der Rueckweg fachlich noch
+      // nicht passend. Andrea soll das sehen, bevor sie bestaetigt.
+      const offen = offenFn();
+      if (!confirm(`„${m.name}“ zurück in die Pitchliste?\n\n` +
+          (offen.length
+            ? `ACHTUNG: ${offen.length} Punkt(e) der Checkliste sind noch ` +
+              `offen:\n` +
+              offen.slice(0, 5).map((z) => "  · " + (z.text || "(ohne Text)"))
+                .join("\n") +
+              (offen.length > 5 ? `\n  · … und ${offen.length - 5} weitere` : "") +
+              "\n\n"
+            : "") +
+          "Die Marke startet wieder bei Pitch, der Follow-up-Zähler wird " +
+          `zurückgesetzt, nächster Pitch am ${deDatum(zDatum.value)}.\n` +
+          (m.kundenauftrag
+            ? "Checkliste und Priorität werden im Verlauf archiviert." : ""))) return;
+      if (!kundenauftragZurueck(m, grund, lokalIso(), zDatum.value)) {
+        banner("Das ging nicht — bitte die Liste einmal neu laden.");
+        return;
+      }
+      banner("Zurück in der Pitchliste.");
+      bookNachziehen(m);      // v193: Book zurueck in den Rating-Ordner
+      bau();
+    };
+    zKnopf.onclick = () => {
+      zForm.style.display = zForm.style.display === "none" ? "" : "none";
+    };
+    const zZeile = el("div", "chips unter-feld");
+    zZeile.append(zOk);
+    zForm.append(el("div", "stand", "Grund für den Rückweg:"), zGrund,
+      el("div", "stand", "Nächster Pitch am:"), zDatum,
+      el("div", "stand", "… oder ab heute in Tagen:"), zPlus,
+      zZeile);
+    const zAussen = el("div", "chips");
+    zAussen.append(zKnopf);
+    return [zAussen, zForm];
+  }
+
+  // Marke im Archiv der Kundenauftraege (v193). Von hier: zurueck in die
+  // Pitchliste. "Neuer Auftrag"/"Auftrag fortsetzen" kommen mit R3.
+  function bereichArchiv() {
+    const frag = document.createDocumentFragment();
+    const m = datenstand ? markeZuName(p.name) : null;
+    if (!m || !m.kundenarchiv) return frag;
+    frag.append(el("div", "stand",
+      `Im Archiv seit ${m.kundenarchiv.seit || "—"} · letzter Auftrag: ` +
+      auftragStatusText((letzterAuftrag(m) || {}).status)));
+    if (m.pitchliste) frag.append(...rueckwegBlock(m, () => []));
+    return abschnitt("Archiv", frag);
   }
 
   // Der Auftrag selbst (Release 6, Schritt 20). Nur sichtbar, wenn die Marke
@@ -3253,104 +3369,31 @@ function sheetPitch(p) {
     plusZeile.append(plus);
     frag.append(plusZeile);
 
-    // --- Rueckweg. Der Grund ist Pflicht (Workflow): in vier Wochen ist
-    // sonst nicht mehr nachvollziehbar, warum die Marke wieder in der
-    // Kadenz steht. Speichern bleibt inaktiv, solange nichts dasteht.
-    const zKnopf = el("button", "chip", "↩ Zurück in die Pitchliste");
-    const zForm = el("div", "fgruppe");
-    zForm.style.display = "none";
-    const zGrund = el("input", "feld");
-    zGrund.type = "text";
-    zGrund.placeholder = "Warum? (Pflichtangabe)";
-    // Pflicht-Datum (Tobias, 17.09.): ohne gewaehlten Termin war jede
-    // zurueckgeschobene Marke sofort faellig, auch wenn gerade nichts zu tun
-    // war. Sichtbar vorbelegt mit heute - damit ist es kein stiller
-    // Standard mehr, sondern eine Angabe, die Andrea sieht und aendert.
-    const zDatum = el("input", "datum");
-    zDatum.type = "date";
-    zDatum.value = isoInTagen(0);
-    // Dasselbe Muster wie im Termin-Dialog: die Zahl schreibt ins Datumsfeld,
-    // damit es nur EINE Quelle gibt und keine Vorrangregel braucht.
-    const zPlus = el("input", "tage");
-    zPlus.type = "number";
-    zPlus.min = "1";
-    zPlus.inputMode = "numeric";
-    zPlus.placeholder = "z. B. 90";
-    zPlus.oninput = () => {
-      const t = parseInt(zPlus.value, 10);
-      if (t > 0) zDatum.value = isoInTagen(t);
-    };
-    const zOk = el("button", "chip aktiv", "Zurückschieben");
-    zOk.disabled = true;
-    const zPruefen = () => {
-      zOk.disabled = !zGrund.value.trim() || !zDatum.value;
-    };
-    zGrund.oninput = zPruefen;
-    zDatum.onchange = zPruefen;
-    zOk.onclick = () => {
-      const grund = zGrund.value.trim();
-      if (!grund || !zDatum.value) return;
-      // Offene Punkte ausdruecklich nennen (Codex, 17.09.): muessen sie
-      // weiter verfolgt werden, ist das Beenden des Auftrags fachlich noch
-      // nicht passend. Andrea soll das sehen, bevor sie bestaetigt.
-      const offen = (ka.checkliste || []).filter((z) => z && !z.erledigt);
-      if (!confirm(`„${m.name}“ zurück in die Pitchliste?\n\n` +
-          (offen.length
-            ? `ACHTUNG: ${offen.length} Punkt(e) der Checkliste sind noch ` +
-              `offen:\n` +
-              offen.slice(0, 5).map((z) => "  · " + (z.text || "(ohne Text)"))
-                .join("\n") +
-              (offen.length > 5 ? `\n  · … und ${offen.length - 5} weitere` : "") +
-              "\n\n"
-            : "") +
-          "Die Marke startet wieder bei Pitch, der Follow-up-Zähler wird " +
-          `zurückgesetzt, nächster Pitch am ${deDatum(zDatum.value)}.\n` +
-          "Checkliste und Priorität werden im Verlauf archiviert.")) return;
-      if (!kundenauftragZurueck(m, grund, lokalIso(), zDatum.value)) {
+    // --- Ausgaenge (v193). Rueckweg nur mit Pitchzeile - ohne sie scheitert
+    // ruecksprungAufPitch() (Hand-Kunde, Entscheidung 10). "Auftrag
+    // abschliessen" gilt fuer ALLE Marken und ersetzt "Auftrag beenden" (v188).
+    const offen = () => (ka.checkliste || []).filter((z) => z && !z.erledigt);
+    if (m.pitchliste) frag.append(...rueckwegBlock(m, offen));
+    const aKnopf = el("button", "chip", "✓ Auftrag abschließen");
+    aKnopf.onclick = () => {
+      const o = offen();
+      if (!confirm(`Auftrag für „${m.name}“ abschließen?\n\n` +
+          (o.length ? `${o.length} Punkt(e) der Checkliste sind noch offen — ` +
+            "sie werden archiviert, nicht erledigt.\n\n" : "") +
+          "Die Marke wandert ins Archiv der Kundenaufträge" +
+          (m.brandrating && m.brandrating.brandbook
+            ? ", ihr Brand-Book nach „Kundenaufträge/Archiv“." : "."))) return;
+      if (!auftragAbschliessen(m)) {
         banner("Das ging nicht — bitte die Liste einmal neu laden.");
         return;
       }
-      banner("Zurück in der Pitchliste.");
+      banner("Auftrag abgeschlossen — steht jetzt im Archiv.");
+      bookNachziehen(m);
       bau();
     };
-    zKnopf.onclick = () => {
-      zForm.style.display = zForm.style.display === "none" ? "" : "none";
-    };
-    const zZeile = el("div", "chips unter-feld");
-    zZeile.append(zOk);
-    zForm.append(el("div", "stand", "Grund für den Rückweg:"), zGrund,
-      el("div", "stand", "Nächster Pitch am:"), zDatum,
-      el("div", "stand", "… oder ab heute in Tagen:"), zPlus,
-      zZeile);
-    const zAussen = el("div", "chips");
-    zAussen.append(zKnopf);
-    // Ohne Pitchzeile (v188) scheitert ruecksprungAufPitch(), Andrea saehe
-    // nur "bitte neu laden". Deshalb:
-    //   * Pitchzeile da          -> Rueckweg wie gehabt
-    //   * nur Brand Rating       -> "Auftrag beenden" (Marke bleibt dort)
-    //   * ganz neuer Kunde       -> nichts; entfernen ueber "Löschen" in der
-    //                               Verwaltung (sonst bliebe eine Marke
-    //                               uebrig, die in keiner Liste steht)
-    if (m.pitchliste) frag.append(zAussen, zForm);
-    else if (m.brandrating) {
-      const bKnopf = el("button", "chip", "\u2715 Auftrag beenden");
-      bKnopf.onclick = () => {
-        const offen = (ka.checkliste || []).filter((z) => z && !z.erledigt);
-        if (!confirm(`Auftrag für „${m.name}“ beenden?\n\n` +
-            (offen.length ? `${offen.length} Punkt(e) der Checkliste sind ` +
-              "noch offen — sie werden archiviert, nicht erledigt.\n\n" : "") +
-            "Die Marke bleibt im Brand Rating.")) return;
-        if (!auftragBeenden(m)) {
-          banner("Das ging nicht — bitte die Liste einmal neu laden.");
-          return;
-        }
-        banner("Auftrag beendet.");
-        bau();
-      };
-      const bZeile = el("div", "chips");
-      bZeile.append(bKnopf);
-      frag.append(bZeile);
-    }
+    const aZeile = el("div", "chips");
+    aZeile.append(aKnopf);
+    frag.append(aZeile);
 
     return abschnitt("Kundenauftrag", frag);
   }
@@ -3447,7 +3490,7 @@ function sheetPitch(p) {
     // im Abschnitt "Kundenauftrag". Vor v147 kam dieser Fall hier nicht
     // an, weil der Knopf hinter dem Kundenauftrag-Zweig der Antwort lag;
     // jetzt entscheidet der Block selbst.
-    if (!m || !m.pitchliste || !q.letzter_kontakt || m.kundenauftrag) {
+    if (!m || !m.pitchliste || !q.letzter_kontakt || imKundenbereich(m)) {
       return null;
     }
     const frag = document.createDocumentFragment();
@@ -3469,6 +3512,7 @@ function sheetPitch(p) {
           return;
         }
         banner("In die Kundenaufträge verschoben.");
+        bookNachziehen(m);      // v193: Book nach "Kundenaufträge"
         bau();
       };
     }
@@ -3981,11 +4025,10 @@ function pitchlisteAktuell() {
   // Marken im Kundenauftrag verschwinden aus der Pitchliste (Release 6).
   // EXAKT dasselbe Muster wie istD: gefiltert wird die ANSICHT, die Daten
   // bleiben unangetastet. Deshalb ist der Rueckweg geschenkt.
-  const imAuftrag = (p) => {
-    const m = datenstand && markeZuName(p.name);
-    return Boolean(m && m.kundenauftrag);
-  };
-  return liste.filter((p) => !istD(p) && !imAuftrag(p));
+  // Seit v193 der ganze Kundenbereich - sonst stuende jede abgeschlossene
+  // Marke wieder in der Pitchliste (wichtigster Test in 2b).
+  const kunde = (p) => imKundenbereich(datenstand && markeZuName(p.name));
+  return liste.filter((p) => !istD(p) && !kunde(p));
 }
 
 // Ampel der Excel-Pitchliste, live gerechnet (Regeln siehe Projektnotiz):
@@ -4036,7 +4079,8 @@ function pitchKarte(p, alsAuftrag) {
       (p.kooperation ? ` · Kooperation: ${p.kooperation}` : "");
   // Ohne offenen Punkt mit Datum ist nichts mehr zu tun - das sagt die Karte
   // ausdruecklich, statt "kein Termin eingetragen" zu behaupten (Tobias).
-  const fuss = alsAuftrag && !datum
+  const fuss = p.fuss ? p.fuss              // v193: Archivkarte
+    : alsAuftrag && !datum
     ? "Alle Punkte erledigt"
     : (datum ? `${datum} — ${p.text}` : p.text);
   karte.append(kopf, el("div", "titel", p.name),
@@ -4403,11 +4447,27 @@ function kundenauftraegeAktuell() {
     });
 }
 
+// Archiv der Kundenauftraege (v193), gleiche Kartenform wie die Auftraege.
+// Status und Prio kommen vom fertigen Auftrag (letzterAuftrag), der Fuss
+// sagt, seit wann die Marke im Archiv steht.
+function archivAktuell() {
+  return (datenstand ? datenstand.marken || [] : [])
+    .filter((m) => m.kundenarchiv)
+    .map((m) => {
+      const a = letzterAuftrag(m) || {};
+      return { name: m.name, ...m.pitchliste, prio: a.prio == null ? null : a.prio,
+               seit: m.kundenarchiv.seit, status: auftragStatusText(a.status),
+               naechsterTermin: "", naechsterCheckText: "",
+               fuss: "im Archiv seit " + (m.kundenarchiv.seit || "—") };
+    });
+}
+
 // EIGENER Filterzustand, nicht der `pf` der Pitchliste. Genau diese
 // geteilte Variable hat am 17.09. die Auftragsliste zerlegt: ein dort
 // gesetzter Anzeigen-Filter warf hier einen TypeError, ein
 // Faelligkeitsfilter leerte die Liste still.
-const kf = { suche: "", sortierung: "", prio: "", faellig: "", status: "" };
+const kf = { suche: "", sortierung: "", prio: "", faellig: "", status: "",
+             archiv: false };   // v193: Umschalter Aktiv / Archiv
 
 // EIGENE Suche statt pitchPasst() - gefunden beim Audit 17.09., zweifach
 // reproduziert:
@@ -4436,7 +4496,10 @@ function kundenPasst(p, s) {
   // Faelligkeit rechnet auf dem CHECKLISTEN-Termin (p.tage kommt aus
   // ampel(naechsterTermin)). Ohne offenen Termin faellt der Auftrag aus
   // jedem Faelligkeitsfilter - dort ist nichts zu tun.
-  if (kf.faellig !== "" && (p.tage === null || p.tage > kf.faellig)) {
+  // Im Archiv gibt es keine Termine - ein Faelligkeitsfilter aus "Aktiv"
+  // leerte sonst die ganze Archiv-Ansicht (Code-Review 02.10.). Die Gruppe
+  // wird dort auch nicht angeboten.
+  if (kf.faellig !== "" && !kf.archiv && (p.tage === null || p.tage > kf.faellig)) {
     return false;
   }
   if (!s) return true;
@@ -4479,7 +4542,21 @@ function renderKundenauftraege() {
   const heute = heuteNull();
   // Die Ampel rechnet auf dem Checklisten-Termin, nicht auf der Kadenz -
   // die liegt im Auftrag still.
-  const alle = kundenauftraegeAktuell()
+  // Umschalter Aktiv / Archiv (v193, Entscheidung 9). Nur sichtbar, wenn es
+  // ein Archiv gibt; ist es leer geworden, zurueck auf Aktiv.
+  const archiv = archivAktuell(), laufend = kundenauftraegeAktuell();
+  if (!archiv.length) kf.archiv = false;
+  else {
+    const u = el("div", "chips");
+    for (const [wert, text] of [[false, "Aktiv (" + laufend.length + ")"],
+                                [true, "Archiv (" + archiv.length + ")"]]) {
+      const k = el("button", kf.archiv === wert ? "chip aktiv" : "chip", text);
+      k.onclick = () => { kf.archiv = wert; renderKundenauftraege(); };
+      u.append(k);
+    }
+    c.append(u);
+  }
+  const alle = (kf.archiv ? archiv : laufend)
     .map((p) => ({ ...p, ...ampel(p.naechsterTermin || "", heute) }));
   // "+ Kunde" (v188, Backlog 54) - auch bei leerer Liste, sonst kaeme man
   // an den ersten von Hand angelegten Auftrag gar nicht heran.
@@ -4512,7 +4589,7 @@ function renderKundenauftraege() {
       () => kf.prio, (x) => { kf.prio = x; }, zeichnen));
     w.append(filterGruppe("Status", [["offen", "offen"], ...AUFTRAG_STATUS],
       () => kf.status, (x) => { kf.status = x; }, zeichnen));
-    w.append(filterGruppe("Nächster Termin",
+    if (!kf.archiv) w.append(filterGruppe("Nächster Termin",
       [[0, "fällig"], [7, "≤ 7 Tage"], [14, "≤ 14 Tage"]],
       () => kf.faellig, (x) => { kf.faellig = x; }, zeichnen));
     sheetOeffnen("Filter", w);
@@ -4527,7 +4604,7 @@ function renderKundenauftraege() {
   zeichnen();
 
   function zeichnen() {
-    const aktiv = [kf.prio, kf.status, kf.faellig].filter(gesetzt).length;
+    const aktiv = [kf.prio, kf.status, kf.archiv ? "" : kf.faellig].filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (aktiv ? ` · ${aktiv} aktiv` : "");
     filterBtn.classList.toggle("aktiv", aktiv > 0);
     sortBtn.textContent = "⇅ " + sortLabel(SORT_KUNDEN, kf.sortierung);
@@ -4581,29 +4658,55 @@ function kundeAnlegen(name, jetzt) {
   return m;
 }
 
-// Auftrag beenden OHNE Rueckweg (v188) - nur fuer Marken, die im Brand
-// Rating stehen, aber keine Pitchzeile haben (siehe auftragWarnung()).
-// Archiv wie in kundenauftragZurueck() - aendert sich dort die Form, hier
-// mitziehen. Eigene Richtung "beendet" statt "zurueck": zusageVerbraucht()
-// liest nur "zurueck", eine Zusage wird hier also nicht verbraucht.
-function auftragBeenden(m, jetzt) {
-  if (!m || !m.kundenauftrag || m.pitchliste || !m.brandrating) return false;
+// Auftrag abschliessen -> Archiv (v193, ersetzt "Auftrag beenden" aus v188).
+// Gilt fuer ALLE Marken, auch ohne Pitchzeile (Hand-Kunde, Brand-Rating-
+// Marke). Der fertige Auftrag wird ein vollstaendiges Objekt in m.auftraege
+// (Codex): das Nutzungsrecht haengt spaeter an genau diesem Auftrag und
+// laeuft oft Monate weiter. Die Marke steht danach in m.kundenarchiv.
+// Eigene Richtung "abgeschlossen": zusageVerbraucht() liest nur "zurueck".
+// Das Book zieht der Knopf danach mit bookUmziehen() nach.
+function auftragAbschliessen(m, jetzt) {
+  if (!m || !m.kundenauftrag) return false;
   ruecknahmeEntwerten(m);
-  const ka = m.kundenauftrag;
-  const archiv = {
-    seit: ka.seit || "",
-    prio: ka.prio == null ? null : ka.prio,
-    checkliste: (ka.checkliste || []).filter(Boolean).map(   // Codex R2: null-Zeile
-      (z) => ({ text: z.text || "", datum: z.datum || "",
-                erledigt: !!z.erledigt })),
-  };
+  const heute = deDatum(isoInTagen(0));
+  const kennung = m.kundenauftrag.kennung;
+  auftragAblegen(m, "abgeschlossen", heute);
+  m.kundenarchiv = { seit: heute, kennung };
   delete m.kundenauftrag;
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
-    .push({ richtung: "beendet", kennung: ka.kennung, datum: deDatum(isoInTagen(0)),
-            geaendert: jetzt || lokalIso(), archiv });
+    .push({ richtung: "abgeschlossen", kennung, datum: heute,
+            geaendert: jetzt || lokalIso() });
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
+}
+
+// Der fertige Auftrag, zu dem das Archiv gehoert (gleiche Kennung).
+function letzterAuftrag(m) {
+  const k = m.kundenarchiv && m.kundenarchiv.kennung;
+  return (m.auftraege || []).filter((a) => a && a.kennung === k).pop() || null;
+}
+
+// Den laufenden Auftrag als fertiges Objekt nach m.auftraege legen (v193).
+// EINE Stelle fuer Abschliessen und Rueckweg. Die Checkliste wird
+// ARCHIVIERT, nicht weggeworfen (Codex, 17.09.): offene Punkte bleiben darin
+// ausdruecklich offen. Sie steht NUR hier, nicht zusaetzlich im Verlauf
+// (Tobias, 02.10.: "gilt immer nur fuer den aktuellen Auftrag") - der
+// Verlauf liest sie zum Anzeigen hier nach (auftragZuEintrag). "Auftrag
+// fortsetzen" (R3) fragt, ob sie wiederhergestellt werden soll.
+// null-Zeilen (von Hand bearbeiteter Stand) fallen raus statt zu werfen.
+function auftragAblegen(m, ausgang, heute) {
+  const ka = m.kundenauftrag;
+  const checkliste = (ka.checkliste || []).filter(Boolean).map(
+    (z) => ({ text: z.text || "", datum: z.datum || "", erledigt: !!z.erledigt }));
+  (m.auftraege = m.auftraege || []).push({ ...ka, checkliste, ende: heute, ausgang });
+}
+
+// Der fertige Auftrag zu einem Verlaufseintrag (Abschluss oder Rueckweg).
+// Eintraege von vor v193 tragen ihre Checkliste noch selbst (h.archiv).
+function auftragZuEintrag(m, h) {
+  return h.archiv || (m.auftraege || []).find((a) => a && a.kennung === h.kennung &&
+    a.ausgang === h.richtung && a.ende === h.datum) || null;
 }
 
 // Detailansicht eines Auftrags oeffnen - mit denselben Zusatzfeldern wie
@@ -4638,9 +4741,12 @@ function sheetNeuerKunde() {
     if (vorh && vorh.brandrating && !vorh.pitchliste && !vorh.kundenauftrag &&
         !confirm(`„${vorh.name}“ steht schon im Brand Rating.\n\n` +
           "„＋ Kunde“ ist für neue Kunden gedacht. Trotzdem anlegen? Dann " +
-          "bleibt eine Achtung-Karte stehen, bis du den Auftrag beendest.")) return;
+          "bleibt eine Achtung-Karte stehen, bis du den Auftrag abschließt.")) return;
     const m = kundeAnlegen(name.value);
     if (typeof m === "string") { banner(m); return; }
+    // Vorhandene Marke mit Book (auch aus dem Archiv = neuer Auftrag, v193):
+    // das Book wandert mit. Hand-Kunde ohne Book: still.
+    bookNachziehen(m);
     // Ueber sheetEbene statt direkt oeffnen: so ersetzt die Detailansicht
     // dieses Sheet, statt eine zweite Zurueck-Stufe anzuhaengen.
     sheetEbene = () => auftragOeffnen(m.name);
@@ -4773,7 +4879,7 @@ async function abgleichAnwenden(m, wahl, gezeigt) {
   // Im Kundenauftrag bleibt das Rating (v192): "Word gilt" waere eine
   // Aenderung. ratingSetzen() sperrt auch - hier aber VOR der D-Rueckfrage
   // und mit eigener Meldung statt "läuft schon".
-  if (wordDabei && m.kundenauftrag) return "gesperrt";
+  if (wordDabei && imKundenbereich(m)) return "gesperrt";
   // 2. D-Rueckfrage wie im Formular - VOR jeder Aenderung.
   if (werte.rating === "D" && String(br.rating || "").trim() !== "D" &&
       !confirm(`„${m.name}“ auf D setzen?
@@ -5190,13 +5296,14 @@ function ratingWechselEintragen(m, alt, neu, datum) {
 // der "Besser im Glas"-Schaden (06.09.) ueber zwei Wege statt zwei Klicks.
 const ratingLaeuft = new Set();
 async function ratingSetzen(m, werte) {
-  // Im Kundenauftrag ändert sich das Rating nicht (v192, Backlog 58 b). Die
-  // Knöpfe sind dort ausgeblendet - das hier ist das Netz für jeden Weg,
-  // der trotzdem ankommt (offenes Sheet, Brand-Rating-Sheet, Daten prüfen).
+  // Im Kundenbereich ändert sich das Rating nicht (v192, Backlog 58 b; seit
+  // v193 auch im Archiv, Tobias 02.10.). Die Knöpfe sind dort ausgeblendet -
+  // das hier ist das Netz für jeden Weg, der trotzdem ankommt (offenes
+  // Sheet, Brand-Rating-Sheet, Daten prüfen).
   // null wie "läuft schon": beide Aufrufer brechen dann ab, ohne zu
   // speichern oder ins Word zu schreiben - der Banner steht schon.
-  if (m.kundenauftrag) {
-    banner("Im Kundenauftrag ändert sich das Rating nicht.");
+  if (imKundenbereich(m)) {
+    banner("Im Kundenbereich ändert sich das Rating nicht.");
     return null;
   }
   const k = schluessel(m.name);
@@ -5225,19 +5332,17 @@ async function ratingSetzen(m, werte) {
     // Liegt das Book in einem Kundenauftrags-Ordner (v191), sagt sein Ort
     // nichts ueber das Rating - es bleibt, wo es ist. Sonst zoege ein
     // Rating-Wechsel es lautlos aus dem Auftrag heraus (Code-Review 01.10.).
-    const alt = m.bookordner || altRating;
-    if (gewechselt && br.brandbook && istRatingOrdner(alt)) {
-      const ziel = br.rating;
-      const erg = await bookVerschieben(m, alt, ziel);
-      m.bookordner = erg === "verschoben" ? ziel : alt;
-      if (erg === "verschoben")
-        banner(`Book nach „${ziel} Brands“ verschoben.`);
-      else if (erg === "nicht gefunden")
-        banner(`Book nicht in „${bookOrdnerName(alt)}“ gefunden — bitte von Hand ` +
-               `nach „${ziel} Brands“ schieben.`);
-      else if (erg !== "gleich")
-        banner("Book konnte nicht verschoben werden — es bleibt in " +
-               `„${bookOrdnerName(alt)}“.`);
+    // Seit v193 ueber bookUmziehen() in der Schreib-Kette (Codex, 02.10.):
+    // das Ziel bestimmt das Kettenglied frisch (bookSollOrdner = neues
+    // Rating, im Kundenbereich ist das Rating ohnehin gesperrt). Deshalb
+    // auch dann einreihen, wenn bookordner noch auf einem Auftrags-Ordner
+    // steht - laeuft gerade der Rueckweg-Umzug, kaeme das Book sonst im
+    // Ordner des ALTEN Ratings an (Codex, Runde 2).
+    // bookordner nur nachtragen, wenn er fehlt (Andreas gewachsene Books):
+    // ohne ihn rechnete bookOrdner() schon mit dem neuen Rating.
+    if (gewechselt && br.brandbook) {
+      if (!m.bookordner) m.bookordner = altRating;
+      umzugMeldung(await bookUmziehen(m));
     }
     return gewechselt;
   } finally {
@@ -5772,7 +5877,7 @@ function sheetBrandrating(m) {
   const wrap = el("div");
   const z = { modus: null };
   // Im Kundenauftrag kein Rating-Knopf (v192), ratingSetzen() sperrt ohnehin.
-  const stift = datenstand && !m.kundenauftrag
+  const stift = datenstand && !imKundenbereich(m)
     ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
   bau();
   sheetOeffnen(m.name, wrap, stift);
@@ -6305,12 +6410,14 @@ function renderUgc() {
   // eine 0 waere eine Behauptung.
   const kunden = el("div", "karte block zugang");
   const kAnzahl = kundenauftraegeAktuell().length;
+  const kArchiv = (datenstand ? datenstand.marken || [] : [])
+    .filter((m) => m.kundenarchiv).length;   // v193, Entscheidung 9
   const kKopf = el("div", "kopf");
   kKopf.append(el("span", "pill", "Aufträge"),
                el("span", "badge" + (kAnzahl ? " voll" : ""), String(kAnzahl)));
   kunden.append(kKopf, el("div", "titel", "Kundenaufträge"),
-    el("div", "kontext", kAnzahl
-      ? `${kAnzahl} Marke${kAnzahl === 1 ? "" : "n"} im Auftrag`
+    el("div", "kontext", kAnzahl || kArchiv
+      ? `${kAnzahl} aktiv · ${kArchiv} Archiv`
       : "Noch keine — Marken kommen über „in Kundenaufträge verschieben“ " +
         "aus der Pitchliste hierher."));
   kunden.onclick = () => { location.hash = "#/kundenauftraege"; };
@@ -7067,7 +7174,7 @@ function antwortEintragen(m, datumIso, positiv, bemerkung, jetzt) {
   // und Zaehler zurueck, waehrend m.kundenauftrag stehen bliebe. Die Marke
   // waere dann in der Pitchliste unsichtbar und liefe dort trotzdem eine
   // Kadenz - nachgemessen am 17.09., genau so eingetreten.
-  if (m.kundenauftrag) return false;
+  if (imKundenbereich(m)) return false;   // v193: auch im Archiv
   // Ohne Datum wird NICHTS geschrieben (Pruefkriterien Fall 12). Der Guard
   // steht hier und nicht nur im Knopf: was allein im Klick-Handler haengt,
   // ist nicht pruefbar und faellt beim naechsten Umbau still weg.
@@ -7228,7 +7335,9 @@ function naechsterCheckpunkt(ka) {
 //   3. Die Zusage ist nicht VERBRAUCHT - nach einem Rueckweg braucht es
 //      eine neue (Tobias, 25.09.).
 function verschiebenErlaubt(m) {
-  if (!m || !m.pitchliste || m.kundenauftrag) return false;
+  // v193: auch aus dem Archiv nicht - von dort geht es ueber "Neuer Auftrag"
+  // (R3) oder zurueck in die Pitchliste, nicht ueber eine alte Zusage.
+  if (!m || !m.pitchliste || imKundenbereich(m)) return false;
   if (zusageDatum(m.events) === null) return false;
   return !zusageVerbraucht(m);
 }
@@ -7246,6 +7355,10 @@ function verschiebenErlaubt(m) {
 function auftragBeginnen(m, jetzt) {
   const heute = deDatum(isoInTagen(0));
   const kennung = auftragKennungNeu(m);
+  // Hoechstens EIN Zweig (v193): ein neuer Auftrag holt die Marke aus Archiv
+  // bzw. Kundenpflege. Ihr Book zieht der Aufrufer mit bookUmziehen() nach.
+  delete m.kundenarchiv;
+  delete m.kundenpflege;
   m.kundenauftrag = { kennung, seit: heute, prio: null, checkliste: [],
                       geaendert: jetzt };
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
@@ -7291,15 +7404,22 @@ function auftragsverlaufGruppen(hist) {
   }
   return gruppen;
 }
-function verlaufZeile(h) {
+// Punktfarbe wie in der Historie: gruen = in den Auftrag, gelb = Wechsel
+// (wie Rating-Wechsel), blau = zurueck in die Pitchliste, grau = Ende/sonst.
+function verlaufPunkt(h) {
+  return { hinein: "punkt-positiv", status: "punkt-rating",
+           zurueck: "punkt-pitch" }[h.richtung] || "punkt-antwort";
+}
+function verlaufText(h) {
   const was = h.richtung === "hinein" ? "in den Auftrag"
     : h.richtung === "beendet" ? "Auftrag beendet"
+    : h.richtung === "abgeschlossen" ? "Auftrag abgeschlossen → Archiv"
     : h.richtung === "zurueck" ? "zurück in die Pitchliste"
     : h.richtung === "status"
       ? `Status: ${auftragStatusText(h.von)} → ${auftragStatusText(h.nach)}`
     // Unbekannt (neuere App, von Hand bearbeitet): neutral, nicht raten.
     : "Eintrag" + (h.richtung ? ` „${h.richtung}“` : "");
-  return `${h.datum || "—"} · ${was}` +
+  return was +
     (h.grund ? ` — ${h.grund}` : "") +
     (h.naechsterPitch ? ` · nächster Pitch am ${deDatum(h.naechsterPitch)}` : "");
 }
@@ -7334,8 +7454,10 @@ function kundenauftragVerschieben(m, jetzt) {
 // `datumIso` ist PFLICHT (Tobias, 17.09.): ohne gewaehlten Termin war jede
 // zurueckgeschobene Marke sofort faellig, auch wenn gerade nichts zu tun war.
 // Der Grund ist es ohnehin schon.
+// Seit v193 auch aus dem ARCHIV (m.kundenarchiv) - derselbe Weg, dieselbe
+// Pflicht fuer Grund und Datum. Das Book zieht der Knopf danach nach.
 function kundenauftragZurueck(m, grund, jetzt, datumIso) {
-  if (!m || !m.kundenauftrag) return false;
+  if (!m || !(m.kundenauftrag || m.kundenarchiv)) return false;
   if (!datumIso) return false;
   // Der Grund ist PFLICHT (Pruefkriterien Fall 31) - und die Pruefung gehoert
   // hierher, nicht nur an den ausgegrauten Speichern-Knopf. Ohne Grund wird
@@ -7359,26 +7481,21 @@ function kundenauftragZurueck(m, grund, jetzt, datumIso) {
   // entfernt - sonst stuende die Marke in keiner der beiden Listen und waere
   // nur noch ueber das Brand Rating erreichbar (Audit 17.09.).
   if (!ruecksprungAufPitch(m, jetzt, datumIso)) return false;
-  // Die Checkliste wird ARCHIVIERT, nicht weggeworfen (Codex, 17.09.):
-  // offene Punkte bleiben darin ausdruecklich offen. Archivieren heisst
-  // nicht erledigen. Ohne das waere jede zugesagte Aufgabe mit einem Klick
-  // spurlos weg - und es gibt dafuer kein Word-Gegenstueck.
-  const kennung = m.kundenauftrag.kennung;
-  const archiv = {
-    seit: m.kundenauftrag.seit || "",
-    prio: m.kundenauftrag.prio == null ? null : m.kundenauftrag.prio,
-    checkliste: (m.kundenauftrag.checkliste || []).filter(Boolean).map(  // wie auftragBeenden (Codex v192)
-      (z) => ({ text: z.text || "", datum: z.datum || "",
-                erledigt: !!z.erledigt })),
-  };
+  // Die Checkliste wird ARCHIVIERT, nicht weggeworfen (auftragAblegen).
+  // Aus dem Archiv gibt es keine laufende Checkliste mehr - die steht schon
+  // beim Abschliessen im Verlauf.
+  const heute = deDatum(isoInTagen(0));
+  const kennung = (m.kundenauftrag || m.kundenarchiv).kennung;
+  if (m.kundenauftrag) auftragAblegen(m, "zurueck", heute);
   delete m.kundenauftrag;
+  delete m.kundenarchiv;
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
     // antwortStand: wie viele Antworten gab es JETZT? Daran erkennt
     // verschiebenErlaubt() spaeter, ob eine neue dazugekommen ist (v167).
     // Ein Datumsvergleich traegt hier nicht - beide Seiten sind tagesgenau.
-    .push({ richtung: "zurueck", kennung, datum: deDatum(isoInTagen(0)),
+    .push({ richtung: "zurueck", kennung, datum: heute,
             grund: text, naechsterPitch: datumIso,
-            antwortStand: antwortStand(m.events), archiv });
+            antwortStand: antwortStand(m.events) });
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
@@ -8023,6 +8140,98 @@ function bookOrdner(m) {
     (m.brandrating ? String(m.brandrating.rating).trim() : "");
 }
 
+// Steht die Marke im Kundenbereich (Auftrag, Archiv, ab R3 Kundenpflege)?
+// EIN Praedikat fuer alles, was dort gesperrt ist: Pitchliste, Antworten,
+// Verschieben, Rating (v193). Hoechstens einer der drei Zweige existiert.
+function imKundenbereich(m) {
+  return !!(m && (m.kundenauftrag || m.kundenarchiv || m.kundenpflege));
+}
+
+// Wohin GEHOERT das Book nach dem Zustand (v193)? NICHT bookOrdner(): das
+// sagt, wo es wirklich liegt (m.bookordner), und wird nie hieraus berechnet.
+function bookSollOrdner(m) {
+  if (m.kundenarchiv) return "Kundenaufträge/Archiv";
+  if (m.kundenauftrag || m.kundenpflege) return "Kundenaufträge";
+  return m.brandrating ? String(m.brandrating.rating).trim() : "";
+}
+
+// DER Weg, ein Book in einen anderen Ordner zu ziehen (v193). Rating-Wechsel,
+// Kundenauftrag und "Daten pruefen" laufen alle hier durch.
+//
+// IN der Schreib-Kette der Marke (bookImFlugKettig), nicht daneben (Codex,
+// 02.10.): ein laufender Word-Eintrag wird erst fertig, jeder spaetere
+// wartet und liest bookPfad() danach mit dem NEUEN Ordner. Bis v192 lief
+// der Rating-Umzug neben der Kette - ein Eintrag konnte am alten Pfad landen.
+// Und es wird NICHTS abgewiesen: zwei Umzuege kurz hintereinander (in den
+// Auftrag, gleich abschliessen) laufen nacheinander, der zweite sieht den
+// neuen Zustand. Eine Sperre, die "laeuft schon" sagt, haette ihn verschluckt.
+//
+// von/nach erst IM Kettenglied bestimmen (Ziel = bookSollOrdner()).
+// Rueckgabe { erg, von, nach }; erg wie bookVerschieben, dazu "ohne" (kein
+// Book) und "gleich". Setzt bookordner, SPEICHERT aber nicht - das tut der
+// Aufrufer, der ohnehin speichert (Formular, Daten pruefen, bookNachziehen).
+// Sonst ginge je Umzug ein zweiter kompletter Datenstand-Upload raus.
+async function bookUmziehen(m) {
+  if (!m.brandrating || !String(m.brandrating.brandbook || "").trim())
+    return { erg: "ohne" };                  // Hand-Kunde: nicht erst warten
+  // ponytail: wartet, bis ein laufender Import durch ist - der liest die
+  // Ordner nacheinander und saehe eine wandernde Datei sonst gar nicht oder
+  // doppelt (Codex). Ein Import, der WAEHREND des PATCH startet, bleibt
+  // moeglich; der naechste Lauf stimmt wieder.
+  // VOR der Kette warten, nicht darin (Code-Review 02.10.): der Import reiht
+  // sich je Marke in DIESELBE Kette ein (importEinBook) - wartete der Umzug
+  // drinnen auf ihn, warteten beide aufeinander, bis zum Neuladen.
+  while (importLaeuft) await new Promise((r) => setTimeout(r, 1000));
+  return bookImFlugKettig(m, async () => {
+    // Frisch aufloesen: der Import ersetzt Marken-Objekte im Datenstand.
+    // Am alten Objekt gesetzt, ginge bookordner beim Speichern verloren -
+    // Datei verschoben, Daten zeigen woanders hin ("Besser im Glas").
+    m = (datenstand && markeZuName(m.name)) || m;
+    if (!m.brandrating || !String(m.brandrating.brandbook || "").trim())
+      return { erg: "ohne" };
+    const von = bookOrdner(m);
+    const nach = bookSollOrdner(m);
+    if (!nach || String(von) === String(nach)) return { erg: "gleich", von, nach };
+    let erg = await bookVerschieben(m, von, nach);
+    // Unklar heisst nicht "liegt noch da" (Codex): ging nur die Antwort
+    // verloren, ist die Datei schon drueben. Einmal nachsehen - auch bei
+    // "nicht gefunden" (jemand hat sie schon von Hand verschoben).
+    // Als verschoben gilt sie nur, wenn sie an der QUELLE nachweislich weg
+    // (404) UND am Ziel da ist. Nur "am Ziel da" reicht nicht: dort kann eine
+    // gleichnamige Kopie liegen, an der der PATCH gerade gescheitert ist -
+    // das Original bliebe zurueck (Codex, Runde 2).
+    if (erg !== "verschoben" && bookNameOk(m.name)) {
+      const q = await OD.graphRoh(bookDateiPfad(von, m.name) + "?$select=id");
+      const z = q && q.status === 404 &&
+        await OD.graphRoh(bookDateiPfad(nach, m.name) + "?$select=id");
+      if (z && z.ok) erg = "verschoben";
+    }
+    if (erg === "verschoben") m.bookordner = nach;
+    return { erg, von, nach };
+  });
+}
+
+// Nach einem Zustandswechsel (Knopf) das Book nachziehen, ohne zu warten:
+// der Zustand ist schon gespeichert, die Datei folgt. Scheitert es, sieht
+// "Daten pruefen" den Unterschied (Befund book-zustand) und bietet ihn an.
+function bookNachziehen(m) {
+  return bookUmziehen(m).then((r) => {
+    if (r.erg === "verschoben") { listeVeraltet = true; datenstandPersistieren(); }
+    umzugMeldung(r);
+  }, () => umzugMeldung({ erg: "fehler", von: bookOrdner(m) }));
+}
+
+// Banner zum Umzug. Still bei "ohne"/"gleich": da ist nichts passiert.
+function umzugMeldung(r) {
+  if (!r || r.erg === "ohne" || r.erg === "gleich") return;
+  banner(r.erg === "verschoben"
+    ? `Book nach „${bookOrdnerName(r.nach)}“ verschoben.`
+    : r.erg === "nicht gefunden"
+    ? `Book nicht in „${bookOrdnerName(r.von)}“ gefunden — „Daten prüfen“ zeigt, wo es liegt.`
+    : `Book konnte nicht verschoben werden — es bleibt in „${bookOrdnerName(r.von)}“. ` +
+      "„Daten prüfen“ bietet es später nochmal an.");
+}
+
 // ENTFALLEN mit v154: der geraetespezifische cTag-Merker (CTAG_KEY,
 // merkerLies/Setz/Loeschen/Sichern, bookMerkerSetzen). Er war die zweite
 // Vergleichsbasis neben dem Import-Merker und die Ursache von B3, B5, B6
@@ -8184,8 +8393,26 @@ function bestandDateiBefunde(marken, dateien) {
     }
 
     if (!ort) continue;                       // keine Datei -> Rest entfaellt
-    const soll = String(bookOrdner(m) || "").trim().toUpperCase();
-    if (!soll || soll === String(ort.ordner).toUpperCase()) continue;
+    const gross = (o) => String(o || "").trim().toUpperCase();
+    const soll = gross(bookOrdner(m));
+    if (!soll) continue;
+    if (soll === gross(ort.ordner)) {
+      // --- v193: Ort stimmt, aber der ZUSTAND verlangt einen anderen Ordner
+      // (Verschieben gescheitert, z. B. offline - oder das eine Auftrags-Book
+      // von vor v193). Nur im Kundenbereich oder wenn die Datei in einem
+      // Auftrags-Ordner liegt: ein normales Book im "falschen" Rating-Ordner
+      // meldet schon der Rating-Abgleich, das hier waere doppelt. Steht
+      // bewusst HINTER dem Vergleich mit bookordner: erst der gespeicherte
+      // Ort richtig, nie beide Befunde fuer dieselbe Marke (Codex).
+      const zustand = bookSollOrdner(m);
+      if (haken && zustand && gross(zustand) !== soll &&
+          (imKundenbereich(m) || !istRatingOrdner(ort.ordner))) {
+        fehler.push({ name: m.name, art: "book-zustand", ordner: ort.ordner,
+          text: "Book liegt in „" + bookOrdnerName(ort.ordner) + "“, "
+                + "gehört nach „" + bookOrdnerName(zustand) + "“" });
+      }
+      continue;
+    }
     fehler.push({ name: m.name, art: "book-falscher-ordner",
       ordner: ort.ordner,
       text: "Datei liegt in \u201e" + bookOrdnerName(ort.ordner) + "\u201c, erwartet "
