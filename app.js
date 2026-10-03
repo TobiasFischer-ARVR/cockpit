@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v197"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v199"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -718,8 +718,11 @@ function erklaerungenAnsEnde(wurzel) {
 // bekommt einen eigenen Reiter unter seinem eigenen Namen.
 // Reihenfolge der Reiter in den Marken-Sheets (v196): Brand Rating, Pitchliste
 // und Kundenbereich zeigen davon jeweils nur, was sie haben - aber immer so.
-const REITER_REIHENFOLGE = ["Aktion", "Rating", "Kontakt", "Historie", "Sonstiges", "Verwaltung"];
+// "Nutzungsrechte" (v199) direkt nach "Aktion" - gibt es nur im Kundenbereich.
+const REITER_REIHENFOLGE = ["Aktion", "Nutzungsrechte", "Rating", "Kontakt",
+                            "Historie", "Sonstiges", "Verwaltung"];
 const REITER = {
+  "Nutzungsrechte": "Nutzungsrechte",   // v199, eigener Reiter
   "Wiedervorlage": "Aktion",
   "Startdatum": "Aktion",
   "Antwort eintragen": "Aktion",
@@ -3038,7 +3041,8 @@ function sheetPitch(p) {
     // Kundenpflege zeichnen sich selbst, die anderen liefern ein leeres Fragment.
     if (kunde) {
       wrap.append(bereichKundenauftrag(), bereichArchiv(), bereichKundenpflege(),
-                  bereichAuftragsverlauf(), bereichVerwaltung(mv));
+                  bereichNutzungsrechte(), bereichAuftragsverlauf(),
+                  bereichVerwaltung(mv));
       return abschluss();
     }
     wrap.append(el("div", "kontext",
@@ -3342,6 +3346,130 @@ function sheetPitch(p) {
       auftragStatusText((letzterAuftrag(m) || {}).status)));
     frag.append(neuerAuftragKnopf(m));
     return abschnitt("Archiv", frag);
+  }
+
+  // Nutzungsrechte (v199, Backlog 59): eigener Reiter im Kundenbereich, in
+  // jedem Zustand (Auftrag, Pflege, ruhend). Oben alle Rechte der Marke,
+  // darunter "＋ Nutzungsrecht erstellen" je Kandidat. Ein Tipp auf ein Recht
+  // klappt das Formular darunter auf. z.nr merkt sich nur die KENNUNG, nie
+  // das Auftragsobjekt (Codex 03.10.) - gespeichert wird ueber nrAuftragZu().
+  function bereichNutzungsrechte() {
+    const frag = document.createDocumentFragment();
+    const m = datenstand ? markeZuName(p.name) : null;
+    if (!m) return frag;
+    const offen = (k, neu) => z.nr && z.nr.kennung === k && z.nr.neu === neu;
+    const mitRecht = nrAuftraege(m).filter((a) => a.nutzungsrecht);
+    const tab = el("div", "tabelle");
+    for (const a of mitRecht) {
+      const k = a.kennung || 1, nr = a.nutzungsrecht, zst = nutzungsrechtZustand(nr);
+      const zeile = el("div", "zeile historie");
+      const label = el("span");
+      label.append(el("span", "punkt " + NR_PUNKT[zst.klasse]), nutzungsrechtName(m, nr));
+      zeile.append(label,
+        el("span", "num leise", deDatum(nr.beginn) + " – " + deDatum(nr.ende)));
+      zeile.onclick = () => { z.nr = offen(k, false) ? null : { kennung: k, neu: false }; bau(); };
+      tab.append(zeile, el("div", "leise", nrArtText(nr) + " · " + zst.text));
+      if (offen(k, false)) tab.append(nrFormular(k, nr));
+    }
+    frag.append(mitRecht.length ? tab : el("div", "stand", "Noch kein Nutzungsrecht."));
+    const kandidaten = nutzungsrechtKandidaten(m);
+    for (const a of kandidaten) {
+      const k = a.kennung || 1;
+      const zusatz = a !== m.kundenauftrag ? ` (Auftrag vom ${a.ende || "—"})`
+        : kandidaten.length > 1 ? " (laufender Auftrag)" : "";
+      const b = el("button", "chip" + (offen(k, true) ? " aktiv" : ""),
+                   "＋ Nutzungsrecht erstellen" + zusatz);
+      b.onclick = () => { z.nr = offen(k, true) ? null : { kennung: k, neu: true }; bau(); };
+      const zeile = el("div", "chips");
+      zeile.append(b);
+      frag.append(zeile);
+      if (offen(k, true)) frag.append(nrFormular(k, null));
+    }
+    return abschnitt("Nutzungsrechte", frag);
+  }
+
+  // Formular fuer ein Recht: neu (nr = null) oder bearbeiten. Die Marke wird
+  // bei jedem Klick FRISCH geholt, nicht beim Zeichnen.
+  function nrFormular(kennung, nr) {
+    const f = el("div");
+    const marke = () => markeZuName(p.name);
+    const art = new Set(nr ? nr.art : []);
+    const chips = el("div", "chips");
+    for (const [k, text] of NR_ARTEN) {
+      const c = el("button", "chip" + (art.has(k) ? " aktiv" : ""), text);
+      c.onclick = () => {
+        if (art.has(k)) art.delete(k); else art.add(k);
+        c.classList.toggle("aktiv", art.has(k));
+      };
+      chips.append(c);
+    }
+    const beginn = el("input", "datum");
+    beginn.type = "date";
+    beginn.value = nr ? nr.beginn : isoInTagen(0);
+    const ende = el("input", "datum");
+    ende.type = "date";
+    ende.value = nr ? nr.ende : "";
+    // "+ x Tage" wie beim Termin, aber AB BEGINN (Entscheidung L) und nur
+    // als Rechenhilfe: gespeichert wird allein das Datumsfeld.
+    const plus = tageFeld("z. B. 90");
+    plus.oninput = () => {
+      const e = isoPlusTage(beginn.value, parseInt(plus.value, 10));
+      if (e && parseInt(plus.value, 10) > 0) ende.value = e;
+    };
+    const erinnerung = tageFeld("");
+    erinnerung.min = "0";
+    erinnerung.value = String(nr ? nr.erinnerung : NR_ERINNERUNG_STD);
+    const speichern = el("button", "chip aktiv", nr ? "✓ Speichern" : "✓ Anlegen");
+    speichern.onclick = () => {
+      // Leeres Feld ist NICHT 0 (Number("") === 0) - sonst wuerde aus
+      // "vergessen" still "am Tag selbst".
+      const r = nutzungsrechtSpeichern(marke(), kennung, { art: [...art],
+        beginn: beginn.value, ende: ende.value,
+        erinnerung: erinnerung.value === "" ? NaN : Number(erinnerung.value) },
+        !nr, lokalIso());
+      if (r !== true) { banner(r); return; }
+      banner(nr ? "Nutzungsrecht gespeichert." : "Nutzungsrecht angelegt.");
+      z.nr = null;
+      bau();
+    };
+    const abbrechen = el("button", "chip", "Abbrechen");
+    abbrechen.onclick = () => { z.nr = null; bau(); };
+    const knoepfe = el("div", "chips unter-feld");
+    knoepfe.append(speichern, abbrechen);
+    f.append(el("div", "stand", "Art"), chips,
+      el("div", "stand", "Beginn"), beginn,
+      el("div", "stand", "Ende — Datum wählen oder Tage ab Beginn"), ende, plus,
+      el("div", "stand", "Erinnerung: Tage vor Ablauf"), erinnerung, knoepfe);
+    if (!nr) return f;
+
+    const tage = tageFeld("z. B. 30");
+    const verlaengern = el("button", "chip", "Verlängern um x Tage");
+    verlaengern.onclick = () => {
+      const r = nutzungsrechtVerlaengern(marke(), kennung, Number(tage.value), lokalIso());
+      if (r !== true) { banner(r); return; }
+      banner("Nutzungsrecht verlängert.");
+      bau();
+    };
+    const loeschen = el("button", "chip", "✕ Löschen");
+    loeschen.onclick = () => {
+      if (!confirm(`„${nutzungsrechtName(marke() || { name: p.name }, nr)}“ löschen?`)) return;
+      if (!nutzungsrechtLoeschen(marke(), kennung)) {
+        banner("Das ging nicht — bitte das Sheet neu öffnen.");
+        return;
+      }
+      banner("Nutzungsrecht gelöscht.");
+      z.nr = null;
+      bau();
+    };
+    const vZeile = el("div", "chips unter-feld");
+    vZeile.append(verlaengern);
+    const lZeile = el("div", "chips unter-feld");
+    lZeile.append(loeschen);
+    f.append(el("div", "stand", "Verlängern ab bisherigem Ende"), tage, vZeile);
+    for (const v of nr.verlaengerungen || [])
+      f.append(el("div", "leise", `verlängert am ${deDatum(v.am)} um ${v.tage} Tage`));
+    f.append(lZeile);
+    return f;
   }
 
   // Der Auftrag selbst (Release 6, Schritt 20). Nur sichtbar, wenn die Marke
@@ -4813,6 +4941,151 @@ function auftragAblegen(m, ausgang, heute) {
 function auftragZuEintrag(m, h) {
   return h.archiv || (m.auftraege || []).find((a) => a && a.kennung === h.kennung &&
     a.ausgang === h.richtung && a.ende === h.datum) || null;
+}
+
+// ================================================ Nutzungsrechte (v199)
+// Bauplan: doku/Bauplan Nutzungsrechte.md, Vorgaben Backlog 59.
+// Das Recht haengt AM AUFTRAG (ka.nutzungsrecht bzw. auftraege[i].nutzungsrecht),
+// nicht in einer eigenen Liste: auftragAblegen() kopiert {...ka}, das Recht
+// wandert beim Abschliessen also von selbst ins Archiv, und ein Recht ohne
+// Auftrag kann es nicht geben. kundenauftrag/auftraege stehen als Ganzes in
+// IMPORT_TABU und APP_FELDER - keine Whitelist-Aenderung noetig.
+// { n, art: ["organisch"|"ad"], beginn, ende (ISO, Ende INKLUSIVE),
+//   erinnerung (Tage vorher), verlaengerungen: [{ am, tage }], geaendert }
+const NR_ARTEN = [["organisch", "organisch"], ["ad", "Ad"]];
+const NR_ERINNERUNG_STD = 14;
+
+// ISO-Datum + t Tage, in Lokalzeit (Gegenstueck zu isoInTagen, aber ab einem
+// beliebigen Tag statt ab heute - Verlaengern rechnet ab dem bisherigen
+// Ende, auch wenn das schon vorbei ist). null bei unbrauchbarem Datum,
+// gleiche Rundlauf-Pruefung wie tageBis().
+function isoPlusTage(iso, t) {
+  if (tageBis(iso) === null || !Number.isInteger(t)) return null;
+  const [j, mo, d] = String(iso).split("-").map(Number);
+  const z = new Date(j, mo - 1, d + t);
+  return [z.getFullYear(), String(z.getMonth() + 1).padStart(2, "0"),
+          String(z.getDate()).padStart(2, "0")].join("-");
+}
+
+// Name nie gespeichert: Umbenennen der Marke zieht so von selbst mit.
+function nutzungsrechtName(m, nr) {
+  return "NR_" + m.name + "_" + nr.n;
+}
+
+// Alle Auftraege der Marke, fertige zuerst, der laufende zuletzt.
+function nrAuftraege(m) {
+  return [...(m.auftraege || []), m.kundenauftrag].filter(Boolean);
+}
+
+// Nummer je Marke, hoechste vorhandene + 1. Eine geloeschte hoechste
+// Nummer wird wieder vergeben - gewollt (Tobias, 03.10.: Tippfehler).
+function nutzungsrechtNummerNeu(m) {
+  return 1 + Math.max(0, ...nrAuftraege(m)
+    .map((a) => (a.nutzungsrecht && Number(a.nutzungsrecht.n)) || 0));
+}
+
+// Den Auftrag zu einer Kennung FRISCH auflösen (Codex 03.10.): ein offenes
+// Formular darf kein Objekt festhalten - wird der Auftrag waehrenddessen
+// abgeschlossen, laege das Recht sonst am falschen Auftrag. Alteintraege
+// ohne Kennung zaehlen als 1 (wie auftragKennungNeu). Der laufende gewinnt,
+// sonst der LETZTE fertige mit dieser Kennung.
+function nrAuftragZu(m, kennung) {
+  const passt = (a) => (a.kennung || 1) === kennung;
+  if (m.kundenauftrag && passt(m.kundenauftrag)) return m.kundenauftrag;
+  return (m.auftraege || []).filter((a) => a && passt(a)).pop() || null;
+}
+
+// Wo darf ein NEUES Recht entstehen? Im laufenden Auftrag und nachtraeglich
+// beim zuletzt abgeschlossenen (Entscheidung C) - jeweils nur ohne Recht.
+// Bewusst der letzte Eintrag in m.auftraege, nicht letzterAuftrag(): der
+// findet nichts mehr, sobald ein neuer Auftrag laeuft (Codex 03.10.).
+function nutzungsrechtKandidaten(m) {
+  const fertig = (m.auftraege || []).filter(Boolean);
+  return [fertig[fertig.length - 1], m.kundenauftrag]
+    .filter((a) => a && !a.nutzungsrecht);
+}
+
+// Neu anlegen (neu = true) oder aendern. Rueckgabe true oder ein Satz fuer
+// Andrea. d: { art, beginn, ende, erinnerung }.
+function nutzungsrechtSpeichern(m, kennung, d, neu, jetzt) {
+  const a = m && nrAuftragZu(m, kennung);
+  if (!a) return "Den Auftrag gibt es nicht mehr — bitte das Sheet neu öffnen.";
+  if (neu && a.nutzungsrecht)
+    return "Dieser Auftrag hat schon ein Nutzungsrecht.";
+  if (!neu && !a.nutzungsrecht) return "Das Nutzungsrecht gibt es nicht mehr.";
+  const art = NR_ARTEN.map(([k]) => k).filter((k) => (d.art || []).includes(k));
+  if (!art.length) return "Bitte organisch und/oder Ad wählen.";
+  const b = tageBis(d.beginn), e = tageBis(d.ende);
+  if (b === null) return "Bitte einen Beginn wählen.";
+  if (e === null) return "Bitte ein Ende wählen.";
+  if (e < b) return "Das Ende liegt vor dem Beginn.";
+  // 0 ist ein gueltiger Wert ("am Tag selbst") - kein || NR_ERINNERUNG_STD.
+  const erinnerung = Number(d.erinnerung);
+  if (!Number.isInteger(erinnerung) || erinnerung < 0)
+    return "Erinnerung: bitte eine ganze Zahl von Tagen (0 oder mehr).";
+  const alt = a.nutzungsrecht || { n: nutzungsrechtNummerNeu(m), verlaengerungen: [] };
+  a.nutzungsrecht = { ...alt, art, beginn: d.beginn, ende: d.ende, erinnerung,
+                      geaendert: jetzt || lokalIso() };
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+
+// Ab dem BISHERIGEN Ende verlaengern (Entscheidung H), mit Vermerk.
+function nutzungsrechtVerlaengern(m, kennung, tage, jetzt) {
+  const a = m && nrAuftragZu(m, kennung);
+  const nr = a && a.nutzungsrecht;
+  if (!nr) return "Das Nutzungsrecht gibt es nicht mehr.";
+  if (!Number.isInteger(tage) || tage < 1) return "Bitte die Tage eingeben (1 oder mehr).";
+  const ende = isoPlusTage(nr.ende, tage);
+  if (!ende) return "Das bisherige Ende ist unlesbar — bitte das Recht bearbeiten.";
+  a.nutzungsrecht = { ...nr, ende, geaendert: jetzt || lokalIso(),
+    verlaengerungen: [...(nr.verlaengerungen || []), { am: isoInTagen(0), tage }] };
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+
+function nutzungsrechtLoeschen(m, kennung) {
+  const a = m && nrAuftragZu(m, kennung);
+  if (!a || !a.nutzungsrecht) return false;
+  delete a.nutzungsrecht;
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+
+// Punktfarbe in der Liste je Zustandsklasse.
+const NR_PUNKT = { gruen: "punkt-positiv", rot: "punkt-faellig", grau: "punkt-antwort" };
+
+function nrArtText(nr) {
+  return NR_ARTEN.filter(([k]) => (nr.art || []).includes(k)).map(([, t]) => t)
+    .join(" + ") || "—";
+}
+
+// Zahlenfeld fuer Tage (wie tPlus beim Termin).
+function tageFeld(platzhalter) {
+  const f = el("input", "tage");
+  f.type = "number";
+  f.min = "1";
+  f.inputMode = "numeric";
+  f.placeholder = platzhalter;
+  return f;
+}
+
+// Zustand fuer Liste und Kachel. Ende INKLUSIVE: abgelaufen erst ab dem Tag
+// danach. "laeuft-ab" ab `erinnerung` Tagen vorher. Ein Beginn in der
+// Zukunft zaehlt als aktiv. klasse passt zu den Ampel-Klassen im CSS.
+function nutzungsrechtZustand(nr) {
+  const rest = tageBis(nr && nr.ende);
+  if (rest === null) return { zustand: "aktiv", klasse: "grau", text: "Ende unlesbar" };
+  if (rest < 0) return { zustand: "abgelaufen", klasse: "grau",
+                         text: "abgelaufen · Ende " + deDatum(nr.ende) };
+  const grenze = Number.isInteger(nr.erinnerung) ? nr.erinnerung : NR_ERINNERUNG_STD;
+  if (rest <= grenze) return { zustand: "laeuft-ab", klasse: "rot",
+    text: rest === 0 ? "läuft heute ab" : rest === 1 ? "läuft morgen ab"
+                     : `läuft in ${rest} Tagen ab` };
+  return { zustand: "aktiv", klasse: "gruen", text: `noch ${rest} Tage` };
 }
 
 // Detailansicht eines Auftrags oeffnen - mit denselben Zusatzfeldern wie
@@ -11821,22 +12094,31 @@ function outboxAufnehmen(m, datum, aktion, entfernen, grund, art, daten) {
   // vor dessen Upload, ist die Korrektur weg. Wer abschliesst, nennt
   // deshalb die Fassung, die er bearbeitet hat.
   //
+  // `rev` ist EINDEUTIG je Fassung, nicht 1, 2, 3 je Eintrag (C6, 03.10.).
+  // Mit Zaehler ab 1 bekam ein Eintrag, der waehrend eines Uploads
+  // gestrichen und unter demselben Schluessel neu angelegt wurde, wieder
+  // rev 1 - und der Erfolg des ALTEN Uploads raeumte ihn mit
+  // outboxWeg(k, 1) weg: Andreas neue Eingabe nie im Word, keine Meldung.
+  // Verglichen wird nur auf Gleichheit, eine Reihenfolge braucht es nicht.
+  // Alteintraege ohne rev gelten weiter als 1; den Wert vergibt hier keiner.
+  const rev = Date.now() + Math.random();
+  //
   // versuche wird beim Uebergang laeuft -> Fehlergrund NICHT erhoeht: das
   // ist derselbe Versuch, nur sein Ausgang. Sonst stuende nach einem
   // einzigen Anlauf "2 Versuche" in der Warteliste.
   if (da) { if (da.grund !== "laeuft") da.versuche = (da.versuche || 1) + 1;
-            da.rev = (da.rev || 1) + 1; da.grund = grund;
+            da.rev = rev; da.grund = grund;
             da.datum = datum; da.aktion = aktion;
             if (daten) da.daten = daten; }
   else outbox().push({ k, marke: m.name, datum, aktion,
                        entfernen: !!entfernen, art, seit: lokalIso(),
-                       versuche: 1, rev: 1, grund,
+                       versuche: 1, rev, grund,
                        ...(daten ? { daten } : {}) });
   logZeile("warteliste-auf", { marke: m.name, aktion, datum,
     entfernen: !!entfernen, grund, versuche: (da && da.versuche) || 1 });
   datenstandPersistieren();
   // Der Aufrufer braucht die Fassung, um sie spaeter abzuschliessen.
-  return da ? da.rev : 1;
+  return rev;
 }
 
 // rev (optional): nur diese Fassung entfernen. Hat Andrea waehrend des
@@ -11883,15 +12165,8 @@ async function outboxAbarbeiten(still) {
       // test_v153.js haelt den Fall fest.
       // `|| 1` fuer Auftraege aus einem Datenstand vor v152: ohne rev
       // wuerde outboxWeg() bedingungslos loeschen, also wieder ungeschuetzt.
-      //
-      // ponytail: `rev` schuetzt gegen MUTATION, nicht gegen
-      // Entfernen-und-Neuanlegen. Wird der Eintrag waehrend des Uploads
-      // ganz gestrichen (Paarstreichung in outboxAufnehmen) und danach
-      // unter demselben Schluessel neu angelegt, faengt er wieder bei
-      // rev 1 an - und der alte Upload raeumt ihn weg. Nicht gebaut,
-      // weil die Abfolge deutlich enger ist als die hier behobene und
-      // im Bestand nie beobachtet wurde. Aufwertung: eine laufende
-      // Nummer je Marke statt je Auftrag.
+      // Seit C6 (03.10.) ist rev je Fassung eindeutig - das schuetzt
+      // auch gegen Streichen-und-Neuanlegen, nicht nur gegen Mutation.
       const rev = e.rev || 1;
       // Durch DIESELBE Kette wie ein Klick (v107): lief die Nacharbeit
       // daneben, konnte ein Retry genau dann ins Book schreiben, wenn
