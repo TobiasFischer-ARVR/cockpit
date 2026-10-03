@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v201"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v202"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2693,14 +2693,20 @@ function bereichKontakt(m, quelle, ohneRating, knopf) {
     .filter(([label, wert]) => String(wert).trim() &&
       label.toLowerCase() !== "name" &&
       !(ohneRating && RATING_FELDER.includes(label.trim().toLowerCase())));
+  // Zweite E-Mail (v202) direkt unter der ersten, als Mail-Link wie diese.
+  if (m && String(m.email2 || "").trim()) {
+    const i = infos.findIndex(([label]) => label === "E-Mail");
+    infos.splice(i < 0 ? infos.length : i + 1, 0, ["E-Mail 2", m.email2]);
+  }
   if (!infos.length && !knopf) return frag;
   let inhalt;
   if (infos.length) {
     inhalt = el("div", "tabelle");
     for (const [label, wert] of infos) {
       const zeile = el("div", "zeile");
+      const art = label === "E-Mail 2" ? "E-Mail" : label;   // Mail-Link
       zeile.append(el("span", "leise", label),
-                   kontaktWert(label, skalaWert(label, wert)));
+                   kontaktWert(art, skalaWert(art, wert)));
       inhalt.append(zeile);
     }
   } else {
@@ -2989,8 +2995,8 @@ function sheetBlockReihenfolge() {
 function sheetPitch(p) {
   const wrap = el("div");
   const mv = datenstand ? markeZuName(p.name) : null;
-  // z.nr: offenes Nutzungsrecht-Formular (v199), aus der Gesamtliste vorbelegt.
-  const z = { modus: null, nr: p.nrKennung ? { kennung: p.nrKennung, neu: false } : null };
+  // z.nr: offenes Nutzungsrecht-Formular (v199).
+  const z = { modus: null, nr: null };
   const stift = mv && mv.brandrating
     ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
   // Kontaktdaten auch hier bearbeitbar (Tobias 01.09.): faellt im Pitch-
@@ -4912,7 +4918,7 @@ function renderNutzungsrechte() {
       karte.append(kopf, el("div", "titel", x.name),
         el("div", "kontext", deDatum(x.nr.beginn) + " – " + deDatum(x.nr.ende)),
         el("div", "fuss", x.text));
-      karte.onclick = () => nutzungsrechtOeffnen(x.marke, x.kennung);
+      karte.onclick = () => nutzungsrechtOeffnen(x.marke);
       karten.append(karte);
     }
     rumpf.append(karten);
@@ -5205,11 +5211,12 @@ function nutzungsrechtListe(liste, f) {
 
 // Tipp in der Gesamtliste: Brand-Sheet direkt im Reiter "Nutzungsrechte"
 // (Tobias, 03.10.). zuReitern() liest den Merker einst.reiterPitch.
-// Mit Kennung: das Formular dieses Rechts ist gleich aufgeklappt - der Tipp
-// fuehrt zum Bearbeiten, nicht nur zur Marke (Tobias, 03.10. spaet).
-function nutzungsrechtOeffnen(markeName, kennung) {
+// ZUGEKLAPPT (v202, Tobias 04.10.): das Recht mit Infozeile und Knopf
+// "Aendern / verlaengern" - das Formular erst auf Tipp. v201 klappte es
+// gleich auf, das war zu viel.
+function nutzungsrechtOeffnen(markeName) {
   einst.reiterPitch = "Nutzungsrechte";
-  sheetPitch({ name: markeName, nrKennung: kennung });
+  sheetPitch({ name: markeName });
 }
 
 // Punktfarbe in der Liste je Zustandsklasse.
@@ -6116,6 +6123,13 @@ function kontaktFormular(m, fertig) {
   // Kontaktrecherche, nicht dem Rating-Urteil (Tobias 05.09.).
   // Wie bei den Such-Knoepfen wird die Website beim KLICK gelesen: gerade
   // eingetippt und sofort ausprobierbar, ohne Speichern.
+  // Zweite E-Mail (v202): nur in der App, nicht im Brand-Book (Tobias, 04.10.).
+  wrap.append(el("div", "stand", "E-Mail 2 (nur in der App)"));
+  const email2 = el("input", "feld");
+  email2.type = "email";
+  email2.value = m.email2 || "";
+  wrap.append(email2);
+
   wrap.append(el("div", "stand", "Seiten der Marke direkt öffnen"));
   const sz = el("div", "chips");
   const sHinweis = el("div", "stand");
@@ -6142,6 +6156,7 @@ function kontaktFormular(m, fertig) {
     m.kerninfos = m.kerninfos || {};
     for (const [label, i] of Object.entries(eingaben))
       m.kerninfos[label] = i.value.trim();
+    if (email2.value.trim()) m.email2 = email2.value.trim(); else delete m.email2;
     listeVeraltet = true;
     datenstandPersistieren();
     bookKerninfosMelden(m);                       // Fix B (v121)
@@ -6869,6 +6884,13 @@ function filterZeilen(neuzeichnen, alles) {
   return zeilen;
 }
 
+// Ist in einer Auftrags-/Pflegeliste mindestens eine Karte rot? Dieselbe
+// Ampel wie die Karten (naechster Checklisten-Termin), v202.
+function kartenRot(liste) {
+  const heute = heuteNull();
+  return liste.some((p) => ampel(p.naechsterTermin || "", heute).klasse === "rot");
+}
+
 function renderUgc() {
   kopfzeile("UGC KPI-Dashboard", true);
   const c = document.getElementById("inhalt");
@@ -6924,7 +6946,9 @@ function renderUgc() {
     const heute = heuteNull();
     const faellig = aktuell.filter(
       (p) => ampel(p.datum_naechste_aktion, heute).klasse === "rot").length;
-    const zugang = el("div", "karte block zugang");
+    // Rote Kante, sobald eine Karte der Liste rot ist (v202, Tobias 04.10.:
+    // wie bei den Nutzungsrechten). Gleiche Regel wie die Karten selbst.
+    const zugang = el("div", "karte block zugang" + (faellig ? " ampel-rot" : ""));
     const kopf = el("div", "kopf");
     kopf.append(el("span", "pill", "Wiedervorlage"),
                 el("span", "badge" + (faellig ? " voll" : ""), String(faellig)));
@@ -6944,8 +6968,9 @@ function renderUgc() {
   // Abschlussquote, Oe Auftragswert) bleiben vorerst leer: dafuer braucht es
   // Auftragswerte, die noch nirgends erfasst werden. Weiterhin keine 0 -
   // eine 0 waere eine Behauptung.
-  const kunden = el("div", "karte block zugang");
-  const kAnzahl = kundenauftraegeAktuell().length;
+  const kListe = kundenauftraegeAktuell();
+  const kunden = el("div", "karte block zugang" + (kartenRot(kListe) ? " ampel-rot" : ""));
+  const kAnzahl = kListe.length;
   const kArchiv = archivAktuell().length;   // v197: je Auftrag, 0 bei "Archiv aus"
   const kKopf = el("div", "kopf");
   kKopf.append(el("span", "pill", "Aufträge"),
@@ -6980,8 +7005,9 @@ function renderUgc() {
 
   // Kundenpflege (v194, R3; bis v193 Platzhalter, bis v189 "Dauerkunden"):
   // dritter Ausgang eines Kundenauftrags - dauerhafte Geschaeftsbeziehung.
-  const pAnzahl = kundenpflegeAktuell().length;
-  const bestand = el("div", "karte block zugang");
+  const pListe = kundenpflegeAktuell();
+  const pAnzahl = pListe.length;
+  const bestand = el("div", "karte block zugang" + (kartenRot(pListe) ? " ampel-rot" : ""));
   const bKopf = el("div", "kopf");
   bKopf.append(el("span", "pill", "Pflege"),
                el("span", "badge" + (pAnzahl ? " voll" : ""), String(pAnzahl)));
@@ -9483,7 +9509,11 @@ const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
                      // Kundenauftrags-Paket (v191, Backlog 58): fertige
                      // Auftraege, Archiv, Kundenpflege - nur die App kennt sie.
                      // Spiegel: APP_FELDER in werkzeuge/datenstand.py.
-                     "auftraege", "kundenarchiv", "kundenpflege"];
+                     "auftraege", "kundenarchiv", "kundenpflege",
+                     // Zweite E-Mail (v202, Andrea 04.10.): steht NICHT im
+                     // Word - in m.kerninfos waere sie beim naechsten Import
+                     // weg (Import ERSETZT die Kerninfos). Darum eigenes Feld.
+                     "email2"];
 
 // Zwei Felder der Pitchzeile sind reine RECHENERGEBNISSE aus den
 // Ereignissen - und liefen deshalb still auseinander, seit der Import die
