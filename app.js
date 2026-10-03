@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v199"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v200"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4813,6 +4813,90 @@ function renderKundenauftraege() {
   }
 }
 
+// Gesamtliste Nutzungsrechte (v200, Backlog 59). Eigener Filterzustand
+// (Lehre aus `pf`/`kf`, 17.09.). Abgelaufene sind beim Oeffnen
+// ausgeblendet, ein Knopf blendet sie zu (Tobias, 03.10.).
+const nf = { suche: "", sortierung: "", zustand: "", art: "", abgelaufen: false };
+
+function renderNutzungsrechte() {
+  kopfzeile("Nutzungsrechte", true);
+  const c = document.getElementById("inhalt");
+  c.innerHTML = "";
+  const alle = alleNutzungsrechte();
+  if (!alle.length) {
+    c.append(el("div", "leerzustand",
+      "Noch keine Nutzungsrechte. Sie entstehen im Brand-Sheet einer " +
+      "Kundenmarke, Reiter „Nutzungsrechte“ → „＋ Nutzungsrecht erstellen“."));
+    return;
+  }
+  const suche = el("input", "suche");
+  suche.type = "search";
+  suche.placeholder = "Suchen (Marke)";
+  suche.value = nf.suche;
+  suche.oninput = () => { nf.suche = suche.value; zeichnen(); };
+  c.append(suche);
+
+  const filterBtn = el("button", "chip");
+  filterBtn.onclick = () => {
+    const w = el("div");
+    w.append(filterGruppe("Zustand", [["aktiv", "aktiv"], ["laeuft-ab", "läuft bald ab"]],
+      () => nf.zustand, (x) => { nf.zustand = x; }, zeichnen));
+    w.append(filterGruppe("Art", NR_ARTEN,
+      () => nf.art, (x) => { nf.art = x; }, zeichnen));
+    sheetOeffnen("Filter", w);
+  };
+  const sortBtn = sortierKnopf(SORT_NR, () => nf.sortierung,
+    (w) => { nf.sortierung = w; }, () => zeichnen());
+  const abgelaufen = alle.filter((x) => x.zustand === "abgelaufen").length;
+  const abBtn = el("button", "chip");
+  abBtn.onclick = () => { nf.abgelaufen = !nf.abgelaufen; zeichnen(); };
+  const knopfZeile = el("div", "chips");
+  knopfZeile.append(filterBtn, sortBtn);
+  if (abgelaufen) knopfZeile.append(abBtn);
+  c.append(knopfZeile);
+
+  const rumpf = el("div");
+  c.append(rumpf);
+  zeichnen();
+
+  function zeichnen() {
+    const aktiv = [nf.zustand, nf.art].filter(gesetzt).length;
+    filterBtn.textContent = "⛭ Filter" + (aktiv ? ` · ${aktiv} aktiv` : "");
+    filterBtn.classList.toggle("aktiv", aktiv > 0);
+    sortBtn.textContent = "⇅ " + sortLabel(SORT_NR, nf.sortierung);
+    sortBtn.classList.toggle("aktiv", Boolean(nf.sortierung));
+    abBtn.textContent = (nf.abgelaufen ? "Abgelaufene ausblenden" : "Abgelaufene einblenden") +
+      ` (${abgelaufen})`;
+    abBtn.classList.toggle("aktiv", nf.abgelaufen);
+    const liste = nutzungsrechtListe(alle, nf);
+    rumpf.innerHTML = "";
+    rumpf.append(el("div", "stand",
+      `${liste.length} von ${alle.length} Nutzungsrechten · sortiert nach ` +
+      sortLabel(SORT_NR, nf.sortierung)));
+    if (!liste.length) {
+      // Alles abgelaufen und nichts gefiltert (Code-Review v200): auf den
+      // Knopf verweisen, nicht auf Filter, die gar nicht gesetzt sind.
+      const nurAbgelaufen = !aktiv && !nf.suche.trim() && !nf.abgelaufen && abgelaufen;
+      rumpf.append(el("div", "leerzustand", nurAbgelaufen
+        ? `Alle ${abgelaufen} Nutzungsrechte sind abgelaufen — über „Abgelaufene einblenden“ zeigen.`
+        : "Nichts passt zu Suche und Filtern."));
+      return;
+    }
+    const karten = el("div", "karten");
+    for (const x of liste) {
+      const karte = el("div", "karte tippbar ampel-" + x.klasse);
+      const kopf = el("div", "kopf");
+      kopf.append(el("span", "pill", nrArtText(x.nr)), el("span", null, x.marke));
+      karte.append(kopf, el("div", "titel", x.name),
+        el("div", "kontext", deDatum(x.nr.beginn) + " – " + deDatum(x.nr.ende)),
+        el("div", "fuss", x.text));
+      karte.onclick = () => nutzungsrechtOeffnen(x.marke);
+      karten.append(karte);
+    }
+    rumpf.append(karten);
+  }
+}
+
 // Kundenauftrag von Hand anlegen (v188, Backlog 54, Tobias 30.09.).
 //   Neuer Name     -> neue Marke NUR mit Kundenauftrag: kein Brandrating,
 //                     keine Pitchzeile, kein Book. Andrea traegt vorerst
@@ -5053,6 +5137,47 @@ function nutzungsrechtLoeschen(m, kennung) {
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
+}
+
+// Alle Rechte ueber alle Marken (v200), flach fuer Kachel und Gesamtliste.
+// Bewusst UNABHAENGIG von archivSichtbar(): ein Recht laeuft weiter, auch
+// wenn sein Auftrag im Archiv liegt - genau dafuer gibt es die Liste (Codex).
+function alleNutzungsrechte() {
+  const aus = [];
+  for (const m of (datenstand && datenstand.marken) || []) {
+    for (const a of nrAuftraege(m)) {
+      if (!a.nutzungsrecht) continue;
+      const nr = a.nutzungsrecht;
+      aus.push({ marke: m.name, name: nutzungsrechtName(m, nr), nr,
+                 kennung: a.kennung || 1, ...nutzungsrechtZustand(nr) });
+    }
+  }
+  return aus;
+}
+
+// Filtern und sortieren (v200), rein - die Liste zeichnet nur.
+// f: { suche, sortierung: "" (Ende) | "beginn" | "marke", zustand, art,
+//      abgelaufen: true = einblenden }. Abgelaufene stehen IMMER unten.
+const SORT_NR = [["", "Ende"], ["beginn", "Beginn"], ["marke", "Marke A–Z"]];
+function nutzungsrechtListe(liste, f) {
+  const s = String(f.suche || "").trim().toLowerCase();
+  const schluessel = (x) => f.sortierung === "marke" ? x.marke.toLowerCase()
+    : f.sortierung === "beginn" ? x.nr.beginn || "" : x.nr.ende || "";
+  return liste
+    .filter((x) => f.abgelaufen || x.zustand !== "abgelaufen")
+    .filter((x) => !f.zustand || x.zustand === f.zustand)
+    .filter((x) => !f.art || (x.nr.art || []).includes(f.art))
+    .filter((x) => !s || x.marke.toLowerCase().includes(s))
+    .sort((a, b) => (a.zustand === "abgelaufen") - (b.zustand === "abgelaufen") ||
+      schluessel(a).localeCompare(schluessel(b), "de") ||
+      a.name.localeCompare(b.name, "de"));
+}
+
+// Tipp in der Gesamtliste: Brand-Sheet direkt im Reiter "Nutzungsrechte"
+// (Tobias, 03.10.). zuReitern() liest den Merker einst.reiterPitch.
+function nutzungsrechtOeffnen(markeName) {
+  einst.reiterPitch = "Nutzungsrechte";
+  sheetPitch({ name: markeName });
 }
 
 // Punktfarbe in der Liste je Zustandsklasse.
@@ -6801,18 +6926,24 @@ function renderUgc() {
   kunden.onclick = () => { location.hash = "#/kundenauftraege"; };
   c.append(kunden);
 
-  // Platzhalter Nutzungsrechte (v125, Ablaufplan Andrea 14.09.): steht
-  // bewusst UNTER den Kundenauftraegen - die Nutzungsrechte entstehen als
-  // Schritt 8 im Auftragsablauf, nicht daneben. Auf dem Blatt: "angehaengt
-  // an Brand, separate Anzeige in einem Bereich wie Brandrating,
-  // Pitchliste, Kundenauftrag". Wie oben: kein Knopf, keine Zahl.
-  const rechte = el("div", "karte block zugang platzhalter");
+  // Nutzungsrechte (v200; v125-v199 Platzhalter): steht bewusst UNTER den
+  // Kundenauftraegen - die Rechte entstehen im Auftrag. Zahl = nicht
+  // abgelaufene Rechte. Laeuft eins bald ab, wird die Kachel rot
+  // (Ampel-Streifen wie in der Pitchliste) - keine Popups (Entscheidung F).
+  const nrAlle = alleNutzungsrechte();
+  const nrOffen = nrAlle.filter((x) => x.zustand !== "abgelaufen").length;
+  const nrBald = nrAlle.filter((x) => x.zustand === "laeuft-ab").length;
+  const rechte = el("div", "karte block zugang" + (nrBald ? " ampel-rot" : ""));
   const rKopf = el("div", "kopf");
-  rKopf.append(el("span", "pill", "Geplant"));
+  rKopf.append(el("span", "pill", "Rechte"),
+               el("span", "badge" + (nrOffen ? " voll" : ""), String(nrOffen)));
   rechte.append(rKopf, el("div", "titel", "Nutzungsrechte"),
-    el("div", "kontext",
-      "Noch keine Datenquelle — später Beginn, Dauer und Art " +
-      "(organisch / paid ad) je Marke."));
+    el("div", "kontext", nrAlle.length
+      ? `${nrOffen} aktiv` + (nrBald ? ` · ${nrBald} läuft${nrBald === 1 ? "" : "en"} bald ab` : "") +
+        (nrAlle.length > nrOffen ? ` · ${nrAlle.length - nrOffen} abgelaufen` : "")
+      : "Noch keine — sie entstehen im Brand-Sheet einer Kundenmarke, " +
+        "Reiter „Nutzungsrechte“."));
+  rechte.onclick = () => { location.hash = "#/nutzungsrechte"; };
   c.append(rechte);
 
   // Kundenpflege (v194, R3; bis v193 Platzhalter, bis v189 "Dauerkunden"):
@@ -6947,7 +7078,8 @@ function renderFehler() {
 // Genau so ist der Fehler vom 18.09. entstanden. test_invarianten vergleicht
 // diese Liste mit den Routen in render(); eine vergessene Ansicht macht den
 // Test rot, statt sich erst beim Tippen zu zeigen.
-const UGC_UNTER = ["#/pitchliste", "#/brandrating", "#/kundenauftraege", "#/kundenpflege"];
+const UGC_UNTER = ["#/pitchliste", "#/brandrating", "#/kundenauftraege", "#/kundenpflege",
+                   "#/nutzungsrechte"];
 
 function render() {
   sheetEntfernen(); // beim Ansichtswechsel darf kein Sheet haengenbleiben
@@ -6972,6 +7104,8 @@ function render() {
     renderKundenauftraege();
   } else if (h === "#/kundenpflege") {
     renderKundenpflege();
+  } else if (h === "#/nutzungsrechte") {
+    renderNutzungsrechte();
   } else if (h === "#/brandrating") {
     renderBrandrating();
   } else if (h === "#/buecher") {
