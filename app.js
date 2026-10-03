@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v200"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v201"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2989,7 +2989,8 @@ function sheetBlockReihenfolge() {
 function sheetPitch(p) {
   const wrap = el("div");
   const mv = datenstand ? markeZuName(p.name) : null;
-  const z = { modus: null };
+  // z.nr: offenes Nutzungsrecht-Formular (v199), aus der Gesamtliste vorbelegt.
+  const z = { modus: null, nr: p.nrKennung ? { kennung: p.nrKennung, neu: false } : null };
   const stift = mv && mv.brandrating
     ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
   // Kontaktdaten auch hier bearbeitbar (Tobias 01.09.): faellt im Pitch-
@@ -3367,8 +3368,16 @@ function sheetPitch(p) {
       label.append(el("span", "punkt " + NR_PUNKT[zst.klasse]), nutzungsrechtName(m, nr));
       zeile.append(label,
         el("span", "num leise", deDatum(nr.beginn) + " – " + deDatum(nr.ende)));
-      zeile.onclick = () => { z.nr = offen(k, false) ? null : { kennung: k, neu: false }; bau(); };
-      tab.append(zeile, el("div", "leise", nrArtText(nr) + " · " + zst.text));
+      const umschalten = () => { z.nr = offen(k, false) ? null : { kennung: k, neu: false }; bau(); };
+      zeile.onclick = umschalten;
+      // Sichtbarer Knopf (Tobias, 03.10. spaet): dass die Zeile antippbar
+      // ist, sah man nicht - "da kann ich gar nichts aendern".
+      const bearbeiten = el("button", "chip" + (offen(k, false) ? " aktiv" : ""),
+        offen(k, false) ? "Schließen" : "✎ Ändern / verlängern");
+      bearbeiten.onclick = umschalten;
+      const bZeile = el("div", "chips");
+      bZeile.append(bearbeiten);
+      tab.append(zeile, el("div", "leise", nrArtText(nr) + " · " + zst.text), bZeile);
       if (offen(k, false)) tab.append(nrFormular(k, nr));
     }
     frag.append(mitRecht.length ? tab : el("div", "stand", "Noch kein Nutzungsrecht."));
@@ -3394,6 +3403,12 @@ function sheetPitch(p) {
     const f = el("div");
     const marke = () => markeZuName(p.name);
     const art = new Set(nr ? nr.art : []);
+    // Name vorbelegt mit dem aktuellen (bzw. beim Anlegen dem kuenftigen)
+    // Standardnamen; leeren = zurueck zum Standard.
+    const m0 = marke() || { name: p.name };
+    const nameFeld = el("input", "feld");
+    nameFeld.type = "text";
+    nameFeld.value = nutzungsrechtName(m0, nr || { n: nutzungsrechtNummerNeu(m0) });
     const chips = el("div", "chips");
     for (const [k, text] of NR_ARTEN) {
       const c = el("button", "chip" + (art.has(k) ? " aktiv" : ""), text);
@@ -3424,7 +3439,7 @@ function sheetPitch(p) {
       // Leeres Feld ist NICHT 0 (Number("") === 0) - sonst wuerde aus
       // "vergessen" still "am Tag selbst".
       const r = nutzungsrechtSpeichern(marke(), kennung, { art: [...art],
-        beginn: beginn.value, ende: ende.value,
+        name: nameFeld.value, beginn: beginn.value, ende: ende.value,
         erinnerung: erinnerung.value === "" ? NaN : Number(erinnerung.value) },
         !nr, lokalIso());
       if (r !== true) { banner(r); return; }
@@ -3436,7 +3451,7 @@ function sheetPitch(p) {
     abbrechen.onclick = () => { z.nr = null; bau(); };
     const knoepfe = el("div", "chips unter-feld");
     knoepfe.append(speichern, abbrechen);
-    f.append(el("div", "stand", "Art"), chips,
+    f.append(el("div", "stand", "Name"), nameFeld, el("div", "stand", "Art"), chips,
       el("div", "stand", "Beginn"), beginn,
       el("div", "stand", "Ende — Datum wählen oder Tage ab Beginn"), ende, plus,
       el("div", "stand", "Erinnerung: Tage vor Ablauf"), erinnerung, knoepfe);
@@ -4449,6 +4464,13 @@ function sortierKnopf(optionen, holen, setzen, zeichnen) {
   return btn;
 }
 
+// Sortier-Knopf traegt "Sortieren" wie der Filter-Knopf "Filter" (Tobias,
+// 03.10.). Die gewaehlte Art steht nur dabei, wenn sie vom Standard abweicht;
+// die Zaehlerzeile nennt sie ohnehin.
+function sortKnopfText(optionen, art) {
+  return "⇅ Sortieren" + (art ? " · " + sortLabel(optionen, art) : "");
+}
+
 // Beschriftung des Sortier-Knopfs + Text fuer die Zaehlerzeile
 function sortLabel(optionen, art) {
   const treffer = optionen.find(([w]) => w === art);
@@ -4530,7 +4552,7 @@ function renderPitchliste() {
       .filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
-    sortBtn.textContent = "⇅ " + sortLabel(SORT_PITCH, pf.sortierung);
+    sortBtn.textContent = sortKnopfText(SORT_PITCH, pf.sortierung);
     sortBtn.classList.toggle("aktiv", Boolean(pf.sortierung));
     const s = pf.suche.trim().toLowerCase();
     const gefiltert = alle.filter((p) => pitchPasst(p, s));
@@ -4792,7 +4814,7 @@ function renderKundenauftraege() {
     const aktiv = [kf.prio, kf.status, kf.archiv ? "" : kf.faellig].filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (aktiv ? ` · ${aktiv} aktiv` : "");
     filterBtn.classList.toggle("aktiv", aktiv > 0);
-    sortBtn.textContent = "⇅ " + sortLabel(SORT_KUNDEN, kf.sortierung);
+    sortBtn.textContent = sortKnopfText(SORT_KUNDEN, kf.sortierung);
     sortBtn.classList.toggle("aktiv", Boolean(kf.sortierung));
     const s = kf.suche.trim().toLowerCase();
     const liste = sortiereKunden(alle.filter((p) => kundenPasst(p, s)),
@@ -4863,7 +4885,7 @@ function renderNutzungsrechte() {
     const aktiv = [nf.zustand, nf.art].filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (aktiv ? ` · ${aktiv} aktiv` : "");
     filterBtn.classList.toggle("aktiv", aktiv > 0);
-    sortBtn.textContent = "⇅ " + sortLabel(SORT_NR, nf.sortierung);
+    sortBtn.textContent = sortKnopfText(SORT_NR, nf.sortierung);
     sortBtn.classList.toggle("aktiv", Boolean(nf.sortierung));
     abBtn.textContent = (nf.abgelaufen ? "Abgelaufene ausblenden" : "Abgelaufene einblenden") +
       ` (${abgelaufen})`;
@@ -4890,7 +4912,7 @@ function renderNutzungsrechte() {
       karte.append(kopf, el("div", "titel", x.name),
         el("div", "kontext", deDatum(x.nr.beginn) + " – " + deDatum(x.nr.ende)),
         el("div", "fuss", x.text));
-      karte.onclick = () => nutzungsrechtOeffnen(x.marke);
+      karte.onclick = () => nutzungsrechtOeffnen(x.marke, x.kennung);
       karten.append(karte);
     }
     rumpf.append(karten);
@@ -5051,9 +5073,11 @@ function isoPlusTage(iso, t) {
           String(z.getDate()).padStart(2, "0")].join("-");
 }
 
-// Name nie gespeichert: Umbenennen der Marke zieht so von selbst mit.
+// Standardname <Marke>_<n> (ohne "NR_", Tobias 03.10. spaet), nicht gespeichert: Umbenennen der Marke zieht
+// mit. Andrea kann ihn ueberschreiben (Tobias, 03.10. spaet) - dann steht
+// er in nr.name und bleibt beim Umbenennen der Marke, wie sie ihn schrieb.
 function nutzungsrechtName(m, nr) {
-  return "NR_" + m.name + "_" + nr.n;
+  return nr.name || m.name + "_" + nr.n;
 }
 
 // Alle Auftraege der Marke, fertige zuerst, der laufende zuletzt.
@@ -5108,8 +5132,14 @@ function nutzungsrechtSpeichern(m, kennung, d, neu, jetzt) {
   if (!Number.isInteger(erinnerung) || erinnerung < 0)
     return "Erinnerung: bitte eine ganze Zahl von Tagen (0 oder mehr).";
   const alt = a.nutzungsrecht || { n: nutzungsrechtNummerNeu(m), verlaengerungen: [] };
-  a.nutzungsrecht = { ...alt, art, beginn: d.beginn, ende: d.ende, erinnerung,
-                      geaendert: jetzt || lokalIso() };
+  const neuRecht = { ...alt, art, beginn: d.beginn, ende: d.ende, erinnerung,
+                     geaendert: jetzt || lokalIso() };
+  // Eigener Name nur, wenn er vom Standard abweicht - sonst bliebe ein
+  // abgetippter Standardname nach dem Umbenennen der Marke stehen.
+  delete neuRecht.name;
+  const name = String(d.name || "").trim();
+  if (name && name !== nutzungsrechtName(m, neuRecht)) neuRecht.name = name;
+  a.nutzungsrecht = neuRecht;
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
@@ -5175,9 +5205,11 @@ function nutzungsrechtListe(liste, f) {
 
 // Tipp in der Gesamtliste: Brand-Sheet direkt im Reiter "Nutzungsrechte"
 // (Tobias, 03.10.). zuReitern() liest den Merker einst.reiterPitch.
-function nutzungsrechtOeffnen(markeName) {
+// Mit Kennung: das Formular dieses Rechts ist gleich aufgeklappt - der Tipp
+// fuehrt zum Bearbeiten, nicht nur zur Marke (Tobias, 03.10. spaet).
+function nutzungsrechtOeffnen(markeName, kennung) {
   einst.reiterPitch = "Nutzungsrechte";
-  sheetPitch({ name: markeName });
+  sheetPitch({ name: markeName, nrKennung: kennung });
 }
 
 // Punktfarbe in der Liste je Zustandsklasse.
@@ -6653,7 +6685,7 @@ function renderBrandrating() {
       .filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
-    sortBtn.textContent = "⇅ " + sortLabel(SORT_BRAND, bf.sortierung);
+    sortBtn.textContent = sortKnopfText(SORT_BRAND, bf.sortierung);
     sortBtn.classList.toggle("aktiv", Boolean(bf.sortierung));
     const s = bf.suche.trim().toLowerCase();
     const gefiltert = alle.filter((m) => brandPasst(m, s));
