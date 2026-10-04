@@ -1165,7 +1165,7 @@ async function pruefeSicherungen() {
   const version = unsere.some((d) =>
     String(d.name).startsWith("cockpit-vor-" + APP_VERSION + "-"));
   return `✓ Ordner erreichbar · ${unsere.length} Sicherung(en) · ` +
-    `neuste ${String(neuste).slice(0, 16).replace("T", " ")}` +
+    `neuste ${utcAlsOrtszeit(neuste)}` +
     (version ? ` · Rückfahrkarte für ${APP_VERSION} da`
              : ` · ⚠ keine Rückfahrkarte für ${APP_VERSION}`);
 }
@@ -2768,8 +2768,15 @@ function datumWert(d) {
   //   "06-09-2026"    Bindestriche
   //   "06.09.26"      zweistelliges Jahr
   //   "am 06.09.2026" Text drumherum
-  const t = String(d == null ? "" : d)
-    .match(/(\d{1,2})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*(\d{2,4})/);
+  //   "2026-10-25"    ISO (Checkliste, Termine) - ZUERST erkannt (Großtest
+  //                   04.10.): das deutsche Muster fand darin "26-10-25" und
+  //                   machte den 26.10.2025 daraus. Folge: falscher naechster
+  //                   Checklisten-Termin, sobald zwei Termine in
+  //                   verschiedenen Monaten lagen.
+  const s = String(d == null ? "" : d);
+  const iso = s.match(/(^|[^\d])(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/);
+  const t = iso ? [null, iso[4], iso[3], iso[2]]
+    : s.match(/(\d{1,2})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*(\d{2,4})/);
   if (!t) return 1e12;
   const jahr = Number(t[3]) < 100 ? Number(t[3]) + 2000 : Number(t[3]);
   const monat = Number(t[2]), tag = Number(t[1]);
@@ -4084,6 +4091,16 @@ function heuteNull() {
 
 // Zeitstempel in LOKALER Zeit (wie datenstand.py am PC) — toISOString()
 // wäre UTC und läge 1-2 h daneben, der "neueste gewinnt"-Vergleich kippt.
+// Graph liefert lastModifiedDateTime in UTC ("...Z"). Fuer die Anzeige in
+// Ortszeit umrechnen - abgeschnitten stand dort bis zu 2 h und ein Tag
+// daneben (Großtest 04.10.). Unlesbares bleibt wie es ist.
+function utcAlsOrtszeit(z) {
+  const t = Date.parse(String(z || ""));
+  if (isNaN(t)) return String(z || "").slice(0, 16).replace("T", " ");
+  const d = new Date(t);
+  return new Date(t - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16).replace("T", " ");
+}
+
 function lokalIso() {
   const d = new Date();
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
@@ -4109,9 +4126,16 @@ function stempelJetzt() {
 }
 
 // ISO-Datum (YYYY-MM-DD) heute + t Tage, in Lokalzeit gerechnet
+// Tage-Eingaben sind nach oben offen (Feld type=number). Eine vertippte
+// Riesenzahl liess toISOString() werfen - in erledigen() NACH dem Eintragen
+// des Ereignisses, also mit halbem Zustand (Großtest 04.10.). Deshalb hier
+// zentral begrenzt: 10 Jahre (3650 Tage) reichen fuer jeden Termin. Dieselbe
+// Grenze steht in isoPlusTage, nutzungsrechtVerlaengern und tageFeld - als
+// Zahl, weil die Pruefstaende einzelne Funktionen ausschneiden.
 function isoInTagen(t) {
+  const n = Number.isFinite(Number(t)) ? Math.trunc(Number(t)) : 0;
   const d = new Date();
-  d.setDate(d.getDate() + t);
+  d.setDate(d.getDate() + Math.max(-3650, Math.min(3650, n)));
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
     .toISOString().slice(0, 10);
 }
@@ -4166,14 +4190,14 @@ function markeFrischOeffnen(m, sheet) {
 
 function markeZuName(name) {
   const s = schluessel(name);
-  return (datenstand.marken || []).find((m) => schluessel(m.name) === s) || null;
+  return ((datenstand && datenstand.marken) || []).find((m) => schluessel(m.name) === s) || null;
 }
 
 // Gibt es den Namen schon - ausser bei `ausser` selbst? Anlegen und
 // Umbenennen (C4) pruefen nach derselben Regel.
 function markeExistiert(name, ausser) {
   const s = schluessel(name);
-  return (datenstand.marken || []).some(
+  return ((datenstand && datenstand.marken) || []).some(
     (x) => x !== ausser && schluessel(x.name) === s);
 }
 
@@ -5101,7 +5125,7 @@ const NR_ERINNERUNG_STD = 14;
 // Ende, auch wenn das schon vorbei ist). null bei unbrauchbarem Datum,
 // gleiche Rundlauf-Pruefung wie tageBis().
 function isoPlusTage(iso, t) {
-  if (tageBis(iso) === null || !Number.isInteger(t)) return null;
+  if (tageBis(iso) === null || !Number.isInteger(t) || Math.abs(t) > 3650) return null;
   const [j, mo, d] = String(iso).split("-").map(Number);
   const z = new Date(j, mo - 1, d + t);
   return [z.getFullYear(), String(z.getMonth() + 1).padStart(2, "0"),
@@ -5209,7 +5233,8 @@ function nutzungsrechtSpeichern(m, ziel, d, jetzt) {
 function nutzungsrechtVerlaengern(m, n, tage, jetzt) {
   const t = m && nrZuNummer(m, n);
   if (!t) return NR_WEG;
-  if (!Number.isInteger(tage) || tage < 1) return "Bitte die Tage eingeben (1 oder mehr).";
+  if (!Number.isInteger(tage) || tage < 1 || tage > 3650)
+    return "Bitte die Tage eingeben (1 bis 3650).";
   const nr = t.nr, ende = isoPlusTage(nr.ende, tage);
   if (!ende) return "Das bisherige Ende ist unlesbar — bitte das Recht bearbeiten.";
   nrErsetzen(t.a, nr, { ...nr, ende, geaendert: jetzt || lokalIso(),
@@ -5285,6 +5310,7 @@ function tageFeld(platzhalter) {
   const f = el("input", "tage");
   f.type = "number";
   f.min = "1";
+  f.max = "3650";
   f.inputMode = "numeric";
   f.placeholder = platzhalter;
   return f;
@@ -8615,9 +8641,12 @@ function bookDateiPfad(ordner, name) {
 // schreibenden Book-Zugriff: im Bestand steht "Zenwatch / Zenring" (Rating
 // D, ohne Book) - der Name bleibt, Book-Aktionen werden abgewiesen
 // (Tobias 26.09.). Ein solcher Name KANN kein Book haben.
-const BOOK_NAME_VERBOTEN = /[\\/:*?"<>|#%]/;
+// Großtest 04.10.: auch Steuerzeichen (U+0000-U+001F) - OneDrive lehnt sie im
+// Dateinamen ab, und im Book-Text machten sie document.xml ungueltig.
+const BOOK_NAME_VERBOTEN = /[\\/:*?"<>|#%\u0000-\u001F]/;
 const BOOK_NAME_HINWEIS = "Der Name enthält ein Zeichen, das in einem " +
-  "Dateinamen nicht erlaubt ist ( / \\ : * ? \" < > | # % ).";
+  "Dateinamen nicht erlaubt ist ( / \\ : * ? \" < > | # % oder ein " +
+  "unsichtbares Steuerzeichen).";
 function bookNameOk(name) {
   return !BOOK_NAME_VERBOTEN.test(String(name == null ? "" : name));
 }
@@ -10327,9 +10356,19 @@ function bookWerte(m) {
 // Werte landen als Text in der document.xml - kaufmaennisches Und & Co.
 // muessen escaped werden, sonst ist das Word-Dokument kaputt (es gibt
 // wirklich eine Marke "Juno &me").
+// Großtest 04.10.: ausserdem alles raus, was XML 1.0 verbietet (Steuerzeichen
+// ausser Tab/Zeilenumbruch, U+FFFE/FFFF, einzelne Surrogate). Ein einziges
+// solches Zeichen - z.B. aus einer Mail eingefuegt - machte document.xml
+// ungueltig, Word oeffnete das Book nicht mehr. Hier, weil ALLE Word- und
+// Excel-Schreibwege durch diese Funktion gehen.
 function xmlText(s) {
-  return String(s).replace(/&/g, "&amp;")
-                  .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(s)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, "")
+    // Surrogat-PAARE (Emoji) bleiben, einzelne Haelften fliegen raus
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g,
+             (m) => (m.length === 2 ? m : ""))
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // .docx ist ein ZIP: word/document.xml raus, Platzhalter ersetzen, rein.
@@ -11053,7 +11092,7 @@ async function excelErzeugen() {
         " (Graph legt Ordner nicht selbst an)"
       : "Hochladen fehlgeschlagen (HTTP " + hoch.status + ").";
   return "✓ " + excelNachbar("Export").split("root:")[1] + "/" + name +
-    " — " + xlsxSortiertRating(marken).length + " Marken, " +
+    " — " + marken.filter((m) => m.brandrating).length + " Marken, " +   // wie im Blatt (Großtest)
     xlsxSortiertPitch(marken).length + " auf der Pitchliste";
 }
 
@@ -11671,8 +11710,11 @@ async function logSichern() {
     // Beim ersten Sichern der Sitzung anhaengen statt ersetzen: sonst
     // wuerde ein App-Neustart alles ueberschreiben, was heute schon
     // dasteht - und ausgerechnet der Absturz waere nicht mehr belegt.
+    // "Geladen" erst, wenn das Lesen geklappt hat ODER die Datei sicher
+    // fehlt (404). Vorher galt ein Funkloch beim ersten Versuch als
+    // "geladen", und der naechste Upload ersetzte das Tageslog (Großtest,
+    // Codex A1-F6). Bei anderem Fehler: dieses Mal gar nicht schreiben.
     if (!logGeladen) {
-      logGeladen = true;
       const r = await OD.graphRoh(datei + ":/content");
       if (r && r.ok) {
         const alt = (await r.text()).trim();
@@ -11681,18 +11723,26 @@ async function logSichern() {
           logPuffer = zeilen.concat(logPuffer);
           logGesichert = zeilen.length;   // die stehen schon in der Datei
         }
+        logGeladen = true;
+      } else if (r && r.status === 404) {
+        logGeladen = true;
+      } else {
+        return;
       }
     }
     const ziel = datei + ":/content?@microsoft.graph.conflictBehavior=replace";
+    // Zeilenzahl VOR dem Senden merken: was waehrend des Uploads dazukommt,
+    // ist noch nicht in der Datei (Codex A1-F5).
+    const gesendet = logPuffer.length;
     const senden = () => OD.graphRoh(ziel, {
-      method: "PUT", body: logPuffer.join("\n") + "\n",
+      method: "PUT", body: logPuffer.slice(0, gesendet).join("\n") + "\n",
       headers: { "Content-Type": "text/plain" } });
     let put = await senden();
     if (put && put.status === 404 && await logOrdnerAnlegen()) put = await senden();
     // NICHT leeren (v106): die naechste Sicherung ersetzt die Datei und
     // naehme sonst alles frueher Geschriebene mit. Gemerkt wird
     // stattdessen, wie weit die Datei reicht.
-    if (put && put.ok) logGesichert = logPuffer.length;
+    if (put && put.ok) logGesichert = gesendet;
   } catch (_) {
     // Logging darf die App NIE stoeren. Geht es nicht, bleibt der Puffer
     // stehen und der naechste Versuch nimmt ihn mit.
@@ -12254,6 +12304,11 @@ function bookKerninfosMelden(m) {
 // Sie liegt IM Datenstand, nicht im Speicher: sonst waere sie beim ersten
 // Schliessen der App weg - und Andrea schliesst die App, um Word zu oeffnen.
 function outbox() {
+  // Ohne Datenstand (Erststart, leerer Ordner) gibt es nichts abzuarbeiten -
+  // vorher TypeError beim Verbinden und bei "Warteliste öffnen" (Großtest).
+  // Schreibende Aufrufer erreichen diese Stelle nur mit einer Marke, also
+  // nie ohne Datenstand.
+  if (!datenstand) return [];
   if (!datenstand.ausstehend) datenstand.ausstehend = [];
   return datenstand.ausstehend;
 }
@@ -13834,7 +13889,10 @@ function backupFaellig(e, heute) {
   const alt = Date.parse(e.autoStand + "T00:00:00");
   const neu = Date.parse(heute + "T00:00:00");
   if (isNaN(alt) || isNaN(neu)) return true; // kaputter Merker -> lieber sichern
-  return (neu - alt) / 86400000 >= tage;
+  // Gerundet: zwischen zwei lokalen Mitternaechten liegen bei der
+  // Zeitumstellung 23 oder 25 Stunden. Roh geteilt fiel das Backup am Tag
+  // nach der Fruehjahrsumstellung aus (Jahreslauf im Großtest, 29.03.2027).
+  return Math.round((neu - alt) / 86400000) >= tage;
 }
 
 function autoBackupText() {
@@ -13884,7 +13942,7 @@ async function datenstandSichern(statusEl) {
   const ok = typeof OD !== "undefined" &&
     await persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
   if (ok) {
-    einst.gesichert = new Date().toISOString().slice(0, 16).replace("T", " ");
+    einst.gesichert = lokalIso().slice(0, 16).replace("T", " ");   // Ortszeit, nicht UTC (Großtest)
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
   }
   wolkeMerken(ok);
@@ -14066,7 +14124,8 @@ function updateSuchKnopf() {
     if (!swRegistrierung) { banner("Update-Prüfung nicht verfügbar"); return; }
     knopf.disabled = true;
     knopf.textContent = "Suche …";
-    try { await swRegistrierung.update(); } catch (e) { /* offline: unten melden */ }
+    let pruefFehler = false;
+    try { await swRegistrierung.update(); } catch (e) { pruefFehler = true; /* offline: unten melden */ }
     // update() kehrt zurueck, sobald die neue Version INSTALLIERT WIRD, nicht
     // wenn sie fertig ist (v207) - waiting war dann noch leer und es hiess
     // "Kein Update bereit", obwohl gerade eins kam. Also abwarten.
@@ -14080,6 +14139,10 @@ function updateSuchKnopf() {
       wartenderWorker = null; // vorheriges "Später" darf nicht blockieren
       updateBereit(wartend);
       banner("Neue Version bereit");
+    } else if (pruefFehler) {
+      // Vorher hiess es auch offline "Kein Update bereit" - eine Behauptung
+      // ueber einen Server, den die App gar nicht erreicht hat (Großtest).
+      banner("Update-Prüfung fehlgeschlagen (offline?) · " + APP_VERSION);
     } else {
       banner("Kein Update bereit · " + APP_VERSION);
     }
