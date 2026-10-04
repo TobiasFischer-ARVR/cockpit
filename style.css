@@ -482,6 +482,12 @@ main {
   align-items: baseline;
 }
 .tabelle .zeile.historie { justify-content: flex-start; }
+/* Aus der Gesamtliste angetipptes Nutzungsrecht (v203). */
+.tabelle .zeile.markiert {
+  background: var(--akzent-flaeche);
+  box-shadow: inset 3px 0 0 var(--akzent-rand);
+  padding-left: 8px;
+}
 .tabelle .num { font-variant-numeric: tabular-nums; }
 .tabelle .leise { color: var(--text-leise); }
 .tabelle .datum { flex: 0 0 auto; }

@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v202"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v203"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2995,8 +2995,10 @@ function sheetBlockReihenfolge() {
 function sheetPitch(p) {
   const wrap = el("div");
   const mv = datenstand ? markeZuName(p.name) : null;
-  // z.nr: offenes Nutzungsrecht-Formular (v199).
-  const z = { modus: null, nr: null };
+  // z.nr: offenes Nutzungsrecht-Formular (v199). z.nrMarkiert: aus der
+  // Gesamtliste angetipptes Recht (v203) - einmal beim Oeffnen uebernommen,
+  // ein Hinweis, kein Datenwert (Invariante: Abschnitte lesen nur p.name).
+  const z = { modus: null, nr: null, nrMarkiert: p.nrMarkiert };
   const stift = mv && mv.brandrating
     ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
   // Kontaktdaten auch hier bearbeitbar (Tobias 01.09.): faellt im Pitch-
@@ -3358,54 +3360,64 @@ function sheetPitch(p) {
   // Nutzungsrechte (v199, Backlog 59): eigener Reiter im Kundenbereich, in
   // jedem Zustand (Auftrag, Pflege, ruhend). Oben alle Rechte der Marke,
   // darunter "＋ Nutzungsrecht erstellen" je Kandidat. Ein Tipp auf ein Recht
-  // klappt das Formular darunter auf. z.nr merkt sich nur die KENNUNG, nie
-  // das Auftragsobjekt (Codex 03.10.) - gespeichert wird ueber nrAuftragZu().
+  // klappt das Formular darunter auf. z.nr merkt sich nur eine Kennung, nie
+  // ein Objekt (Codex 03.10.): { n } fuer ein bestehendes Recht (v203,
+  // aufgeloest ueber nrZuNummer), { kennung, neu: true } fuer ein neues am
+  // Auftrag (aufgeloest ueber nrAuftragZu).
   function bereichNutzungsrechte() {
     const frag = document.createDocumentFragment();
     const m = datenstand ? markeZuName(p.name) : null;
     if (!m) return frag;
-    const offen = (k, neu) => z.nr && z.nr.kennung === k && z.nr.neu === neu;
-    const mitRecht = nrAuftraege(m).filter((a) => a.nutzungsrecht);
+    const offenNr = (n) => z.nr && z.nr.n === n;
+    const offenNeu = (k) => z.nr && z.nr.neu && z.nr.kennung === k;
+    // Alle Rechte der Marke, nach Nummer (v203). "Auftrag vom ..." nur, wenn
+    // sie an mehr als einem Auftrag haengen - sonst ist es Rauschen.
+    const rechte = nrAuftraege(m).flatMap((a) => nrListe(a).map((nr) => ({ a, nr })))
+      .sort((x, y) => (Number(x.nr.n) || 0) - (Number(y.nr.n) || 0));
+    const mehrere = new Set(rechte.map((x) => x.a)).size > 1;
     const tab = el("div", "tabelle");
-    for (const a of mitRecht) {
-      const k = a.kennung || 1, nr = a.nutzungsrecht, zst = nutzungsrechtZustand(nr);
-      const zeile = el("div", "zeile historie");
+    for (const { a, nr } of rechte) {
+      const n = Number(nr.n), zst = nutzungsrechtZustand(nr);
+      const zeile = el("div", "zeile historie" + (z.nrMarkiert === n ? " markiert" : ""));
       const label = el("span");
       label.append(el("span", "punkt " + NR_PUNKT[zst.klasse]), nutzungsrechtName(m, nr));
       zeile.append(label,
         el("span", "num leise", deDatum(nr.beginn) + " – " + deDatum(nr.ende)));
-      const umschalten = () => { z.nr = offen(k, false) ? null : { kennung: k, neu: false }; bau(); };
+      const umschalten = () => { z.nr = offenNr(n) ? null : { n }; bau(); };
       zeile.onclick = umschalten;
       // Sichtbarer Knopf (Tobias, 03.10. spaet): dass die Zeile antippbar
       // ist, sah man nicht - "da kann ich gar nichts aendern".
-      const bearbeiten = el("button", "chip" + (offen(k, false) ? " aktiv" : ""),
-        offen(k, false) ? "Schließen" : "✎ Ändern / verlängern");
+      const bearbeiten = el("button", "chip" + (offenNr(n) ? " aktiv" : ""),
+        offenNr(n) ? "Schließen" : "✎ Ändern / verlängern");
       bearbeiten.onclick = umschalten;
       const bZeile = el("div", "chips");
       bZeile.append(bearbeiten);
-      tab.append(zeile, el("div", "leise", nrArtText(nr) + " · " + zst.text), bZeile);
-      if (offen(k, false)) tab.append(nrFormular(k, nr));
+      const auftrag = !mehrere ? ""
+        : a === m.kundenauftrag ? " · laufender Auftrag" : ` · Auftrag vom ${a.ende || "—"}`;
+      tab.append(zeile, el("div", "leise", nrArtText(nr) + " · " + zst.text + auftrag), bZeile);
+      if (offenNr(n)) tab.append(nrFormular({ n }, nr));
     }
-    frag.append(mitRecht.length ? tab : el("div", "stand", "Noch kein Nutzungsrecht."));
+    frag.append(rechte.length ? tab : el("div", "stand", "Noch kein Nutzungsrecht."));
     const kandidaten = nutzungsrechtKandidaten(m);
     for (const a of kandidaten) {
       const k = a.kennung || 1;
       const zusatz = a !== m.kundenauftrag ? ` (Auftrag vom ${a.ende || "—"})`
         : kandidaten.length > 1 ? " (laufender Auftrag)" : "";
-      const b = el("button", "chip" + (offen(k, true) ? " aktiv" : ""),
+      const b = el("button", "chip" + (offenNeu(k) ? " aktiv" : ""),
                    "＋ Nutzungsrecht erstellen" + zusatz);
-      b.onclick = () => { z.nr = offen(k, true) ? null : { kennung: k, neu: true }; bau(); };
+      b.onclick = () => { z.nr = offenNeu(k) ? null : { kennung: k, neu: true }; bau(); };
       const zeile = el("div", "chips");
       zeile.append(b);
       frag.append(zeile);
-      if (offen(k, true)) frag.append(nrFormular(k, null));
+      if (offenNeu(k)) frag.append(nrFormular({ kennung: k }, null));
     }
     return abschnitt("Nutzungsrechte", frag);
   }
 
-  // Formular fuer ein Recht: neu (nr = null) oder bearbeiten. Die Marke wird
-  // bei jedem Klick FRISCH geholt, nicht beim Zeichnen.
-  function nrFormular(kennung, nr) {
+  // Formular fuer ein Recht: neu (nr = null, ziel = { kennung }) oder
+  // bearbeiten (ziel = { n }). Die Marke wird bei jedem Klick FRISCH geholt,
+  // nicht beim Zeichnen.
+  function nrFormular(ziel, nr) {
     const f = el("div");
     const marke = () => markeZuName(p.name);
     const art = new Set(nr ? nr.art : []);
@@ -3444,10 +3456,10 @@ function sheetPitch(p) {
     speichern.onclick = () => {
       // Leeres Feld ist NICHT 0 (Number("") === 0) - sonst wuerde aus
       // "vergessen" still "am Tag selbst".
-      const r = nutzungsrechtSpeichern(marke(), kennung, { art: [...art],
+      const r = nutzungsrechtSpeichern(marke(), ziel, { art: [...art],
         name: nameFeld.value, beginn: beginn.value, ende: ende.value,
         erinnerung: erinnerung.value === "" ? NaN : Number(erinnerung.value) },
-        !nr, lokalIso());
+        lokalIso());
       if (r !== true) { banner(r); return; }
       banner(nr ? "Nutzungsrecht gespeichert." : "Nutzungsrecht angelegt.");
       z.nr = null;
@@ -3466,7 +3478,7 @@ function sheetPitch(p) {
     const tage = tageFeld("z. B. 30");
     const verlaengern = el("button", "chip", "Verlängern um x Tage");
     verlaengern.onclick = () => {
-      const r = nutzungsrechtVerlaengern(marke(), kennung, Number(tage.value), lokalIso());
+      const r = nutzungsrechtVerlaengern(marke(), ziel.n, Number(tage.value), lokalIso());
       if (r !== true) { banner(r); return; }
       banner("Nutzungsrecht verlängert.");
       bau();
@@ -3474,7 +3486,7 @@ function sheetPitch(p) {
     const loeschen = el("button", "chip", "✕ Löschen");
     loeschen.onclick = () => {
       if (!confirm(`„${nutzungsrechtName(marke() || { name: p.name }, nr)}“ löschen?`)) return;
-      if (!nutzungsrechtLoeschen(marke(), kennung)) {
+      if (!nutzungsrechtLoeschen(marke(), ziel.n)) {
         banner("Das ging nicht — bitte das Sheet neu öffnen.");
         return;
       }
@@ -4918,7 +4930,7 @@ function renderNutzungsrechte() {
       karte.append(kopf, el("div", "titel", x.name),
         el("div", "kontext", deDatum(x.nr.beginn) + " – " + deDatum(x.nr.ende)),
         el("div", "fuss", x.text));
-      karte.onclick = () => nutzungsrechtOeffnen(x.marke);
+      karte.onclick = () => nutzungsrechtOeffnen(x.marke, Number(x.nr.n));
       karten.append(karte);
     }
     rumpf.append(karten);
@@ -5057,13 +5069,19 @@ function auftragZuEintrag(m, h) {
 
 // ================================================ Nutzungsrechte (v199)
 // Bauplan: doku/Bauplan Nutzungsrechte.md, Vorgaben Backlog 59.
-// Das Recht haengt AM AUFTRAG (ka.nutzungsrecht bzw. auftraege[i].nutzungsrecht),
-// nicht in einer eigenen Liste: auftragAblegen() kopiert {...ka}, das Recht
-// wandert beim Abschliessen also von selbst ins Archiv, und ein Recht ohne
+// Die Rechte haengen AM AUFTRAG (a.nutzungsrechte, eine Liste), nicht in
+// einer eigenen Liste der Marke: auftragAblegen() kopiert {...ka}, die Rechte
+// wandern beim Abschliessen also von selbst ins Archiv, und ein Recht ohne
 // Auftrag kann es nicht geben. kundenauftrag/auftraege stehen als Ganzes in
 // IMPORT_TABU und APP_FELDER - keine Whitelist-Aenderung noetig.
-// { n, art: ["organisch"|"ad"], beginn, ende (ISO, Ende INKLUSIVE),
+// Je Recht: { n, art: ["organisch"|"ad"], beginn, ende (ISO, Ende INKLUSIVE),
 //   erinnerung (Tage vorher), verlaengerungen: [{ am, tage }], geaendert }
+// Beliebig viele je Auftrag seit v203 (Andrea, 04.10.: 2-3 Videos je
+// Auftrag, jedes mit eigenem Recht). Bis v202 genau eins im Einzelfeld
+// a.nutzungsrecht - nrListe() liest es weiter mit, nrErsetzen() zieht es
+// beim ersten Schreiben in die Liste um. Bewusst ein NEUES Feld statt
+// "nutzungsrecht darf auch Array sein": eine alte App wuerde ein Array als
+// Einzelrecht lesen und beim Bearbeiten ueberschreiben (Codex 04.10.).
 const NR_ARTEN = [["organisch", "organisch"], ["ad", "Ad"]];
 const NR_ERINNERUNG_STD = 14;
 
@@ -5091,11 +5109,36 @@ function nrAuftraege(m) {
   return [...(m.auftraege || []), m.kundenauftrag].filter(Boolean);
 }
 
+// Alle Rechte eines Auftrags: neue Liste plus altes Einzelfeld (bis v202).
+function nrListe(a) {
+  return [...(a.nutzungsrechte || []), ...(a.nutzungsrecht ? [a.nutzungsrecht] : [])];
+}
+
+// alt durch neu ersetzen (alt = null: neu anhaengen, neu = null: alt
+// entfernen) und speichern. Das Altfeld ist danach in der Liste und weg.
+function nrErsetzen(a, alt, neu) {
+  const liste = nrListe(a).flatMap((x) => x === alt ? (neu ? [neu] : []) : [x]);
+  if (!alt) liste.push(neu);
+  delete a.nutzungsrecht;
+  if (liste.length) a.nutzungsrechte = liste; else delete a.nutzungsrechte;
+  listeVeraltet = true;
+  datenstandPersistieren();
+}
+
+// Ein bestehendes Recht ueber seine Nummer finden (v203) - frisch, ueber
+// alle Auftraege der Marke. Nur bei GENAU einem Treffer: bei doppelter
+// Nummer lieber nichts aendern als das falsche Recht (Codex 04.10.).
+function nrZuNummer(m, n) {
+  const treffer = nrAuftraege(m).flatMap((a) =>
+    nrListe(a).filter((nr) => Number(nr.n) === n).map((nr) => ({ a, nr })));
+  return treffer.length === 1 ? treffer[0] : null;
+}
+
 // Nummer je Marke, hoechste vorhandene + 1. Eine geloeschte hoechste
 // Nummer wird wieder vergeben - gewollt (Tobias, 03.10.: Tippfehler).
 function nutzungsrechtNummerNeu(m) {
-  return 1 + Math.max(0, ...nrAuftraege(m)
-    .map((a) => (a.nutzungsrecht && Number(a.nutzungsrecht.n)) || 0));
+  return 1 + Math.max(0, ...nrAuftraege(m).flatMap(nrListe)
+    .map((nr) => Number(nr.n) || 0));
 }
 
 // Den Auftrag zu einer Kennung FRISCH auflösen (Codex 03.10.): ein offenes
@@ -5110,23 +5153,25 @@ function nrAuftragZu(m, kennung) {
 }
 
 // Wo darf ein NEUES Recht entstehen? Im laufenden Auftrag und nachtraeglich
-// beim zuletzt abgeschlossenen (Entscheidung C) - jeweils nur ohne Recht.
+// beim zuletzt abgeschlossenen (Entscheidung C) - seit v203 beliebig viele.
 // Bewusst der letzte Eintrag in m.auftraege, nicht letzterAuftrag(): der
 // findet nichts mehr, sobald ein neuer Auftrag laeuft (Codex 03.10.).
 function nutzungsrechtKandidaten(m) {
   const fertig = (m.auftraege || []).filter(Boolean);
-  return [fertig[fertig.length - 1], m.kundenauftrag]
-    .filter((a) => a && !a.nutzungsrecht);
+  return [fertig[fertig.length - 1], m.kundenauftrag].filter(Boolean);
 }
 
-// Neu anlegen (neu = true) oder aendern. Rueckgabe true oder ein Satz fuer
-// Andrea. d: { art, beginn, ende, erinnerung }.
-function nutzungsrechtSpeichern(m, kennung, d, neu, jetzt) {
-  const a = m && nrAuftragZu(m, kennung);
-  if (!a) return "Den Auftrag gibt es nicht mehr — bitte das Sheet neu öffnen.";
-  if (neu && a.nutzungsrecht)
-    return "Dieser Auftrag hat schon ein Nutzungsrecht.";
-  if (!neu && !a.nutzungsrecht) return "Das Nutzungsrecht gibt es nicht mehr.";
+const NR_WEG = "Das Nutzungsrecht gibt es nicht mehr — bitte das Sheet neu öffnen.";
+
+// Anlegen (ziel = { kennung } des Auftrags) oder aendern (ziel = { n }).
+// Rueckgabe true oder ein Satz fuer Andrea. d: { art, name, beginn, ende,
+// erinnerung }.
+function nutzungsrechtSpeichern(m, ziel, d, jetzt) {
+  const neu = ziel.n == null;
+  const t = m && !neu ? nrZuNummer(m, ziel.n) : null;
+  const a = m && (neu ? nrAuftragZu(m, ziel.kennung) : t && t.a);
+  if (!a) return neu ? "Den Auftrag gibt es nicht mehr — bitte das Sheet neu öffnen."
+                     : NR_WEG;
   const art = NR_ARTEN.map(([k]) => k).filter((k) => (d.art || []).includes(k));
   if (!art.length) return "Bitte organisch und/oder Ad wählen.";
   const b = tageBis(d.beginn), e = tageBis(d.ende);
@@ -5137,7 +5182,7 @@ function nutzungsrechtSpeichern(m, kennung, d, neu, jetzt) {
   const erinnerung = Number(d.erinnerung);
   if (!Number.isInteger(erinnerung) || erinnerung < 0)
     return "Erinnerung: bitte eine ganze Zahl von Tagen (0 oder mehr).";
-  const alt = a.nutzungsrecht || { n: nutzungsrechtNummerNeu(m), verlaengerungen: [] };
+  const alt = t ? t.nr : { n: nutzungsrechtNummerNeu(m), verlaengerungen: [] };
   const neuRecht = { ...alt, art, beginn: d.beginn, ende: d.ende, erinnerung,
                      geaendert: jetzt || lokalIso() };
   // Eigener Name nur, wenn er vom Standard abweicht - sonst bliebe ein
@@ -5145,33 +5190,26 @@ function nutzungsrechtSpeichern(m, kennung, d, neu, jetzt) {
   delete neuRecht.name;
   const name = String(d.name || "").trim();
   if (name && name !== nutzungsrechtName(m, neuRecht)) neuRecht.name = name;
-  a.nutzungsrecht = neuRecht;
-  listeVeraltet = true;
-  datenstandPersistieren();
+  nrErsetzen(a, t && t.nr, neuRecht);
   return true;
 }
 
 // Ab dem BISHERIGEN Ende verlaengern (Entscheidung H), mit Vermerk.
-function nutzungsrechtVerlaengern(m, kennung, tage, jetzt) {
-  const a = m && nrAuftragZu(m, kennung);
-  const nr = a && a.nutzungsrecht;
-  if (!nr) return "Das Nutzungsrecht gibt es nicht mehr.";
+function nutzungsrechtVerlaengern(m, n, tage, jetzt) {
+  const t = m && nrZuNummer(m, n);
+  if (!t) return NR_WEG;
   if (!Number.isInteger(tage) || tage < 1) return "Bitte die Tage eingeben (1 oder mehr).";
-  const ende = isoPlusTage(nr.ende, tage);
+  const nr = t.nr, ende = isoPlusTage(nr.ende, tage);
   if (!ende) return "Das bisherige Ende ist unlesbar — bitte das Recht bearbeiten.";
-  a.nutzungsrecht = { ...nr, ende, geaendert: jetzt || lokalIso(),
-    verlaengerungen: [...(nr.verlaengerungen || []), { am: isoInTagen(0), tage }] };
-  listeVeraltet = true;
-  datenstandPersistieren();
+  nrErsetzen(t.a, nr, { ...nr, ende, geaendert: jetzt || lokalIso(),
+    verlaengerungen: [...(nr.verlaengerungen || []), { am: isoInTagen(0), tage }] });
   return true;
 }
 
-function nutzungsrechtLoeschen(m, kennung) {
-  const a = m && nrAuftragZu(m, kennung);
-  if (!a || !a.nutzungsrecht) return false;
-  delete a.nutzungsrecht;
-  listeVeraltet = true;
-  datenstandPersistieren();
+function nutzungsrechtLoeschen(m, n) {
+  const t = m && nrZuNummer(m, n);
+  if (!t) return false;
+  nrErsetzen(t.a, t.nr, null);
   return true;
 }
 
@@ -5181,12 +5219,10 @@ function nutzungsrechtLoeschen(m, kennung) {
 function alleNutzungsrechte() {
   const aus = [];
   for (const m of (datenstand && datenstand.marken) || []) {
-    for (const a of nrAuftraege(m)) {
-      if (!a.nutzungsrecht) continue;
-      const nr = a.nutzungsrecht;
-      aus.push({ marke: m.name, name: nutzungsrechtName(m, nr), nr,
-                 kennung: a.kennung || 1, ...nutzungsrechtZustand(nr) });
-    }
+    for (const a of nrAuftraege(m))
+      for (const nr of nrListe(a))
+        aus.push({ marke: m.name, name: nutzungsrechtName(m, nr), nr,
+                   kennung: a.kennung || 1, ...nutzungsrechtZustand(nr) });
   }
   return aus;
 }
@@ -5213,10 +5249,11 @@ function nutzungsrechtListe(liste, f) {
 // (Tobias, 03.10.). zuReitern() liest den Merker einst.reiterPitch.
 // ZUGEKLAPPT (v202, Tobias 04.10.): das Recht mit Infozeile und Knopf
 // "Aendern / verlaengern" - das Formular erst auf Tipp. v201 klappte es
-// gleich auf, das war zu viel.
-function nutzungsrechtOeffnen(markeName) {
+// gleich auf, das war zu viel. n: das angetippte Recht wird markiert (v203) -
+// bei mehreren Rechten je Marke sieht man sonst nicht, welches gemeint war.
+function nutzungsrechtOeffnen(markeName, n) {
   einst.reiterPitch = "Nutzungsrechte";
-  sheetPitch({ name: markeName });
+  sheetPitch({ name: markeName, nrMarkiert: n });
 }
 
 // Punktfarbe in der Liste je Zustandsklasse.
@@ -6063,6 +6100,12 @@ function kontaktFormular(m, fertig) {
   const wrap = el("div");
   const vorhanden = kerninfosAktuell(m, quelleZuName(m.name));
   const eingaben = {};
+  // Zweite E-Mail (v202): nur in der App, nicht im Brand-Book (Tobias, 04.10.).
+  // Steht direkt unter "E-Mail" (v203, Backlog 60) - wird unten in der
+  // Schleife nach dem E-Mail-Block eingehaengt.
+  const email2 = el("input", "feld");
+  email2.type = "email";
+  email2.value = m.email2 || "";
   for (const label of KONTAKT_FELDER) {
     wrap.append(el("div", "stand", label));
     const i = el("input", "feld");
@@ -6110,6 +6153,8 @@ function kontaktFormular(m, fertig) {
       z.append(b);
       wrap.append(z, hinweis);
     }
+    if (label === "E-Mail")
+      wrap.append(el("div", "stand", "E-Mail 2 (nur in der App)"), email2);
   }
 
   // Direktlinks auf die ueblichen Unterseiten - ein Tipp statt Umweg ueber
@@ -6123,13 +6168,6 @@ function kontaktFormular(m, fertig) {
   // Kontaktrecherche, nicht dem Rating-Urteil (Tobias 05.09.).
   // Wie bei den Such-Knoepfen wird die Website beim KLICK gelesen: gerade
   // eingetippt und sofort ausprobierbar, ohne Speichern.
-  // Zweite E-Mail (v202): nur in der App, nicht im Brand-Book (Tobias, 04.10.).
-  wrap.append(el("div", "stand", "E-Mail 2 (nur in der App)"));
-  const email2 = el("input", "feld");
-  email2.type = "email";
-  email2.value = m.email2 || "";
-  wrap.append(email2);
-
   wrap.append(el("div", "stand", "Seiten der Marke direkt öffnen"));
   const sz = el("div", "chips");
   const sHinweis = el("div", "stand");
