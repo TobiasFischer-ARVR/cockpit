@@ -13016,6 +13016,56 @@ async function bookVerschieben(m, vonOrdner, nachOrdner) {
   return r.ok ? "verschoben" : r.status === 404 ? "nicht gefunden" : "fehler";
 }
 
+// Großtest 04.10., Befund 1: Hat die Marke schon Ereignisse ("Daten pruefen
+// -> Brand-Book erstellen", weil das Book fehlte, oder "Book aktualisieren"),
+// stand im frischen Book nur die leere Vorlage - der naechste Import hielt
+// das fuer "Andrea hat alles geloescht" und setzte die Ereignisse auf 0.
+// Deshalb die Historie DIREKT ins neue Dokument, vor dem Upload: eine Datei,
+// ein Schreibvorgang. NICHT ueber die Warteliste (erste Fassung): deren
+// Antwort-Schluessel ist Marke+Datum, zwei Antworten am selben Tag fielen
+// dort zu einer zusammen - Asam Beauty hat genau das (Serie D, 15.09.).
+// Antworten werden deshalb ANGEHAENGT, nicht wie in antwortXml ueber das
+// Datum zusammengelegt. Pitch/Follow-up laufen ueber historieXml.
+async function historieInsNeueBook(puffer, m) {
+  const ev = (m.events || []).filter((e) => e && e.datum);
+  if (!ev.length) return puffer;
+  const zip = await JSZip.loadAsync(puffer);
+  const datei = zip.file("word/document.xml");
+  if (!datei) return puffer;
+  let xml = await datei.async("string"), fehlt = 0;
+  for (const e of ev) {
+    if (e.typ === "Antwort") {
+      const tbl = antwortTabelle(xml);
+      if (!tbl || /<w:tbl[\s>]/.test(tbl.slice(1))) { fehlt++; continue; }
+      const zeilen = wordZeilen(tbl);
+      if (zeilen.length < 2) { fehlt++; continue; }
+      const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
+      const neu = antwortZeileBauen(zeilen[leer > 0 ? leer : zeilen.length - 1],
+        [e.datum, String(e.positiv || "").trim() ? "X" : "",
+         String(e.negativ || "").trim() ? "X" : "", e.bemerkung || ""]);
+      if (!neu) { fehlt++; continue; }
+      const tblNeu = leer > 0 ? tbl.replace(zeilen[leer], () => neu)
+        : tbl.slice(0, -"</w:tbl>".length) + neu + "</w:tbl>";
+      xml = xml.replace(tbl, () => tblNeu);
+    } else {
+      const r = historieXml(xml, e.datum, e.aktion);
+      if (r === "dublette") continue;
+      if (!r) { fehlt++; continue; }
+      xml = r;
+    }
+  }
+  // Passt die Vorlage nicht (sollte bei den zwei Templates nie sein): laut
+  // sagen. Das Sicherheitsnetz in abgleichPlan (neues Book, leere Tabelle)
+  // haelt den Import dann von einer Loeschung ab.
+  if (fehlt) {
+    logZeile("book-historie-unvollstaendig", { marke: m.name, fehlt });
+    banner("⚠ " + fehlt + " Eintrag/Einträge der Historie passten nicht ins neue "
+           + "Brand-Book — bitte in Word nachtragen.");
+  }
+  zip.file("word/document.xml", xml);
+  return zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
+}
+
 async function bookErzeugen(m, ersetzen) {
   if (!bookNameOk(m.name)) { banner(BOOK_NAME_HINWEIS); return "fehler"; }
   const tplName = String(m.brandrating.rating).trim() === "A"
@@ -13027,6 +13077,7 @@ async function bookErzeugen(m, ersetzen) {
   try {
     if (typeof JSZip === "undefined") throw new Error("jszip.min.js fehlt");
     inhalt = await docxBefuellen(inhalt, bookWerte(m));
+    inhalt = await historieInsNeueBook(inhalt, m);
   } catch (_) {
     gefuellt = false; // Original-Template hochladen, Platzhalter bleiben drin
   }
@@ -13037,25 +13088,6 @@ async function bookErzeugen(m, ersetzen) {
       headers: { "Content-Type": DOCX_TYP } });
   const erg = !neu ? "fehler" : neu.status === 409 ? "existiert"
        : neu.ok ? (gefuellt ? "neu" : "neu-leer") : "fehler";
-  // Großtest 04.10., Befund 1: Hat die Marke schon Ereignisse (Book fehlte,
-  // "Daten pruefen -> Brand-Book erstellen", oder "Book aktualisieren"),
-  // steht im frischen Book nur die leere Vorlage. Der naechste Import hielt
-  // das fuer "Andrea hat alles geloescht" und setzte die Ereignisse auf 0.
-  // Deshalb jedes Ereignis als Schreibauftrag in die Warteliste: der Import
-  // stellt die Marke zurueck, bis alles im Book steht (abgleichPlan, Regel 4).
-  if (erg === "neu" || erg === "neu-leer") {
-    for (const e of m.events || []) {
-      if (!e || !e.datum) continue;
-      if (e.typ === "Antwort") {
-        const pos = !!String(e.positiv || "").trim();
-        outboxAufnehmen(m, e.datum, antwortAktion(pos), false, "wartet", "antwort",
-          { positiv: pos, negativ: !!String(e.negativ || "").trim(),
-            bemerkung: e.bemerkung || "" });
-      } else {
-        outboxAufnehmen(m, e.datum, e.aktion, false, "wartet");
-      }
-    }
-  }
   return erg;
 }
 
