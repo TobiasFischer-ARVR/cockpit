@@ -596,7 +596,12 @@ function auftragWarnung() {
   k.append(kopf, el("div", "titel", "Kundenauftrag an einer Brand-Rating-Marke"),
     el("div", "kontext", liste.map((m) => m.name).join(", ") +
       " \u2014 steht auch im Brand Rating. Zum Abschließen des Auftrags hier tippen."));
-  k.onclick = () => auftragOeffnen(liste[0].name);
+  // Mehrere Marken: in die Kundenauftraege statt nur die erste zu oeffnen
+  // (Großtest, Qwen Q-D1-F8 - die Karte nannte beide, oeffnete eine).
+  k.onclick = () => {
+    if (liste.length === 1) auftragOeffnen(liste[0].name);
+    else location.hash = "#/kundenauftraege";
+  };
   return k;
 }
 
@@ -2013,8 +2018,10 @@ function backupLaden() {
     // OneDrive liefe das Zurueckspielen ohnehin nur aufs Geraet, und dann
     // steht der wiederhergestellte Stand an genau einer Stelle.
     if (datenstand) {
+      // MIT Sekunden (Großtest, Codex A1-F4): zwei Rueckspielungen in einer
+      // Minute schrieben sonst in dieselbe Datei - die erste Rueckfahrkarte war weg.
       const kopie = "cockpit-vor-rueckspielung-" +
-        lokalIso().slice(0, 16).replace("T", "-").replace(":", "") + ".json";
+        lokalIso().slice(0, 19).replace("T", "-").replace(/:/g, "") + ".json";
       const gesichert = typeof OD !== "undefined" && await OD.graphPutLeise(
         datenBasis() + "/" + kopie + ":/content", datenstand);
       datenstandBackup("cockpit-vor-rueckspielung-"); // zusaetzlich, ungeprueft
@@ -3197,6 +3204,7 @@ function sheetPitch(p) {
     if (!m || !m.pitchliste || q.letzter_kontakt) return frag;
     const d = el("input", "datum");
     d.type = "date"; // nativer Android-Datumsdialog statt eigener Picker
+    d.min = "2000-01-01"; d.max = "2099-12-31";   // kein Jahr 0001 (Großtest)
     d.value = q.datum_naechste_aktion || isoInTagen(0);
     const z = el("div", "chips");
     const ok = el("button", "chip haupt",
@@ -3315,6 +3323,7 @@ function sheetPitch(p) {
       };
       const dat = el("input", "datum");
       dat.type = "date";
+      dat.min = "2000-01-01"; dat.max = "2099-12-31";   // kein Jahr 0001 (Großtest)
       dat.value = z.datum || "";
       dat.onchange = () => { z.datum = dat.value; sichern(); };
       // Keine Anlege-Funktion ohne Loesch-Funktion (Regel aus v96): eine
@@ -3510,9 +3519,11 @@ function sheetPitch(p) {
     }
     const beginn = el("input", "datum");
     beginn.type = "date";
+    beginn.min = "2000-01-01"; beginn.max = "2099-12-31";   // kein Jahr 0001 (Großtest)
     beginn.value = nr ? nr.beginn : isoInTagen(0);
     const ende = el("input", "datum");
     ende.type = "date";
+    ende.min = "2000-01-01"; ende.max = "2099-12-31";   // kein Jahr 0001 (Großtest)
     ende.value = nr ? nr.ende : "";
     // "+ x Tage" wie beim Termin, aber AB BEGINN (Entscheidung L) und nur
     // als Rechenhilfe: gespeichert wird allein das Datumsfeld.
@@ -3684,6 +3695,7 @@ function sheetPitch(p) {
     // Wiedervorlage setzt sie danach getrennt ueber "Termin aendern".
     const d = el("input", "datum");
     d.type = "date";
+    d.min = "2000-01-01"; d.max = "2099-12-31";   // kein Jahr 0001 (Großtest)
     d.value = isoInTagen(0);
 
     const bem = el("input", "feld");
@@ -4067,6 +4079,7 @@ function sheetPitch(p) {
     tAktion.setAttribute("list", tListe.id);
     const tDatum = el("input", "datum");
     tDatum.type = "date";
+    tDatum.min = "2000-01-01"; tDatum.max = "2099-12-31";   // kein Jahr 0001 (Großtest)
     tDatum.value = q.datum_naechste_aktion || "";
     // "+ X Tage" (Andrea, 16.09.): rechnet AB HEUTE und schreibt das
     // Ergebnis sofort ins Datumsfeld. Damit gibt es keine zwei Wahrheiten
@@ -7605,13 +7618,20 @@ function schrittAnzeige(aktion, m) {
 }
 
 function fuSeitPitch(m) {
+  // CHRONOLOGISCH wie folgeSeitPitch() (Großtest, Codex C3-F2): gezaehlt
+  // wurde nach der Reihenfolge im Array. Ein nachgetragener aelterer Pitch
+  // am Ende setzte den Zaehler auf 0 - danach waere ein viertes Follow-up
+  // moeglich gewesen. Sortiert wird nur, wenn ALLE ein lesbares Datum haben -
+  // sonst bleibt die Reihenfolge wie bisher (ein undatiertes Ereignis hat
+  // keinen Platz auf der Zeitachse). Ohne Ereignisse: gespeicherter Zaehler.
   const ev = m.events || [];
   if (!ev.length) return parseInt((m.pitchliste || {}).zaehler, 10) || 0;
+  const zaehlt = ev.filter((e) => e && (e.typ === "Pitch" || e.typ === "FollowUp"));
+  const datiert = zaehlt.length > 0 && zaehlt.every((e) => datumWert(e.datum) < 1e12);
+  const folge = datiert
+    ? zaehlt.slice().sort((a, b) => datumWert(a.datum) - datumWert(b.datum)) : zaehlt;
   let pos = 0;
-  for (const e of ev) {
-    if (e.typ === "Pitch") pos = 0;
-    else if (e.typ === "FollowUp") pos++;
-  }
+  for (const e of folge) pos = e.typ === "Pitch" ? 0 : pos + 1;
   return pos;
 }
 
@@ -8189,8 +8209,13 @@ function rueckgaengig(m, la) {
     return;
   }
   const ev = m.events || [];
-  const weg = ev.length && ev[ev.length - 1].aktion === la.aktion
-    ? ev.pop() : null;
+  // Auch das DATUM muss passen (Großtest, Codex F3-F3): holte ein Import
+  // nach dem Klick eine zweite Zeile mit derselben Aktion ans Ende, nahm
+  // Rueckgaengig sonst DIESE zurueck - samt ihrer Word-Zeile. Alte Punkte
+  // ohne datum vergleichen wie bisher nur die Aktion.
+  const letzte = ev.length ? ev[ev.length - 1] : null;
+  const weg = letzte && letzte.aktion === la.aktion &&
+    (!la.datum || letzte.datum === la.datum) ? ev.pop() : null;
   // Kein Treffer -> GAR NICHTS zuruecknehmen (v96). Vorher wurde die
   // Pitchliste trotzdem zurueckgerollt, das Ereignis blieb aber stehen:
   // die Liste sagte "nie passiert", die KPI zaehlte es weiter. Wieder zwei
@@ -12690,11 +12715,17 @@ function wartelisteZeile(e, abhaken) {
     // "ist erledigt", sondern "ich habe es selbst ins Word geschrieben".
     // Die App kann das nicht sehen - ohne diesen Knopf bliebe der Eintrag
     // fuer immer stehen.
-    const weg = el("button", "chip", "Hab ich im Word eingetragen");
+    // Ein LOESCH-Auftrag (e.entfernen) verlangt das Gegenteil (Großtest,
+    // Codex F4-F2): vorher stand auch dort "im Word eingetragen" / "steht im
+    // Brand-Book" - wer der Anleitung folgte, bestaetigte genau verkehrt.
+    const weg = el("button", "chip", e.entfernen
+      ? "Hab ich im Word gelöscht" : "Hab ich im Word eingetragen");
     weg.onclick = () => {
       if (!confirm(`„${e.aktion}“ vom ${e.datum} bei „${e.marke}“` +
           "\naus der Warteliste nehmen?\n\n" +
-          "Nur bestätigen, wenn die Zeile wirklich im Brand-Book steht. " +
+          (e.entfernen
+            ? "Nur bestätigen, wenn die Zeile im Brand-Book NICHT mehr steht. "
+            : "Nur bestätigen, wenn die Zeile wirklich im Brand-Book steht. ") +
           "Die App kann das nicht nachprüfen.")) return;
       outboxWeg(e.k);
       sheetWarteliste();
@@ -12721,7 +12752,10 @@ function sheetWarteliste() {
   }
   if (dringend.length) {
     wrap.append(abschnitt("Braucht dich",
-      el("div", "stand", "Bitte im Word von Hand eintragen und hier abhaken."),
+      el("div", "stand", dringend.some((e) => e.entfernen)
+        ? "Bitte im Word von Hand eintragen bzw. (bei „entfernen:“) löschen "
+          + "und hier abhaken."
+        : "Bitte im Word von Hand eintragen und hier abhaken."),
       erklaerung("Braucht dich", "Das trägt sich nicht von allein nach — "
         + "meistens fehlt das Brand-Book oder die Pitch-Historie-Tabelle darin."),
       ...dringend.map((e) => wartelisteZeile(e, true))));
@@ -13577,6 +13611,14 @@ async function standWahlKlaeren(kandidaten) {
   // Weg hier geht bewusst daran vorbei und muss sie deshalb selbst stellen.
   // Ohne das ueberschreibt eine Wahl, die vor dem Upload getroffen wurde,
   // eine Eingabe, die waehrend des Uploads kam.
+  // Erst die Speicherkette leerlaufen lassen (Großtest, Codex A1-F1): ein
+  // waehrend der Sicherungen eingereihtes Speichern (z.B. ein neuer
+  // Warteliste-Auftrag) stempelt erst, wenn es DRAN ist. Ohne das Warten
+  // sah die Pruefung unten nichts, der Tausch lief, und das spaetere
+  // Speichern schrieb den getauschten Stand OHNE den neuen Auftrag.
+  // Sicher, weil standWahlKlaeren nie selbst in der Kette laeuft (nur aus
+  // datenstandLaden).
+  await persistKette;
   if (String((datenstand && datenstand.geaendert) || "") !== standStempelVorher) {
     logZeile("stand-verlust-abgebrochen",
       { grund: "waehrend der Sicherung getippt" });
@@ -13737,8 +13779,8 @@ async function andreasStandUebernehmen(melde) {
   // sind in diesem Projekt schon zweimal teuer geworden.
   if (datenstand) {
     sag("Eigener Stand wird gesichert …");
-    const kopie = "cockpit-vor-andreas-" +
-      lokalIso().slice(0, 16).replace("T", "-").replace(":", "") + ".json";
+    const kopie = "cockpit-vor-andreas-" +   // mit Sekunden wie die Rueckspiel-Kopie
+      lokalIso().slice(0, 19).replace("T", "-").replace(/:/g, "") + ".json";
     const gesichert = typeof OD !== "undefined" && await OD.graphPutLeise(
       datenBasis() + "/" + kopie + ":/content", datenstand);
     datenstandBackup("cockpit-vor-andreas-");  // zusaetzlich, ungeprueft
