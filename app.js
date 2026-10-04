@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v205"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v206"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -5239,20 +5239,25 @@ function alleNutzungsrechte() {
 }
 
 // Filtern und sortieren (v200), rein - die Liste zeichnet nur.
-// f: { suche, sortierung: "" (Ende) | "beginn" | "marke", zustand, art,
+// f: { suche, sortierung: siehe SORT_NR, zustand, art,
 //      abgelaufen: true = einblenden }. Abgelaufene stehen IMMER unten.
-const SORT_NR = [["", "Ende"], ["beginn", "Beginn"], ["marke", "Marke A–Z"]];
+// Beginn und Ende auch absteigend (Tobias, 04.10.): Endung "-ab".
+const SORT_NR = [["", "Ende aufsteigend"], ["ende-ab", "Ende absteigend"],
+                 ["beginn", "Beginn aufsteigend"], ["beginn-ab", "Beginn absteigend"],
+                 ["marke", "Marke A–Z"]];
 function nutzungsrechtListe(liste, f) {
   const s = String(f.suche || "").trim().toLowerCase();
-  const schluessel = (x) => f.sortierung === "marke" ? x.marke.toLowerCase()
-    : f.sortierung === "beginn" ? x.nr.beginn || "" : x.nr.ende || "";
+  const sort = f.sortierung || "", richtung = sort.endsWith("-ab") ? -1 : 1;
+  const feld = sort.replace(/-ab$/, "");
+  const schluessel = (x) => feld === "marke" ? x.marke.toLowerCase()
+    : feld === "beginn" ? x.nr.beginn || "" : x.nr.ende || "";
   return liste
     .filter((x) => f.abgelaufen || x.zustand !== "abgelaufen")
     .filter((x) => !f.zustand || x.zustand === f.zustand)
     .filter((x) => !f.art || (x.nr.art || []).includes(f.art))
     .filter((x) => !s || x.marke.toLowerCase().includes(s))
     .sort((a, b) => (a.zustand === "abgelaufen") - (b.zustand === "abgelaufen") ||
-      schluessel(a).localeCompare(schluessel(b), "de") ||
+      richtung * schluessel(a).localeCompare(schluessel(b), "de") ||
       a.name.localeCompare(b.name, "de"));
 }
 
