@@ -429,10 +429,19 @@ function bookAenderungZeile() {
 // den Knopf selbst. Der Word-Hinweis bleibt trotzdem wegklickbar: er
 // meldet keinen Fehler, sondern einen Rueckstand, und ein neuer cTag
 // holt ihn ohnehin von selbst zurueck.
+// Befund 9 (Großtest 04.10.): Dieses Geraet zeigt einen AELTEREN Stand als
+// OneDrive (Geraetespeicher hatte abgelehnt, Start ohne OneDrive). Dann darf
+// KEIN Weg nach datenstand.json schreiben - weder das normale Speichern noch
+// "Jetzt sichern" (Codex, Diff-Review 04.10.: der Knopf umging die Sperre).
+// Kurzschluss: ohne Merker wird datenstandQuelle gar nicht angefasst.
+function geraetStandGesperrt() {
+  return Boolean(einst && einst.geraetVeraltet) && datenstandQuelle === "Gerät" &&
+    String((datenstand && datenstand.geaendert) || "") < String(einst.geraetVeraltet);
+}
+
 function wolkenWarnung() {
   // Befund 9 (Großtest 04.10.): aelterer Geraetestand, OneDrive nicht da.
-  if (einst.geraetVeraltet && datenstandQuelle === "Gerät" &&
-      String((datenstand && datenstand.geaendert) || "") < String(einst.geraetVeraltet)) {
+  if (geraetStandGesperrt()) {
     const v = el("div", "karte block warnung tippbar");
     const vk = el("div", "kopf");
     vk.append(el("span", "pill", "⚠ Achtung"));
@@ -13255,8 +13264,7 @@ async function datenstandSchreibenEinmal(still) {
   // Deshalb nichts schreiben und laut sagen, bis OneDrive wieder erreichbar
   // ist (Tobias 04.10.: "Warnen + Eintragen sperren"). Kurzschluss: ohne
   // Merker wird datenstandQuelle gar nicht angefasst (Pruefstaende).
-  if (einst && einst.geraetVeraltet && datenstandQuelle === "Gerät" &&
-      String((datenstand && datenstand.geaendert) || "") < String(einst.geraetVeraltet)) {
+  if (geraetStandGesperrt()) {
     banner("⚠ NICHT gespeichert — auf diesem Gerät liegt ein älterer Stand "
       + "als in OneDrive. Bitte mit Internet die App neu öffnen, dann "
       + "erneut eintragen.");
@@ -14005,14 +14013,19 @@ function sicherungenAussortieren(dateien, version, max = SICHERUNGEN_MAX) {
   // Nur die 4 Wochen VOR der juengsten behaltenen - kein uraltes Backup als
   // "Wochen-Sicherung" (test_v105 Fall 6: eins vom Januar ohne Stempel).
   const juengste = Math.max(...[...neueste].filter((w) => w !== null), -Infinity);
-  const wochen = new Set();
-  return rest.slice(max).filter((d) => {
+  // Je Woche das juengste DATUM IM NAMEN behalten, nicht die zuletzt
+  // geaenderte Datei (Codex, Diff-Review 04.10.: eine nachtraeglich kopierte
+  // Montagsdatei verdraengte sonst den Sonntag derselben Woche).
+  const alt = rest.slice(max);
+  const behalten = new Set(), wochen = new Set();
+  for (const d of alt.slice().sort((a, b) => String(b.name).localeCompare(String(a.name)))) {
     const w = woche(d);
     if (w === null || neueste.has(w) || wochen.has(w) || wochen.size >= 4 ||
-        w < juengste - 5 * 7) return true;
+        w < juengste - 5 * 7) continue;
     wochen.add(w);
-    return false;
-  });
+    behalten.add(d);
+  }
+  return alt.filter((d) => !behalten.has(d));
 }
 
 // Aufraeumen nach dem Schreiben. Ein Fehlschlag hier ist kein Drama - die
@@ -14130,6 +14143,11 @@ function sicherungsText() {
 
 async function datenstandSichern(statusEl) {
   if (!datenstand) { banner("Kein Datenstand geladen."); return; }
+  if (geraetStandGesperrt()) {
+    banner("⚠ Nicht gesichert — auf diesem Gerät liegt ein älterer Stand "
+      + "als in OneDrive. Bitte die App mit Internet neu öffnen.");
+    return;
+  }
   statusEl.textContent = "Sichere …";
   // Dritter Schreiber, auch er durch die Kette (v128). Andrea kann "Jetzt
   // sichern" druecken, waehrend ein Persistieren noch laeuft - dann waren es
