@@ -6934,6 +6934,9 @@ function renderHauptmenu() {
 // Mehr braucht Phase 3a nicht - der echte Datei-Zugriff kommt danach.
 async function sheetOneDrive() {
   const konto = OD.konto();
+  // Konto inzwischen weg (abgemeldet, Karte noch nicht neu gezeichnet):
+  // anmelden statt "konto.name" auf null (Großtest Serie D, G2).
+  if (!konto) { OD.anmelden(); return; }
   const wrap = el("div");
   wrap.append(el("div", "kontext",
     `Verbunden als ${konto.name || konto.username}`));
