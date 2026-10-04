@@ -14154,7 +14154,10 @@ async function datenstandSichern(statusEl) {
   // bis v127 zwei PUTs auf dieselbe Datei.
   kontoStempeln();
   const ok = typeof OD !== "undefined" &&
-    await persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand));
+    // Sperre auch IM Kettenschritt pruefen (Codex Runde 2): zwischen Klick und
+    // Schreiben koennte der Stand gewechselt haben.
+    await persistKettenLauf(() => (geraetStandGesperrt() ? false
+      : OD.graphPutLeise(OD_DATENSTAND(), datenstand)));
   if (ok) {
     einst.gesichert = lokalIso().slice(0, 16).replace("T", " ");   // Ortszeit, nicht UTC (Großtest)
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
