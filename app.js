@@ -430,6 +430,19 @@ function bookAenderungZeile() {
 // meldet keinen Fehler, sondern einen Rueckstand, und ein neuer cTag
 // holt ihn ohnehin von selbst zurueck.
 function wolkenWarnung() {
+  // Befund 9 (Großtest 04.10.): aelterer Geraetestand, OneDrive nicht da.
+  if (einst.geraetVeraltet && datenstandQuelle === "Gerät" &&
+      String((datenstand && datenstand.geaendert) || "") < String(einst.geraetVeraltet)) {
+    const v = el("div", "karte block warnung tippbar");
+    const vk = el("div", "kopf");
+    vk.append(el("span", "pill", "⚠ Achtung"));
+    v.append(vk, el("div", "titel", "Älterer Stand — Eintragen gesperrt"),
+      el("div", "kontext",
+        "Auf diesem Gerät liegt ein älterer Stand als in OneDrive. Bitte mit "
+        + "Internet die App neu öffnen, dann ist alles wieder da."));
+    v.onclick = () => sheetEinstellungen("Sicherung");
+    return v;
+  }
   if (!einst.cloudFehlt) return null;
   const k = el("div", "karte block warnung tippbar");
   const kopf = el("div", "kopf");
@@ -2469,7 +2482,15 @@ window.addEventListener("popstate", () => {
   if (listeVeraltet) { listeVeraltet = false; render(); }
   // Aufgeschobenen Abgleich jetzt nachholen (v95): waehrend das Sheet
   // offen war, durfte der Datenstand nicht ausgetauscht werden.
-  if (abgleichNachholen) { abgleichNachholen = false; abgleichBeiRueckkehr(); }
+  // ERST nach der Speicherkette (Großtest 04.10., Befund 10): schloss eine
+  // Aktion das Sheet (z.B. "Brand löschen"), lief der Abgleich PARALLEL zu
+  // ihrem Speichern, las OneDrive noch ohne die Änderung und hielt die eben
+  // gelöschte Marke für einen Markenverlust ("Datenstände unterscheiden
+  // sich ... OK = den älteren nehmen"). OK holte sie ohne Book zurück.
+  if (abgleichNachholen) {
+    abgleichNachholen = false;
+    persistKette.then(() => abgleichBeiRueckkehr());
+  }
 });
 
 // Verlaufs-Diagramm (Inline-SVG, Specs aus der dataviz-Skill): Hairline-
@@ -9491,7 +9512,13 @@ function auftraegeMitFlug(name, ausstehend, imFlug) {
   return liste.concat([{ marke: name, grund: "im-flug" }]);
 }
 
-function abgleichPlan(lese, m, ausstehend) {
+// ersteLesung (Großtest 04.10., Befund 1): Diese DATEI wird zum ersten Mal
+// gelesen (kein Import-Merker fuer ihre Element-Id). Eine LEERE Tabelle ist
+// dann kein Beleg, dass Andrea alles geloescht hat - meist ist es ein frisch
+// aus der Vorlage erzeugtes Book. Die Hoheitsregeln versprechen: "bricht ab,
+// wenn dabei etwas verschwinden wuerde". Bei einer schon bekannten Datei
+// bleibt eine geleerte Tabelle ein gueltiges Loeschen in Word.
+function abgleichPlan(lese, m, ausstehend, ersteLesung) {
   const befunde = [];
   const nein = (tun, grund) => ({ tun, grund, befunde,
                                   darfLoeschen: false, merkerWeiter: false });
@@ -9516,6 +9543,12 @@ function abgleichPlan(lese, m, ausstehend) {
     if (lese.tabellen[art] === "fehlt" && hatEreignisArt(m, art)) {
       befunde.push({ art, code: "tabelle-verschwunden",
                      text: "Tabelle fehlt, im Datenstand stehen Ereignisse" });
+    }
+    // 3b. Neue Datei, leere Tabelle, aber Ereignisse in der App.
+    if (ersteLesung && lese.tabellen[art] === "leer" && hatEreignisArt(m, art)) {
+      befunde.push({ art, code: "neues-book-leer",
+                     text: "Book zum ersten Mal gelesen und leer, im Datenstand " +
+                           "stehen Ereignisse - nichts übernommen" });
     }
   }
   if (befunde.length) {
@@ -9877,8 +9910,12 @@ async function importEinBook(m, datei, abbrechen) {
   const frisch = datenstand.marken[stelle];
 
   const lese = bookLesen(xml);
+  const merker = importMerkerLies(frisch);
+  const ersteLesung = !merker || merker.itemId !== datei.itemId ||
+                      merker.driveId !== datei.driveId;
   const plan = abgleichPlan(lese, frisch, auftraegeMitFlug(
-    frisch.name, (datenstand && datenstand.ausstehend) || [], bookImFlug));
+    frisch.name, (datenstand && datenstand.ausstehend) || [], bookImFlug),
+    ersteLesung);
   const erg = importAnwenden(frisch, lese, plan);
 
   // --- Protokoll (v163) ------------------------------------------
@@ -12906,8 +12943,28 @@ async function bookErzeugen(m, ersetzen) {
       (ersetzen ? "replace" : "fail"),
     { method: "PUT", body: inhalt,
       headers: { "Content-Type": DOCX_TYP } });
-  return !neu ? "fehler" : neu.status === 409 ? "existiert"
+  const erg = !neu ? "fehler" : neu.status === 409 ? "existiert"
        : neu.ok ? (gefuellt ? "neu" : "neu-leer") : "fehler";
+  // Großtest 04.10., Befund 1: Hat die Marke schon Ereignisse (Book fehlte,
+  // "Daten pruefen -> Brand-Book erstellen", oder "Book aktualisieren"),
+  // steht im frischen Book nur die leere Vorlage. Der naechste Import hielt
+  // das fuer "Andrea hat alles geloescht" und setzte die Ereignisse auf 0.
+  // Deshalb jedes Ereignis als Schreibauftrag in die Warteliste: der Import
+  // stellt die Marke zurueck, bis alles im Book steht (abgleichPlan, Regel 4).
+  if (erg === "neu" || erg === "neu-leer") {
+    for (const e of m.events || []) {
+      if (!e || !e.datum) continue;
+      if (e.typ === "Antwort") {
+        const pos = !!String(e.positiv || "").trim();
+        outboxAufnehmen(m, e.datum, antwortAktion(pos), false, "wartet", "antwort",
+          { positiv: pos, negativ: !!String(e.negativ || "").trim(),
+            bemerkung: e.bemerkung || "" });
+      } else {
+        outboxAufnehmen(m, e.datum, e.aktion, false, "wartet");
+      }
+    }
+  }
+  return erg;
 }
 
 // Datenteil Stufe 1 (pur, testbar in test_kadenz.js): NUR der Erledigt-
@@ -13110,6 +13167,21 @@ function kontoStempeln() {
 // still (v177): nur das ERFOLGS-Banner entfaellt - fuer die Speicher-
 // vorgaenge des Imports, der selbst berichtet. Jeder Fehlschlag bleibt laut.
 async function datenstandSchreibenEinmal(still) {
+  // Großtest 04.10., Befund 9: Dieses Geraet zeigt einen AELTEREN Stand als
+  // OneDrive (der Geraetespeicher hatte ein Speichern abgelehnt, die App
+  // wurde danach ohne OneDrive gestartet). Wuerde jetzt gespeichert, bekaeme
+  // der alte Stand den neueren Stempel und ueberschriebe beim naechsten
+  // Abgleich den neueren in OneDrive - der dort stehende Eintrag waere weg.
+  // Deshalb nichts schreiben und laut sagen, bis OneDrive wieder erreichbar
+  // ist (Tobias 04.10.: "Warnen + Eintragen sperren"). Kurzschluss: ohne
+  // Merker wird datenstandQuelle gar nicht angefasst (Pruefstaende).
+  if (einst && einst.geraetVeraltet && datenstandQuelle === "Gerät" &&
+      String((datenstand && datenstand.geaendert) || "") < String(einst.geraetVeraltet)) {
+    banner("⚠ NICHT gespeichert — auf diesem Gerät liegt ein älterer Stand "
+      + "als in OneDrive. Bitte mit Internet die App neu öffnen, dann "
+      + "erneut eintragen.");
+    return false;
+  }
   // EINE Referenz für beide Schreibwege (Backlog 5, Codex 11.09.). Vorher
   // stand hier zweimal die globale `datenstand`, mit einem `await`
   // dazwischen - taucht backupLaden() in diesem Fenster ein anderes Objekt
@@ -13148,6 +13220,13 @@ async function datenstandSchreibenEinmal(still) {
   try { await idbSchreib("datenstand", stand); } catch (_) { aufGeraet = false; }
   const ok = typeof OD !== "undefined" &&
     await OD.graphPutLeise(OD_DATENSTAND(), stand);
+  // Befund 9: OneDrive hat ihn, das Geraet nicht -> Geraetestand ist ab jetzt
+  // aelter. Merken (ueberlebt den Neustart), bis das Geraet wieder mitkommt.
+  if (ok && !aufGeraet) einst.geraetVeraltet = stand.geaendert;
+  else if (aufGeraet && einst.geraetVeraltet) delete einst.geraetVeraltet;
+  if ((ok && !aufGeraet) || aufGeraet) {
+    try { localStorage.setItem(EINST_KEY, JSON.stringify(einst)); } catch (_) {}
+  }
   // Ehrlich melden (Tobias 04.09.): "folgt beim naechsten Abgleich" war eine
   // beruhigende Unwahrheit - fehlt der Ordner, folgt nie etwas. Andreas
   // Eintraege lagen wochenlang nur im Geraetespeicher.
@@ -13724,7 +13803,13 @@ async function datenstandLaden() {
     // diese Zeile den neuen Stand aufs Geraet, waehrend der alte noch zur
     // Cloud unterwegs ist: genau das Auseinanderlaufen aus Backlog 5.
     await persistKettenLauf(
-      () => idbSchreib("datenstand", datenstand).catch(() => {}));
+      () => idbSchreib("datenstand", datenstand).then(() => {
+        // Befund 9: Geraet ist wieder auf dem neuesten Stand
+        if (einst.geraetVeraltet) {
+          delete einst.geraetVeraltet;
+          try { localStorage.setItem(EINST_KEY, JSON.stringify(einst)); } catch (_) {}
+        }
+      }).catch(() => {}));
   } else if (cloud &&
              String(cloud.geaendert || "") < String(datenstand.geaendert || "")) {
     // Auto-Abgleich: Geraet ist neuer als OneDrive -> still zuruecksichern.
