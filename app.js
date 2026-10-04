@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v206"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v207"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -14067,6 +14067,12 @@ function updateSuchKnopf() {
     knopf.disabled = true;
     knopf.textContent = "Suche …";
     try { await swRegistrierung.update(); } catch (e) { /* offline: unten melden */ }
+    // update() kehrt zurueck, sobald die neue Version INSTALLIERT WIRD, nicht
+    // wenn sie fertig ist (v207) - waiting war dann noch leer und es hiess
+    // "Kein Update bereit", obwohl gerade eins kam. Also abwarten.
+    const neu = swRegistrierung.installing;
+    if (neu) await new Promise((fertig) => neu.addEventListener("statechange",
+      () => { if (neu.state !== "installing") fertig(); }));
     knopf.disabled = false;
     knopf.textContent = "↻ Nach Update suchen";
     const wartend = swRegistrierung.waiting;

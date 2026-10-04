@@ -1,7 +1,7 @@
 // ponytail: einfacher Cache-First fuer die App-Huelle, kein Update-Handling
 // ueber Versions-Diffing. Upgrade wenn's stoert: Cache-Namen bei jedem Release
 // hochzaehlen (cache-v2, ...) statt CACHE hart zu pflegen.
-const CACHE = "cockpit-v206"; // bei jedem Release hochzaehlen, sonst kriegt das Handy die alte Version
+const CACHE = "cockpit-v207"; // bei jedem Release hochzaehlen, sonst kriegt das Handy die alte Version
 const DATEIEN = ["index.html", "style.css", "app.js", "manifest.json",
                  "msal-browser.min.js", "jszip.min.js", "onedrive.js",
                  "icons/icon-192.png", "icons/icon-512.png"];
@@ -10,8 +10,14 @@ const DATEIEN = ["index.html", "style.css", "app.js", "manifest.json",
 // dann im WARTESTAND stehen, bis die App ihn per Nachricht weckt (v98).
 // Ohne das laedt sich die App neu, sobald Andrea zurueckwechselt - mitten
 // in einem halb ausgefuellten Formular waere die Eingabe weg.
+// cache: "reload" (v207): am Browser-Zwischenspeicher VORBEI laden. GitHub
+// Pages erlaubt 10 Minuten Zwischenspeichern (max-age=600) - kamen zwei
+// Releases kurz hintereinander, packte der neue Worker die ALTE app.js in
+// seinen Cache. Danach hielt sich das Handy fuer aktuell und "Nach Update
+// suchen" fand nichts mehr (Tobias 04.10.: Worker v206, App zeigte v205).
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(DATEIEN)));
+  e.waitUntil(caches.open(CACHE).then((c) =>
+    c.addAll(DATEIEN.map((d) => new Request(d, { cache: "reload" })))));
 });
 
 // "Jetzt laden" in der App -> jetzt uebernehmen. Danach feuert in der App
