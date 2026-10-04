@@ -674,6 +674,11 @@ main {
    Antippen auf. <details> macht das Auf/Zu selbst - kein JS. */
 .fgruppe { border-bottom: 1px solid var(--rand); }
 .fgruppe:last-child { border-bottom: none; }
+/* Checklisten-Punkt (v205, Tobias 04.10.): Haken · Datum · ✕ oben, Text
+   darunter, Luft zum naechsten Punkt. ✕ rechtsbuendig, weg vom Haken. */
+.checkpunkt { padding: 10px 0 4px; }
+.checkpunkt .chips { align-items: center; }
+.checkpunkt .chips .chip:last-child { margin-left: auto; }
 .fgruppe > summary {
   min-height: 44px;
   display: flex;

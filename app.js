@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v204"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v205"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1221,16 +1221,17 @@ function sheetEinstellungen(reiter) {
   laden.onclick = backupLaden;
   sZeile.append(sichern, backup, laden);
   wrap.append(abschnitt("Datenstand-Sicherung", sStatus, sZeile,
-    el("div", "stand",
-      "Backup laden: eine cockpit-datenstand-….json auswählen " +
-      "(Download-Ordner oder OneDrive) — ersetzt den aktuellen Stand. " +
-      "Der jetzige Stand wird vorher automatisch in den Download-Ordner " +
-      "gesichert (cockpit-vor-rueckspielung-….json)."),
     // Punkt 34 (Tobias, 18.09.): *"Egal, packt den Hinweis halt unter den
     // Button in die Settings."* Stand bisher nur in der Sammelmappe fuer
     // Andrea - also an einer Stelle, die sie im Ernstfall nicht offen hat.
-    // Hier steht er da, wo der Knopf ist.
+    // Hier steht er da, wo der Knopf ist. Seit v205 EINE Erklaerung statt
+    // Beschreibung oben + Grenze unten (Tobias 04.10.: "zwei Erklaerungen");
+    // die Rueckfrage beim Laden warnt weiterhin vor dem Ersetzen.
     erklaerung("Backup laden",
+      "Eine cockpit-datenstand-….json auswählen (Download-Ordner oder " +
+      "OneDrive) — ersetzt den aktuellen Stand. Der jetzige Stand wird " +
+      "vorher automatisch in den Download-Ordner gesichert " +
+      "(cockpit-vor-rueckspielung-….json). " +
       "⚠ Grenze: „Backup laden“ stellt nur die Daten der App wieder her — " +
       "NICHT die Word-Dokumente. Wurde zwischenzeitlich z. B. ein Rating " +
       "geändert, steht danach in der App wieder der alte Wert, im " +
@@ -1318,11 +1319,12 @@ function sheetEinstellungen(reiter) {
   const lStatus = el("div", "stand", logStufe()
     ? "Schreibt nach " + logBasis().split("root:").pop() +
       " — heutige Datei: " + logDatei().split("/").pop()
-    : "Aus. Einschalten, wenn ein Fehler nachvollzogen werden soll.");
+    : "Aus.");
   wrap.append(abschnitt("Datenlogging",
     einstZeile("Umfang", LOG_STUFEN, "logStufe"),
     lStatus,
     erklaerung("Umfang",
+      "Einschalten, wenn ein Fehler nachvollzogen werden soll. " +
       "einfach: jeder OneDrive-Zugriff mit Status und Graph-Fehlercode. " +
       "erweitert: zusätzlich SOLL/IST und welche Schutzregel gegriffen hat. " +
       "Eine Datei je Tag und Gerät.")));
@@ -1616,10 +1618,9 @@ function sheetEinstellungen(reiter) {
   // 24.09.): das Brand-Book ist in der App ja auch zu sehen, und
   // "Brand-Book" heisst dort ausserdem ein Knopf. Die zwei Seiten sind
   // das Word-DOKUMENT und der EIGENE Eintrag - so heissen sie jetzt auch.
-  const pStatus = el("div", "stand",
-    "Vergleicht Rating, Brand Fit, Begeisterung und Erfolgschance: " +
-    "was im Word-Dokument steht gegen das, was du in der App eingetragen " +
-    "hast. Dazu: liegt jedes Dokument im Ordner seines Ratings?");
+  // Statuszeile startet leer (v205): die Beschreibung steht in der
+  // Erklaerung, sonst stand sie doppelt da (Tobias 04.10.).
+  const pStatus = el("div", "stand");
   const pZeile = el("div", "chips");
   const pKnopf = el("button", "chip", "🔍 Daten prüfen");
   let bestandNachholen = false;
@@ -1761,7 +1762,10 @@ function sheetEinstellungen(reiter) {
   pZeile.append(pKnopf);
   wrap.append(abschnitt("Daten prüfen", pStatus, pZeile,
     erklaerung("Daten prüfen",
-      "Öffnet KEINE Word-Datei. Die Prüfung holt nur das Verzeichnis der "
+      "Vergleicht Rating, Brand Fit, Begeisterung und Erfolgschance: "
+      + "was im Word-Dokument steht gegen das, was du in der App eingetragen "
+      + "hast. Dazu: liegt jedes Dokument im Ordner seines Ratings? "
+      + "Öffnet KEINE Word-Datei. Die Prüfung holt nur das Verzeichnis der "
       + "vier Ordner — Dateinamen und je eine Änderungs-Kennung — und "
       + "vergleicht danach zwei Werte, die beide schon im Gerät liegen: "
       + "den Wert aus dem Word-Dokument, so wie er beim letzten Einlesen "
@@ -1777,9 +1781,7 @@ function sheetEinstellungen(reiter) {
   // Der Weg Word -> App, ohne PC. Bewusst ein KNOPF und kein Automatismus:
   // der erste Lauf soll unter Aufsicht passieren. Von selbst macht es
   // spaeter S6.
-  const iStatus = el("div", "stand",
-    "Liest die Brand-Books und übernimmt, was Andrea in Word geändert hat. " +
-    "Geladen wird nur, was sich seit dem letzten Mal geändert hat.");
+  const iStatus = el("div", "stand");   // leer, wie pStatus (v205)
   const iZeile = el("div", "chips");
   const iKnopf = el("button", "chip", "⭳ Aus Brand-Books aktualisieren");
   iKnopf.onclick = async () => {
@@ -1809,6 +1811,8 @@ function sheetEinstellungen(reiter) {
   iZeile.append(iKnopf);
   wrap.append(abschnitt("Aus Brand-Books aktualisieren", iStatus, iZeile,
     erklaerung("Aus Brand-Books aktualisieren",
+      "Liest die Brand-Books und übernimmt, was Andrea in Word geändert hat. " +
+      "Geladen wird nur, was sich seit dem letzten Mal geändert hat. " +
       "Word hat Vorrang bei Ereignissen und Kerninfos. Marken mit einem " +
       "wartenden Eintrag in der Warteliste werden übersprungen, bis der " +
       "durch ist — dort ist die App weiter als das Word.")));
@@ -3237,7 +3241,7 @@ function sheetPitch(p) {
       `Checkliste (${obj.checkliste.filter((z) => z && z.erledigt).length}/` +
       `${obj.checkliste.length})`));
     obj.checkliste.forEach((z) => {
-      const zeile = el("div", "fgruppe");
+      const zeile = el("div", "fgruppe checkpunkt");
       const haken = el("input");
       haken.type = "checkbox";
       haken.checked = !!z.erledigt;
@@ -3265,10 +3269,13 @@ function sheetPitch(p) {
         sichern(false);
         bau();
       };
+      // Haken · Datum · ✕ in EINER Zeile, Text darunter (Tobias 04.10.
+      // nach v204: "zu gequetscht", ein neuer Punkt klebte am Datum des
+      // vorigen). ✕ ganz rechts, weit weg vom Haken.
       const kopf = el("div", "chips");
-      kopf.append(haken);
+      kopf.append(haken, dat);
       if (!fest) kopf.append(weg);
-      zeile.append(kopf, txt, dat);
+      zeile.append(kopf, txt);
       teil.append(zeile);
     });
     if (fest) return teil;
