@@ -13054,13 +13054,13 @@ async function historieInsNeueBook(puffer, m) {
       xml = r;
     }
   }
-  // Passt die Vorlage nicht (sollte bei den zwei Templates nie sein): laut
-  // sagen. Das Sicherheitsnetz in abgleichPlan (neues Book, leere Tabelle)
-  // haelt den Import dann von einer Loeschung ab.
+  // Passt die Vorlage nicht (sollte bei den zwei Templates nie sein): GAR
+  // NICHT hochladen. Eine TEILWEISE gefuellte Historie wuerde der naechste
+  // Import fuer vollstaendig halten und die fehlenden Ereignisse loeschen
+  // (Codex, Diff-Review Runde 3). Der Aufrufer bricht ab.
   if (fehlt) {
     logZeile("book-historie-unvollstaendig", { marke: m.name, fehlt });
-    banner("⚠ " + fehlt + " Eintrag/Einträge der Historie passten nicht ins neue "
-           + "Brand-Book — bitte in Word nachtragen.");
+    throw new Error(fehlt + " Eintrag/Einträge der Historie passen nicht in die Vorlage");
   }
   zip.file("word/document.xml", xml);
   return zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
@@ -13077,9 +13077,21 @@ async function bookErzeugen(m, ersetzen) {
   try {
     if (typeof JSZip === "undefined") throw new Error("jszip.min.js fehlt");
     inhalt = await docxBefuellen(inhalt, bookWerte(m));
-    inhalt = await historieInsNeueBook(inhalt, m);
   } catch (_) {
     gefuellt = false; // Original-Template hochladen, Platzhalter bleiben drin
+  }
+  // Historie getrennt vom Befuellen: scheitert SIE, wird nichts hochgeladen -
+  // auch nicht bei "Book aktualisieren" (replace). Ein Book ohne die Historie
+  // der Marke loescht sie beim naechsten Import (Codex, Diff-Review Runde 3).
+  if ((m.events || []).length) {
+    try {
+      if (typeof JSZip === "undefined") throw new Error("jszip.min.js fehlt");
+      inhalt = await historieInsNeueBook(inhalt, m);
+    } catch (fehler) {
+      banner("⚠ Brand-Book NICHT angelegt — die Historie ließ sich nicht "
+             + "eintragen (" + fehler.message + "). Bitte Tobias Bescheid geben.");
+      return "fehler";
+    }
   }
   const neu = await OD.graphRoh(
     bookPfad(m) + ":/content?@microsoft.graph.conflictBehavior=" +
