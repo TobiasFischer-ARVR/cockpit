@@ -321,14 +321,13 @@ main {
   margin-bottom: 6px;
   -webkit-overflow-scrolling: touch;
 }
-/* Knopfzeile direkt unter einem Eingabefeld (v120, Tobias 12.09.):
-   .datum hat keinen vertikalen Aussenabstand, .chips keinen oberen - die
-   Chip-Umrandung stiess dadurch direkt an das Feld darueber. Der Text sass
-   optisch richtig, nur der Rahmen klebte. 12px fuegt sich in den Rhythmus
-   der anderen Felder ein (.stand 14px unten, .feld 10px unten).
-   Bewusst eine eigene Klasse statt .datum oder .chips global zu aendern -
-   beide stehen an vielen weiteren Stellen. */
-.chips.unter-feld { margin-top: 12px; }
+/* Abstand ueber JEDER Knopfzeile, die auf etwas anderes folgt (Backlog 61,
+   Tobias 04.10.: "Knoepfe gehen im Text unter"). Ersetzt .chips.unter-feld
+   (v120), das nur an 5 von ~60 Stellen nachgeruestet war. Die Raender
+   fallen mit dem des Vorgaengers zusammen: nach .stand (14px) aendert sich
+   nichts, nach .datum/.feld (0/10px) kommt der fehlende Abstand dazu.
+   Zwei Knopfzeilen untereinander bleiben eng. */
+:not(.chips) + .chips { margin-top: 12px; }
 .chip {
   flex: 0 0 auto;
   min-height: 44px;
@@ -349,6 +348,18 @@ main {
   background: var(--akzent-flaeche);
   border-color: var(--akzent-rand);
   color: var(--link);
+  font-weight: 600;
+}
+/* Hauptaktion (Backlog 61, Tobias 04.10.): Coral gefuellt, weisse Schrift -
+   laut Design-Briefing die einzige starke Farbe, fuer den Hauptknopf. Bis
+   v203 trug sie dieselbe Optik wie eine Auswahl (.aktiv): man sah nicht,
+   was gewaehlt ist und was man druecken soll. .aktiv heisst seitdem nur
+   noch "gewaehlt". Coral DUNKEL, weil Weiss auf hellem Coral nur 3:1
+   Kontrast hat (zu schwach fuer 12.5px), auf dunklem 4.5:1. */
+.chip.haupt {
+  background: var(--coral-dunkel);
+  border-color: var(--coral-dunkel);
+  color: #fff;
   font-weight: 600;
 }
 
@@ -833,6 +844,17 @@ body.design-kupfer {
   padding-top: 4px;
   border-top: 1px solid var(--rand);
 }
+/* Zugeklappt (Backlog 61): nur die Zeile "ⓘ Erklärungen (n)". 44px hoch
+   wie jede Antippflaeche; der Standard-Pfeil faellt weg, das ⓘ traegt es. */
+.erklaerungen summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.erklaerungen summary::-webkit-details-marker { display: none; }
 .erklaerungen .zeile {
   align-items: flex-start;
   color: var(--text-leise);

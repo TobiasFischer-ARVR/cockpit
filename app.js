@@ -627,7 +627,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v203"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v204"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -701,7 +701,11 @@ function erklaerung(feld, text) {
 function erklaerungenAnsEnde(wurzel) {
   const texte = wurzel.querySelectorAll(".stand.begruendung");
   if (!texte.length) return wurzel;
-  const tab = el("div", "tabelle erklaerungen");
+  // Zugeklappt (Backlog 61, Tobias 04.10.: "zu viel Infotext dauerhaft
+  // sichtbar") - am Fuss steht nur noch "ⓘ Erklärungen (n)". <details>
+  // klappt von selbst auf und zu, kein eigener Zustand noetig.
+  const tab = el("details", "tabelle erklaerungen");
+  tab.append(el("summary", "leise", `ⓘ Erklärungen (${texte.length})`));
   for (const t of texte) {
     const z = el("div", "zeile");
     z.append(el("span", "leise", t.dataset.feld || ""),
@@ -1012,7 +1016,7 @@ function ordnerBrowser(ziel, startTeile, fertig, abbruch) {
     const liste = el("div", "ordnerliste");
     liste.append(el("div", "stand", "Lade …"));
     const knoepfe = el("div", "chips");
-    const nehmen = el("button", "chip aktiv", "✓ Diesen Ordner nehmen");
+    const nehmen = el("button", "chip haupt", "✓ Diesen Ordner nehmen");
     nehmen.onclick = () => fertig(teile.join("/"));
     const ab = el("button", "chip", "Abbrechen");
     ab.onclick = abbruch;
@@ -1102,7 +1106,7 @@ function pfadAbschnitt(titel, schluessel, standard, basis, pruefer, hilfe) {
   function normal() {
     koerper.innerHTML = "";
     const zeile = el("div", "chips");
-    const waehlen = el("button", "chip aktiv", "📁 Ordner wählen");
+    const waehlen = el("button", "chip haupt", "📁 Ordner wählen");
     waehlen.onclick = () => {
       if (!angemeldet()) {
         ergebnis.textContent =
@@ -1200,7 +1204,7 @@ function sheetEinstellungen(reiter) {
     einstZeile("Übergang beim Reiterwechsel", UEBERGAENGE, "anim"),
     einstZeile("Infotexte", HILFETEXTE, "hilfe"),
     einstZeile("Archiv", ARCHIV_ANZEIGE, "archiv"),
-    el("div", "stand",
+    erklaerung("Infotexte",
       "„ohne Begründungen“ blendet die Erklärtexte aus, die nur sagen " +
       "WARUM etwas so funktioniert. Bedienhinweise und Zustandsmeldungen " +
       "bleiben stehen."),
@@ -1318,7 +1322,7 @@ function sheetEinstellungen(reiter) {
   wrap.append(abschnitt("Datenlogging",
     einstZeile("Umfang", LOG_STUFEN, "logStufe"),
     lStatus,
-    el("div", "stand",
+    erklaerung("Umfang",
       "einfach: jeder OneDrive-Zugriff mit Status und Graph-Fehlercode. " +
       "erweitert: zusätzlich SOLL/IST und welche Schutzregel gegriffen hat. " +
       "Eine Datei je Tag und Gerät.")));
@@ -1400,7 +1404,7 @@ function sheetEinstellungen(reiter) {
   };
   xZeile.append(xKnopf);
   wrap.append(abschnitt("Excel erzeugen", xStatus, xZeile,
-    el("div", "stand",
+    erklaerung("Excel erzeugen",
       "Brand Rating und Pitchliste werden neu geschrieben; Kriterien, " +
       "Formeln und Formatierung bleiben aus der Vorlage. Vorlage und " +
       "Export liegen neben dem Datenbank-Ordner. Gleicher Tag = gleiche " +
@@ -1497,7 +1501,7 @@ function sheetEinstellungen(reiter) {
     zeile.append(el("div", "kontext",
       "Bitte wählen: Welcher Wert stimmt? Dann „Übernehmen“ tippen."));
     const wahl = {};
-    const los = el("button", "chip aktiv", "Übernehmen");
+    const los = el("button", "chip haupt", "Übernehmen");
     los.disabled = true;
     const bereit = () => { los.disabled = !f.abw.every((a) => wahl[a.feld]); };
     for (const a of f.abw) {
@@ -1715,7 +1719,7 @@ function sheetEinstellungen(reiter) {
       const aufstellung = Object.keys(zaehl)
         .map((txt) => `${zaehl[txt]}× ${txt}`).join(", ");
       const aZeile = el("div", "chips");
-      const aKnopf = el("button", "chip aktiv",
+      const aKnopf = el("button", "chip haupt",
         `✓ Alles nachtragen (${reparierbar.length})`);
       aKnopf.onclick = async () => {
         if (!confirm(`${aufstellung}.\n\nAlles auf einmal übernehmen?`)) return;
@@ -3141,7 +3145,7 @@ function sheetPitch(p) {
     d.type = "date"; // nativer Android-Datumsdialog statt eigener Picker
     d.value = q.datum_naechste_aktion || isoInTagen(0);
     const z = el("div", "chips");
-    const ok = el("button", "chip aktiv",
+    const ok = el("button", "chip haupt",
       q.datum_naechste_aktion ? "Startdatum ändern" : "Startdatum setzen");
     ok.onclick = () => {
       if (!d.value) return;
@@ -3338,7 +3342,7 @@ function sheetPitch(p) {
       banner("Kundenpflege beendet — die Marke ruht.");
       bau();
     };
-    const eZeile = el("div", "chips unter-feld");
+    const eZeile = el("div", "chips");
     eZeile.append(ende);
     frag.append(el("div", "stand", "Kundenpflege beenden:"), notiz, eZeile);
     return abschnitt("Kundenpflege", frag);
@@ -3452,7 +3456,7 @@ function sheetPitch(p) {
     const erinnerung = tageFeld("");
     erinnerung.min = "0";
     erinnerung.value = String(nr ? nr.erinnerung : NR_ERINNERUNG_STD);
-    const speichern = el("button", "chip aktiv", nr ? "✓ Speichern" : "✓ Anlegen");
+    const speichern = el("button", "chip haupt", nr ? "✓ Speichern" : "✓ Anlegen");
     speichern.onclick = () => {
       // Leeres Feld ist NICHT 0 (Number("") === 0) - sonst wuerde aus
       // "vergessen" still "am Tag selbst".
@@ -3467,7 +3471,7 @@ function sheetPitch(p) {
     };
     const abbrechen = el("button", "chip", "Abbrechen");
     abbrechen.onclick = () => { z.nr = null; bau(); };
-    const knoepfe = el("div", "chips unter-feld");
+    const knoepfe = el("div", "chips");
     knoepfe.append(speichern, abbrechen);
     f.append(el("div", "stand", "Name"), nameFeld, el("div", "stand", "Art"), chips,
       el("div", "stand", "Beginn"), beginn,
@@ -3494,9 +3498,9 @@ function sheetPitch(p) {
       z.nr = null;
       bau();
     };
-    const vZeile = el("div", "chips unter-feld");
+    const vZeile = el("div", "chips");
     vZeile.append(verlaengern);
-    const lZeile = el("div", "chips unter-feld");
+    const lZeile = el("div", "chips");
     lZeile.append(loeschen);
     f.append(el("div", "stand", "Verlängern ab bisherigem Ende"), tage, vZeile);
     for (const v of nr.verlaengerungen || [])
@@ -3618,7 +3622,7 @@ function sheetPitch(p) {
     bem.type = "text";
     bem.placeholder = "kurzer Satz — der ausführliche Text gehört ins Book";
 
-    const ok = el("button", "chip aktiv", "Antwort eintragen");
+    const ok = el("button", "chip haupt", "Antwort eintragen");
     ok.onclick = () => {
       if (!d.value) { banner("Bitte ein Datum wählen."); return; }
       const datumDe = deDatum(d.value);
@@ -3681,7 +3685,7 @@ function sheetPitch(p) {
     // Dieselbe Funktion, die auch das Verschieben selbst absichert -
     // nicht eine zweite Abfrage von q.positivBeantwortet (Fall 27/29).
     const erlaubt = verschiebenErlaubt(m);
-    const kaKnopf = el("button", erlaubt ? "chip aktiv" : "chip",
+    const kaKnopf = el("button", erlaubt ? "chip haupt" : "chip",
       "→ in Kundenaufträge verschieben");
     if (!erlaubt) {
       kaKnopf.disabled = true;
@@ -3838,8 +3842,8 @@ function sheetPitch(p) {
     tage.oninput = dText;
     dText();
     const abstand = el("div", "stand");
-    abstand.append("Abstand: ", tage, " Tage — änderbar, gilt dann künftig ",
-      "für diese Marke.");
+    abstand.append("Abstand: ", tage, " Tage",
+      erklaerung("Abstand", "Änderbar, gilt dann künftig für diese Marke."));
     // Herkunft nur beim Pitch (v90): bei einem Follow-up ist die Aktion
     // durchnummeriert, da gibt es nichts zu erklaeren.
     let herkunft = null;
@@ -3859,8 +3863,8 @@ function sheetPitch(p) {
         herkunft.setAttribute("list", dl.id);
         frag.append(dl);
       }
-      frag.append(el("div", "stand",
-        "Woher kam der Pitch? (optional — steht so im Brand-Book)"), herkunft);
+      frag.append(el("div", "stand", "Woher kam der Pitch? (optional)"), herkunft,
+        erklaerung("Woher kam der Pitch?", "Steht so im Brand-Book."));
     }
     // Der Text, der im Book und im Datenstand landet.
     const aktionText = () => {
@@ -3890,7 +3894,7 @@ function sheetPitch(p) {
     // Sperre ist Vorsorge, sie nimmt heute niemandem etwas weg.
     const ohneStart = !q.datum_naechste_aktion && !q.letzter_kontakt;
     const zeile = el("div", "chips");
-    const ok = el("button", "chip aktiv", `✓ ${s.aktion} erledigt`);
+    const ok = el("button", "chip haupt", `✓ ${s.aktion} erledigt`);
     // Zweiter Sperrgrund seit v160: bei einem eigenen Schritt steht noch
     // nicht fest, was danach kommt. Gesperrt statt versteckt - dieselbe
     // Entscheidung wie bei "ohne Startdatum" (v156).
@@ -4010,7 +4014,7 @@ function sheetPitch(p) {
       const n = parseInt(tPlus.value, 10);
       if (n > 0) tDatum.value = isoInTagen(n);
     };
-    const tSpeichern = el("button", "chip aktiv", "Speichern");
+    const tSpeichern = el("button", "chip haupt", "Speichern");
     tSpeichern.onclick = () => {
       const a = tAktion.value.trim();
       const d = tDatum.value;
@@ -4033,7 +4037,7 @@ function sheetPitch(p) {
     // el(tag, klasse, TEXT) - das dritte Argument wird als textContent
     // gesetzt. Ein Element dort landet als "[object HTMLButtonElement]" in
     // der Anzeige (12.09. genau so passiert). Kinder gehoeren an append().
-    const tZeile = el("div", "chips unter-feld");
+    const tZeile = el("div", "chips");
     tZeile.append(tSpeichern);
     tForm.append(
       el("div", "stand", "Nächster Schritt:"), tAktion, tListe,
@@ -5312,7 +5316,7 @@ function sheetNeuerKunde() {
     dl.append(o);
   }
   const okZ = el("div", "chips");
-  const ok = el("button", "chip aktiv", "✓ Anlegen");
+  const ok = el("button", "chip haupt", "✓ Anlegen");
   ok.onclick = () => {
     if (!datenstand) { banner("Kein Datenstand geladen."); return; }
     // Rueckfrage (Tobias 30.09.): "+ Kunde" ist fuer neue Namen. Eine
@@ -6000,7 +6004,7 @@ function ratingFormular(m, fertig) {
   zeile("Begeisterung", skala, "geist");
   zeile("Erfolgschance", skala, "chance");
   const okZ = el("div", "chips");
-  const ok = el("button", "chip aktiv", "✓ Speichern");
+  const ok = el("button", "chip haupt", "✓ Speichern");
   ok.onclick = async () => {
     if (!f.rating) { banner("Rating (A–D) fehlt."); return; }
     if (f.rating === "D" && String(br.rating || "").trim() !== "D" &&
@@ -6189,7 +6193,7 @@ function kontaktFormular(m, fertig) {
     "Fehlermeldung der Marke. Prüfen können wir das vorher nicht."));
 
   const okZ = el("div", "chips");
-  const ok = el("button", "chip aktiv", "✓ Speichern");
+  const ok = el("button", "chip haupt", "✓ Speichern");
   ok.onclick = () => {
     m.kerninfos = m.kerninfos || {};
     for (const [label, i] of Object.entries(eingaben))
@@ -6427,7 +6431,7 @@ function bereichSonstiges(m, fertig) {
 
   wrap.append(gitter);
   const okZ = el("div", "chips");
-  const ok = el("button", "chip aktiv", "✓ Speichern");
+  const ok = el("button", "chip haupt", "✓ Speichern");
   ok.onclick = () => {
     for (const s of speichern) s();
     if (m.pitchliste) m.pitchliste.geaendert = lokalIso();
@@ -6581,7 +6585,7 @@ function sheetBrandrating(m) {
           "Fürs Brand-Book erst bei OneDrive anmelden (Hauptmenü)."));
         return frag;
       }
-      const b = el("button", "chip aktiv", "📄 Brand-Book erstellen");
+      const b = el("button", "chip haupt", "📄 Brand-Book erstellen");
       b.onclick = async () => {
         if (!confirm(`Brand-Book für „${m.name}“ anlegen?\n` +
             `Kommt als ${rating}-Brand nach OneDrive — Kerninfos (Name, ` +
@@ -6608,7 +6612,7 @@ function sheetBrandrating(m) {
         bau();
       };
       reihe.append(b);
-      reiheRein(el("div", "stand",
+      reiheRein(erklaerung("Brand-Book erstellen",
         "Stufe 1: erzeugt das Brand-Book aus dem Template, trägt die " +
         "Kerninfos ein und setzt den Haken. In die Pitchliste kommt die " +
         "Brand erst mit „Brand-Book befüllt“."));
@@ -6656,7 +6660,7 @@ function sheetBrandrating(m) {
       reihe.append(ak);
     }
 
-    const b = el("button", "chip aktiv", "✓ Brand-Book befüllt");
+    const b = el("button", "chip haupt", "✓ Brand-Book befüllt");
     b.onclick = () => {
       if (!confirm(`„${m.name}“ in die Pitchliste schieben?\n` +
           "Eintrag kommt ohne Termin — das Startdatum setzt du dort.")) return;
@@ -6665,7 +6669,7 @@ function sheetBrandrating(m) {
       bau();
     };
     reihe.append(b);
-    reiheRein(el("div", "stand",
+    reiheRein(erklaerung("Brand-Book befüllt",
       "Stufe 2: Book in Word fertig befüllt? Damit geht die Brand in " +
       "die Pitchliste (ohne Termin). „↻ Book aktualisieren“ schreibt " +
       "vorher noch geänderte Kerninfos ins Word nach."));
@@ -7016,8 +7020,7 @@ function renderUgc() {
   kunden.append(kKopf, el("div", "titel", "Kundenaufträge"),
     el("div", "kontext", kAnzahl || kArchiv
       ? `${kAnzahl} aktiv` + (kArchiv ? ` · ${kArchiv} Archiv` : "")
-      : "Noch keine — Marken kommen über „in Kundenaufträge verschieben“ " +
-        "aus der Pitchliste hierher."));
+      : "Noch keine"));
   kunden.onclick = () => { location.hash = "#/kundenauftraege"; };
   c.append(kunden);
 
@@ -7036,8 +7039,7 @@ function renderUgc() {
     el("div", "kontext", nrAlle.length
       ? `${nrOffen} aktiv` + (nrBald ? ` · ${nrBald} läuft${nrBald === 1 ? "" : "en"} bald ab` : "") +
         (nrAlle.length > nrOffen ? ` · ${nrAlle.length - nrOffen} abgelaufen` : "")
-      : "Noch keine — sie entstehen im Brand-Sheet einer Kundenmarke, " +
-        "Reiter „Nutzungsrechte“."));
+      : "Noch keine"));
   rechte.onclick = () => { location.hash = "#/nutzungsrechte"; };
   c.append(rechte);
 
@@ -7052,8 +7054,7 @@ function renderUgc() {
   bestand.append(bKopf, el("div", "titel", "Kundenpflege"),
     el("div", "kontext", pAnzahl
       ? `${pAnzahl} Kunde${pAnzahl === 1 ? "" : "n"} in der Pflege`
-      : "Noch keine — Marken kommen über „✓ Abgeschlossen“ aus einem " +
-        "Kundenauftrag hierher."));
+      : "Noch keine"));
   bestand.onclick = () => { location.hash = "#/kundenpflege"; };
   c.append(bestand);
 
@@ -8163,7 +8164,7 @@ function sheetNeueBrand() {
   zeile("Begeisterung", skala, "geist");
   zeile("Erfolgschance", skala, "chance");
   const okZ = el("div", "chips");
-  const ok = el("button", "chip aktiv", "✓ Brand anlegen");
+  const ok = el("button", "chip haupt", "✓ Brand anlegen");
   ok.onclick = () => {
     const n = name.value.trim();
     if (!n) { banner("Name fehlt."); return; }
@@ -10897,7 +10898,7 @@ function grundpfadAbschnitt() {
   let lauf = 0;   // Pruefkennung: ein veraltetes Ergebnis darf nichts anzeigen
   const normal = () => {
     koerper.innerHTML = "";
-    const w = el("button", "chip aktiv", "📁 Grundpfad wählen");
+    const w = el("button", "chip haupt", "📁 Grundpfad wählen");
     w.onclick = () => {
       if (typeof OD === "undefined" || !OD.konto()) {
         stand.textContent = "Zum Auswählen erst bei OneDrive anmelden."; return;
@@ -10925,7 +10926,7 @@ function grundpfadAbschnitt() {
       : "✗ " + p.titel + ": bleibt /" + p.bisher + " — " +
         ORDNER_STATUS_TEXT[status[i]] + ", bitte einzeln wählen")));
     const neu = Object.assign(grundNeueEinst(liste, status), { grundPfad: pfadNorm(grund) });
-    const los = el("button", "chip aktiv", "Übernehmen");
+    const los = el("button", "chip haupt", "Übernehmen");
     const ab = el("button", "chip", "Abbrechen");
     los.disabled = !status.includes("ok");
     ab.onclick = () => { lauf++; normal(); };
@@ -12570,10 +12571,9 @@ function sheetWarteliste() {
   }
   if (dringend.length) {
     wrap.append(abschnitt("Braucht dich",
-      el("div", "stand",
-        "Das trägt sich nicht von allein nach — meistens fehlt das "
-        + "Brand-Book oder die Pitch-Historie-Tabelle darin. Bitte im Word "
-        + "von Hand eintragen und hier abhaken."),
+      el("div", "stand", "Bitte im Word von Hand eintragen und hier abhaken."),
+      erklaerung("Braucht dich", "Das trägt sich nicht von allein nach — "
+        + "meistens fehlt das Brand-Book oder die Pitch-Historie-Tabelle darin."),
       ...dringend.map((e) => wartelisteZeile(e, true))));
   }
   // Eigener Abschnitt, nicht unter "Wartet" (A5-Fix, 22.09.): diese
@@ -14076,7 +14076,7 @@ function updateBereit(sw) {
   const leiste = el("div", "updateleiste");
   leiste.id = "updateleiste";
   leiste.append(el("span", null, "Neue Version bereit"));
-  const jetzt = el("button", "chip aktiv", "Jetzt laden");
+  const jetzt = el("button", "chip haupt", "Jetzt laden");
   // Kein eigener reload hier: der Worker uebernimmt, dadurch feuert
   // controllerchange - und DORT wird neu geladen. Eine Stelle, nicht zwei.
   jetzt.onclick = () => {
