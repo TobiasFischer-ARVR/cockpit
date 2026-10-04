@@ -883,8 +883,13 @@ function zuReitern(wrap, merker) {
   // requestAnimationFrame und mit isConnected-Wache.
   // ponytail: misst bei jedem Neuzeichnen neu (3 Layouts, einmal pro
   // Sheet-Aufbau). Zwischenspeichern erst, falls das je auffaellt.
+  // Hoechstens ein paar Bilder auf das Einhaengen warten (Großtest, Codex
+  // F1-F1): wurde das Sheet vorher verworfen (z.B. geschlossen, waehrend
+  // ein Book erstellt wurde), lief diese Schleife sonst endlos weiter und
+  // hielt den alten DOM-Baum fest - jede Wiederholung startete eine neue.
+  let warten = 0;
   const messen = () => {
-    if (!wrap.isConnected) { requestAnimationFrame(messen); return; }
+    if (!wrap.isConnected) { if (++warten < 10) requestAnimationFrame(messen); return; }
     // Bildlaufposition ueber die Messung retten (v162, Tobias 24.09.).
     //
     // Das Messen setzt JEDEN Reiter einmal ein. Dabei schrumpft der Inhalt
@@ -1208,6 +1213,8 @@ async function pruefeBooks() {
 // landete bei der Befund-Karte z.B. in "Darstellung" und musste suchen.
 // typeof-Pruefung, weil das Zahnrad die Funktion direkt als onclick
 // bekommt und dann ein Klick-Ereignis hereinreicht.
+let importBerichtNachBau = "";   // Import-Bericht ueber den Neuaufbau tragen
+let standBerichtNachBau = "";    // dito fuer "Andreas Stand holen"
 function sheetEinstellungen(reiter) {
   if (typeof reiter === "string") einst.reiterEinst = reiter;
   const wrap = el("div");
@@ -1270,11 +1277,12 @@ function sheetEinstellungen(reiter) {
     // nebeneinander, und Tobias musste fragen, was der Unterschied ist. Er
     // gehoert hierher: er ERSETZT den Stand und sichert vorher, genau wie
     // "Backup laden" - nur mit der Cloud als Quelle statt einer Datei.
-    const aStatus = el("div", "stand",
+    const aStatus = el("div", "stand", standBerichtNachBau ||
       "Für den Abend, nachdem du Andreas Dateien heruntergeladen hast: holt " +
       "ihren Stand aus OneDrive — auch wenn er ÄLTER ist als der " +
       "auf diesem Gerät — und liest danach alle Brand-Books neu ein. " +
       "Der jetzige Stand wird vorher gesichert.");
+    standBerichtNachBau = "";   // nach Neuaufbau stand dort der Bericht (Großtest)
     const aZeile = el("div", "chips");
     const aKnopf = el("button", "chip",
       "⇩ Andreas Stand holen (Abend)");
@@ -1299,11 +1307,12 @@ function sheetEinstellungen(reiter) {
             ? "✓ Stand aus OneDrive übernommen. "
             : "Kein Stand in OneDrive gefunden — nur neu eingelesen. ") +
           r.merkerWeg + " Marken neu zu lesen. " + importBericht(r.bericht);
-        // Bewusst KEIN sheetEinstellungen() wie beim Import-Knopf: das baut
-        // das Sheet neu auf und wischt genau den Bericht weg, den man nach
-        // diesem Knopf lesen will. listeVeraltet reicht - popstate zeichnet
-        // die Ansicht frisch, sobald das Sheet zugeht (Muster backupLaden).
+        // Seit dem Großtest DOCH neu aufbauen (Qwen Q-F2-F1): ohne Neuaufbau
+        // zeigte der Reiter Warteliste die Zahl des ALTEN Stands. Der Bericht
+        // wandert ueber importBerichtNachBau ins neue Sheet.
         listeVeraltet = true;
+        standBerichtNachBau = aStatus.textContent;
+        sheetEinstellungen();
       } catch (fehler) {
         aStatus.textContent = "✗ Abgebrochen: " + (fehler && fehler.message);
       } finally {
@@ -1642,13 +1651,21 @@ function sheetEinstellungen(reiter) {
   // verlorengeht. In EINER Funktion haette genau dieser frueher return das
   // Nachholen uebersprungen - und eine Reparatur waere ohne sichtbare
   // Wirkung geblieben.
+  // Laeuft schon eine Pruefung, wartet dieser Aufruf und prueft DANACH
+  // selbst - mit seiner eigenen Anzeige. Vorher merkte er sich das Nachholen
+  // nur in SEINEM Sheet; lief die Pruefung in einem inzwischen geschlossenen
+  // Sheet (oder im stillen Waechter), holte niemand nach und die Anzeige
+  // blieb leer (Großtest, Codex F2-F2). Eine wartende Anforderung je Sheet
+  // reicht: sie prueft ohnehin den Stand NACH allem, was davor lief.
   const pruefen = async () => {
-    if (bestandLaeuft) { bestandNachholen = true; return; }
+    if (bestandNachholen) return;
+    if (bestandLaeuft) {
+      bestandNachholen = true;
+      while (bestandLaeuft) await new Promise((r) => setTimeout(r, 100));
+      bestandNachholen = false;
+    }
     bestandLaeuft = true;
     try { await pruefenEinmal(); } finally { bestandLaeuft = false; }
-    // Waehrend des Laufs kam noch eine Reparatur dazu -> noch einmal, damit
-    // die Anzeige den Stand NACH der letzten Aenderung zeigt.
-    if (bestandNachholen) { bestandNachholen = false; await pruefen(); }
   };
   const pruefenEinmal = async () => {
     if (!datenstand || !datenstand.marken) {
@@ -1794,7 +1811,11 @@ function sheetEinstellungen(reiter) {
   // Der Weg Word -> App, ohne PC. Bewusst ein KNOPF und kein Automatismus:
   // der erste Lauf soll unter Aufsicht passieren. Von selbst macht es
   // spaeter S6.
-  const iStatus = el("div", "stand");   // leer, wie pStatus (v205)
+  // Startet leer wie pStatus (v205) - ausser direkt nach einem Import, der
+  // das Sheet neu gebaut hat: dann steht sein Bericht hier (Großtest,
+  // Codex F2-F3; vorher verschwand er mit dem alten Sheet).
+  const iStatus = el("div", "stand", importBerichtNachBau);
+  importBerichtNachBau = "";
   const iZeile = el("div", "chips");
   const iKnopf = el("button", "chip", "⭳ Aus Brand-Books aktualisieren");
   iKnopf.onclick = async () => {
@@ -1813,6 +1834,7 @@ function sheetEinstellungen(reiter) {
       // Meldung, die importBericht() schon fertig danebenstehen hatte.
       if (b && !b.fehler && (b.uebernommen || b.befunde.length)) {
         render();                      // Kacheln und Listen neu zeichnen
+        importBerichtNachBau = iStatus.textContent;
         sheetEinstellungen();          // Sheet mit frischem Stand neu aufbauen
       }
     } catch (fehler) {
@@ -3279,7 +3301,18 @@ function sheetPitch(p) {
       txt.value = z.text || "";
       txt.placeholder = "z. B. Vertrag unterschrieben";
       txt.readOnly = !!fest;
-      txt.onchange = () => { z.text = txt.value.trim(); sichern(); };
+      // Text leeren = Zeile weg (checklisteBereinigen). Bei einer Zeile, die
+      // schon Text hatte, vorher fragen wie beim ✕ (Tobias 04.10., Großtest):
+      // sonst verschwand sie samt Datum und Haken still. Nein = Text zurück.
+      txt.onchange = () => {
+        const neu = txt.value.trim();
+        if (!neu && z.text && !confirm(`Zeile „${z.text}“ entfernen?`)) {
+          txt.value = z.text;
+          return;
+        }
+        z.text = neu;
+        sichern();
+      };
       const dat = el("input", "datum");
       dat.type = "date";
       dat.value = z.datum || "";
@@ -10918,8 +10951,21 @@ async function pfadeUebernehmen(neu) {
   if ((datenWechsel || bookWechsel) &&
       ((datenstand && datenstand.ausstehend) || []).length) return "warteliste";
   if (datenWechsel && einst.cloudFehlt) return "nur-geraet";
+  // Liegt im neuen Ordner ueberhaupt ein Datenstand? Sonst startet die App
+  // dort leer (Großtest: eine Ebene zu hoch gewaehlt). Nur ein Hinweis in
+  // der Rueckfrage - ein neuer, leerer Ordner kann ja gewollt sein. Offline
+  // (null) wird nichts behauptet.
+  let ohneStand = false;
+  if (datenWechsel && typeof OD !== "undefined") {
+    const p = await OD.graphRoh("/me/drive/root:/" + datenNeu +   // wie datenBasis(), fetch kodiert
+                                "/datenstand.json");
+    ohneStand = Boolean(p && p.status === 404);
+  }
   if (datenWechsel && !confirm("Datenbank-Ordner wechseln?\n\nDie App lädt " +
-      "danach neu und liest nur noch aus\n/" + datenNeu)) return "abgebrochen";
+      "danach neu und liest nur noch aus\n/" + datenNeu +
+      (ohneStand ? "\n\n⚠ In diesem Ordner liegt KEINE datenstand.json — " +
+                   "die App startet dort leer. Richtiger Ordner?" : "")))
+    return "abgebrochen";
   // Erst die KOPIE speichern: scheitert localStorage, bleibt einst wie es war.
   const speichern = () => {
     const kopie = Object.assign({}, einst, neu);
@@ -13901,7 +13947,30 @@ function sicherungenAussortieren(dateien, version, max = SICHERUNGEN_MAX) {
   }
   rest.sort((a, b) => String(b.lastModifiedDateTime || "")
     .localeCompare(String(a.lastModifiedDateTime || "")));
-  return rest.slice(max);
+  // Dazu je Kalenderwoche das neueste Tages-Backup, fuer die 4 Wochen VOR
+  // den behaltenen (Tobias 04.10., Großtest): mit nur 4 Sicherungen reichte
+  // das Netz bei taeglichem Backup 4 Tage zurueck - ein stiller Verlust, der
+  // erst nach einer Woche auffiel, war aus keinem Backup mehr zu holen.
+  // Woche ueber das Datum IM NAMEN (Montag als Schluessel), nicht ueber
+  // lastModifiedDateTime - das verschiebt OneDrive bei jedem Kopieren.
+  const woche = (d) => {
+    const m = /^cockpit-datenstand-(\d{4})-(\d{2})-(\d{2})\.json$/.exec(String(d.name));
+    if (!m) return null;
+    const tag = Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000;
+    return tag - ((new Date(tag * 86400000).getUTCDay() + 6) % 7);
+  };
+  const neueste = new Set(rest.slice(0, max).map(woche));
+  // Nur die 4 Wochen VOR der juengsten behaltenen - kein uraltes Backup als
+  // "Wochen-Sicherung" (test_v105 Fall 6: eins vom Januar ohne Stempel).
+  const juengste = Math.max(...[...neueste].filter((w) => w !== null), -Infinity);
+  const wochen = new Set();
+  return rest.slice(max).filter((d) => {
+    const w = woche(d);
+    if (w === null || neueste.has(w) || wochen.has(w) || wochen.size >= 4 ||
+        w < juengste - 5 * 7) return true;
+    wochen.add(w);
+    return false;
+  });
 }
 
 // Aufraeumen nach dem Schreiben. Ein Fehlschlag hier ist kein Drama - die
