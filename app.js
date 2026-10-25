@@ -654,7 +654,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v208"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v209"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2290,7 +2290,7 @@ function chipZeile() {
   const jahr = jahre.includes(jahrWahl) ? jahrWahl : jahre[jahre.length - 1];
   if (jahre.length > 1) {
     const jz = el("div", "chips");
-    for (const j of jahre) {
+    for (const j of [...jahre].reverse()) {   // neuestes Jahr vorn, wie die Monate
       const chip = el("button", "chip" + (j === jahr ? " aktiv" : ""), j);
       chip.onclick = () => {
         jahrWahl = j;
@@ -2304,15 +2304,19 @@ function chipZeile() {
   }
   const zeile = el("div", "chips");
   let aktivChip = null;
-  snap.zeitraeume.forEach((z, i) => {
-    if (i > 0 && jahre.length > 1 && z.label.slice(-4) !== jahr) return;
+  // Neuester Monat direkt neben "Gesamt" (v209, Tobias 25.10.: sonst immer
+  // erst nach rechts scrollen). Nur die ANZEIGE dreht sich - `i` bleibt der
+  // Index in snap.zeitraeume, zi und alles dahinter merken nichts davon.
+  const reihe = snap.zeitraeume.map((z, i) => [z, i]);
+  for (const [z, i] of [reihe[0], ...reihe.slice(1).reverse()]) {
+    if (i > 0 && jahre.length > 1 && z.label.slice(-4) !== jahr) continue;
     // bei sichtbarer Jahres-Reihe reicht der Monatsname ("Jun" statt "Jun 2026")
     const text = i > 0 && jahre.length > 1 ? z.label.slice(0, -5) : z.label;
     const chip = el("button", "chip" + (i === zi ? " aktiv" : ""), text);
     chip.onclick = () => { zi = i; render(); };
     if (i === zi) aktivChip = chip;
     zeile.append(chip);
-  });
+  }
   wrap.append(zeile);
   // Nach dem Neuaufbau (render nach Monatswahl) den aktiven Chip ins Bild
   // holen - sonst steht die Leiste wieder links, obwohl z.B. "Dez" gewaehlt ist
@@ -4225,12 +4229,7 @@ function isoInTagen(t) {
 // naechste Jahr weiter. Ohne die Rundlauf-Pruefung unten haette ein
 // unsinniges Datum klaglos einen Termin ergeben - ein stiller Fehlschlag,
 // der wie Erfolg aussieht. Deshalb: zurueckrechnen und vergleichen.
-// ponytail: seit v117 ohne Aufrufer - der einzige war datum.onchange im
-// ausgebauten Feld "Einmalig auf ein Datum legen". Bleibt stehen, weil zwei
-// Tests darauf zeigen (test_kadenz + Invariante 5 im Waechter) und ein
-// Ausbau hiesse, den Waechter zu beschneiden. Loeschen, sobald jemand den
-// Waechter sowieso anfasst - oder wiederverwenden: pitchNachrechnen()
-// braucht genau diese Datumsarithmetik.
+// Aufrufer seit v209: scanZustand() (Pausen-Ende im Scanner).
 function tageBis(iso) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return null;
   const [j, mo, t] = String(iso).split("-").map(Number);
@@ -6811,7 +6810,7 @@ function renderBrandrating() {
 
   const knopfZeile = el("div", "chips");
   const neu = el("button", "chip", "＋ Neue Brand");
-  neu.onclick = sheetNeueBrand;
+  neu.onclick = () => sheetNeueBrand();   // sonst kaeme das Klick-Event als vorlage an
   const filterBtn = el("button", "chip");
   filterBtn.onclick = () => {
     const wrap = el("div");
@@ -6874,6 +6873,349 @@ function renderBrandrating() {
     for (const m of liste) karten.append(brKarte(m));
     rumpf.append(karten);
   }
+}
+
+// ---------------------------------------------------------------- Scanner
+// Firmen finden, bevor sie Marken sind (v209, Tobias 25.10.). Stufe 1: die
+// App baut Google-Links, Andrea traegt Funde von Hand ein. Stufe 2 (KI-Suche)
+// liefert spaeter ueber scanAufnehmen() - der Rest bleibt, wie er ist.
+// Eigener Top-Level-Schluessel, NICHT in marken: Kandidaten sind noch keine
+// Marken und haben in Kennzahlen, Pitchliste und Import nichts verloren.
+// datenstand.py fuehrt "scanner" in APP_TOP, sonst loescht ein --merge ihn.
+// Mutierende scan*-Funktionen speichern NICHT selbst - das macht der
+// Klick-Handler (bei "Ins Brand Rating" speichert brandAnlegen beides in
+// einem Lauf). Kandidaten heissen nie `m` (test_invarianten 7a).
+const SCAN_LAND = "&cr=" + encodeURIComponent("countryDE|countryAT|countryCH");
+const SCAN_PAUSE = [["1 Monat", 30], ["3 Monate", 91], ["6 Monate", 182]];
+const SCAN_KACHEL = false;   // Stufe 2 schaltet ein (siehe renderUgc)
+
+function scanner() {
+  if (!datenstand.scanner) datenstand.scanner = { suche: [], niemals: [], kandidaten: [] };
+  return datenstand.scanner;
+}
+
+// Lesen ohne Anlegen - fuer Kachel, Pruefung und Listen.
+function scanDaten() {
+  return (datenstand && datenstand.scanner) || { suche: [], niemals: [], kandidaten: [] };
+}
+
+function scanWoerter(text) {
+  const gesehen = new Set();
+  return String(text || "").split(/[,\n]/).map((w) => w.trim()).filter((w) => {
+    const s = w.toLowerCase();
+    if (!w || gesehen.has(s)) return false;
+    gesehen.add(s);
+    return true;
+  });
+}
+
+// Google kann ODER und Minus, Maps nicht - Maps bekommt EINEN Begriff.
+// Instagram ohne Laenderfilter: Profile haben kein Land, cr= liesse fast
+// nichts uebrig. Stattdessen deutschsprachige Seiten.
+function scanLink(art, suche, niemals) {
+  const q = (w) => (/\s/.test(w) ? `"${w}"` : w);
+  if (art === "maps") return "https://www.google.com/maps/search/" + encodeURIComponent(suche[0] || "");
+  const oder = suche.length > 1 ? "(" + suche.map(q).join(" OR ") + ")" : q(suche[0] || "");
+  const zusatz = { web: "", instagram: " site:instagram.com",
+    startup: ' (startup OR gründer OR neugründung OR "neu gegründet")' }[art] || "";
+  const ohne = (niemals || []).map((w) => " -" + q(w)).join("");
+  const url = SUCHE + encodeURIComponent(oder + zusatz + ohne);
+  if (art === "instagram") return url + "&lr=lang_de";
+  return url + SCAN_LAND + (art === "startup" ? "&tbs=qdr:y" : "");
+}
+
+// Erstes Niemals-Wort, das im Text steckt. Ueber schluessel(): Umlaute und
+// Gross/klein egal, "Babyzauber" trifft "baby". Kann ueber-treffen ("kind"
+// in "Kindle") - deshalb warnt die Pruefung nur, sie sperrt nicht.
+function scanNiemals(text, niemals) {
+  const s = schluessel(text);
+  return (niemals || []).find((w) => schluessel(w) && s.includes(schluessel(w))) || "";
+}
+
+// Wo steht eine Marke? Fuer den Hinweis "schon in der App".
+function scanWo(m) {
+  if (m.kundenpflege) return "Kundenpflege";
+  if (m.kundenauftrag) return "Kundenaufträge";
+  if (m.kundenarchiv) return "Kunden-Archiv";
+  const r = String((m.brandrating && m.brandrating.rating) || "").trim().toUpperCase();
+  if (m.pitchliste && r !== "D") return "Pitchliste";
+  return m.brandrating ? "Brand Rating" + (r ? ` (${r})` : "") : "in der App";
+}
+
+function scanFinde(name) {
+  const s = schluessel(name);
+  return scanDaten().kandidaten.find((k) => schluessel(k.name) === s) || null;
+}
+
+// Abgelaufene Pause wird hier berechnet, nie zurueckgeschrieben. Leeres
+// `bis` = "bis ich zurueckhole" - tageBis("") ist null, und null <= 0 ist
+// in JS true: ohne die Extra-Pruefung kaeme die Firma sofort zurueck
+// (Codex 25.10., Fund 3). Kaputtes Datum bleibt pausiert, sichtbar.
+function scanZustand(k) {
+  if (k.status === "ignoriert") return "ignoriert";
+  if (k.status !== "pausiert") return "offen";
+  if (!k.bis) return "pausiert";
+  const t = tageBis(k.bis);
+  return t === null || t > 0 ? "pausiert" : "offen";
+}
+
+function scanListe(zustand) {
+  return scanDaten().kandidaten.filter((k) => scanZustand(k) === zustand);
+}
+
+// sperre = nicht aufnehmen. Niemals-Wort nur Warnung (siehe scanNiemals).
+function scanPruefen(name, website, instagram) {
+  const n = String(name || "").trim();
+  if (!n) return { sperre: true, text: "" };
+  if (!schluessel(n)) return { sperre: true, text: "Name braucht Buchstaben oder Ziffern." };
+  const m = markeZuName(n);
+  if (m) return { sperre: true, text: `Schon in der App: ${m.name} (${scanWo(m)})` };
+  const k = scanFinde(n);
+  if (k) {
+    const z = scanZustand(k);
+    const wie = z !== "pausiert" ? z
+      : k.bis ? `pausiert bis ${deDatum(k.bis)}` : "pausiert, bis du sie zurückholst";
+    return { sperre: true, text: `Schon im Scanner: ${k.name} (${wie})` };
+  }
+  const w = scanNiemals([n, website, instagram].join(" "), scanDaten().niemals);
+  return { sperre: false, text: w ? `⚠ Enthält „${w}“ (Niemals-Liste)` : "" };
+}
+
+// EINZIGER Weg in die Kandidatenliste - auch fuer die KI-Suche (Stufe 2).
+// Prueft selbst, damit kein Aufrufer die Sperre vergessen kann.
+function scanAufnehmen(name, website, instagram) {
+  if (scanPruefen(name, website, instagram).sperre) return null;
+  const k = { name: String(name).trim(), website: String(website || "").trim(),
+              instagram: String(instagram || "").trim(), status: "offen", bis: "" };
+  scanner().kandidaten.push(k);
+  return k;
+}
+
+// status "offen" = zurueckholen. `bis` nur bei "pausiert", "" = unbefristet.
+function scanSetzen(name, status, bis) {
+  const k = scanFinde(name);
+  if (!k) return false;
+  k.status = status;
+  k.bis = status === "pausiert" ? String(bis || "") : "";
+  return true;
+}
+
+function scanRaus(name) {
+  const s = schluessel(name), sc = scanner();
+  const vorher = sc.kandidaten.length;
+  sc.kandidaten = sc.kandidaten.filter((k) => schluessel(k.name) !== s);
+  return sc.kandidaten.length < vorher;
+}
+
+// "fritz.de" und "@fritz" sind keine Links - kontaktWert verlinkt nur
+// http/www. Instagram-Namen werden zum Profil-Link.
+function scanHref(art, wert) {
+  const w = String(wert || "").trim();
+  if (!w || /^https?:\/\//i.test(w)) return w;
+  if (art === "instagram" && !/instagram\.com\//i.test(w))
+    return "https://www.instagram.com/" + w.replace(/^@/, "");
+  return "https://" + w;
+}
+
+function scanKnopf(text, href) {
+  const a = el("a", "chip", text);
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener";
+  return a;
+}
+
+// Klick direkt in der Ansicht (kein Sheet offen -> kein popstate): selbst
+// speichern und neu zeichnen. `gefunden` false = der Kandidat ist nicht mehr
+// da (Abgleich hat den Stand getauscht) - dann nur neu zeichnen.
+function scanFertig(gefunden) {
+  if (gefunden === false) banner("Nicht mehr in der Liste — Ansicht neu geladen.");
+  else datenstandPersistieren();
+  render();
+}
+
+// Eingaben IMMER im Sheet (Codex 25.10., Fund 4): bei offenem Sheet zeichnet
+// kein Abgleich neu und tauscht keinen Stand - ein Feld direkt in der Ansicht
+// verloere das Getippte, sobald Andrea von Google zurueckkommt.
+function sheetScanBegriffe() {
+  const sd = scanDaten();
+  const wrap = el("div");
+  const suche = el("input", "suche");
+  suche.placeholder = "z.B. Getränke, Anwalt, Fitness";
+  suche.value = sd.suche.join(", ");
+  const nie = el("input", "suche");
+  nie.placeholder = "z.B. Baby, Kinder";
+  nie.value = sd.niemals.join(", ");
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Speichern");
+  ok.onclick = () => {
+    const sc = scanner();
+    sc.suche = scanWoerter(suche.value);
+    sc.niemals = scanWoerter(nie.value);
+    listeVeraltet = true;
+    datenstandPersistieren();
+    history.back();
+  };
+  okZ.append(ok);
+  wrap.append(el("div", "stand", "Suche nach — eins davon reicht"), suche,
+    el("div", "stand", "Niemals"), nie, okZ,
+    erklaerung("Suchbegriffe", "Mit Komma trennen. „Niemals“-Wörter schließt " +
+      "die Google-Suche aus; beim Eintragen warnt die App zusätzlich, wenn " +
+      "Name, Website oder Instagram eins davon enthält."));
+  sheetOeffnen("Suchbegriffe", erklaerungenAnsEnde(wrap));
+}
+
+function sheetScanFirma() {
+  const wrap = el("div");
+  const feld = (ph) => { const i = el("input", "suche"); i.placeholder = ph; return i; };
+  const name = feld("Name der Firma"), web = feld("Website (optional)"),
+        ig = feld("Instagram (optional)");
+  const hinweis = el("div", "stand");
+  const pruef = () => {
+    hinweis.textContent = scanPruefen(name.value, web.value, ig.value).text;
+  };
+  name.oninput = pruef;
+  web.oninput = pruef;
+  ig.oninput = pruef;
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "＋ Aufnehmen");
+  ok.onclick = () => {
+    if (!scanAufnehmen(name.value, web.value, ig.value)) {   // prueft selbst
+      banner(scanPruefen(name.value, web.value, ig.value).text || "Name fehlt.");
+      return;
+    }
+    listeVeraltet = true;
+    datenstandPersistieren();
+    history.back();
+  };
+  okZ.append(ok);
+  wrap.append(name, web, ig, hinweis, okZ);
+  sheetOeffnen("Firma eintragen", wrap);
+}
+
+function sheetScanPause(name) {
+  const wrap = el("div", "chips");
+  const wahl = (text, bis) => {
+    const b = el("button", "chip", text);
+    b.onclick = () => {
+      if (scanSetzen(name, "pausiert", bis)) {
+        listeVeraltet = true;
+        datenstandPersistieren();
+      }
+      history.back();
+    };
+    wrap.append(b);
+  };
+  for (const [text, tage] of SCAN_PAUSE) wahl(text, isoInTagen(tage));
+  wahl("Bis ich sie zurückhole", "");
+  sheetOeffnen(`„${name}“ pausieren`, wrap);
+}
+
+function scanKarte(k, marken) {
+  const karte = el("div", "karte block");
+  karte.append(el("div", "titel", k.name));
+  const links = el("div", "chips");
+  if (k.website) links.append(scanKnopf("🌐 Website", scanHref("website", k.website)));
+  if (k.instagram) links.append(scanKnopf("📷 Instagram", scanHref("instagram", k.instagram)));
+  if (links.childNodes.length) karte.append(links);
+  const aktionen = el("div", "chips");
+  // Inzwischen als Marke angelegt (anderer Weg, anderes Geraet): keine
+  // Aktionen mehr, nur noch aus der Liste nehmen.
+  const m = marken.get(schluessel(k.name));
+  if (m) {
+    karte.append(el("div", "stand", `Inzwischen in der App: ${m.name} (${scanWo(m)})`));
+    const raus = el("button", "chip", "Entfernen");
+    raus.onclick = () => scanFertig(scanRaus(k.name));
+    aktionen.append(raus);
+  } else {
+    const w = scanNiemals([k.name, k.website, k.instagram].join(" "), scanDaten().niemals);
+    if (w) karte.append(el("div", "stand", `⚠ Enthält „${w}“ (Niemals-Liste)`));
+    const br = el("button", "chip haupt", "→ Brand Rating");
+    br.onclick = () => sheetNeueBrand({ name: k.name, website: k.website,
+      instagram: k.instagram, danach: () => scanRaus(k.name) });
+    const pausKnopf = el("button", "chip", "⏸ Pausieren");
+    pausKnopf.onclick = () => sheetScanPause(k.name);
+    const ign = el("button", "chip", "✕ Ignorieren");
+    ign.onclick = () => scanFertig(scanSetzen(k.name, "ignoriert"));
+    aktionen.append(br, pausKnopf, ign);
+  }
+  karte.append(aktionen);
+  return karte;
+}
+
+// Zugeklappte Gruppe fuer Pausiert/Ignoriert - Zurueckholen (+ Loeschen).
+function scanGruppe(titel, liste, mitLoeschen) {
+  const d = el("details", "fgruppe");
+  d.append(el("summary", null, `${titel} (${liste.length})`));
+  for (const k of liste) {
+    const zeile = el("div", "karte block");
+    const bis = k.status === "pausiert"
+      ? (k.bis ? ` · bis ${deDatum(k.bis)}` : " · unbefristet") : "";
+    zeile.append(el("div", "titel", k.name + bis));
+    const chips = el("div", "chips");
+    const zurueck = el("button", "chip", "↩ Zurückholen");
+    zurueck.onclick = () => scanFertig(scanSetzen(k.name, "offen"));
+    chips.append(zurueck);
+    if (mitLoeschen) {
+      const weg = el("button", "chip", "Löschen");
+      weg.onclick = () => {
+        if (confirm(`„${k.name}“ endgültig löschen? Danach lässt sie sich wieder eintragen.`))
+          scanFertig(scanRaus(k.name));
+      };
+      chips.append(weg);
+    }
+    zeile.append(chips);
+    d.append(zeile);
+  }
+  return d;
+}
+
+function renderScanner() {
+  kopfzeile("Scanner", true);
+  const c = document.getElementById("inhalt");
+  c.innerHTML = "";
+  if (!datenstand) {
+    c.append(el("div", "leerzustand",
+      "Braucht den Datenstand — App einmal mit Internet öffnen."));
+    return;
+  }
+  const sd = scanDaten();
+  const begriffe = el("div", "karte block");
+  begriffe.append(el("div", "stand", "Suche nach: " + (sd.suche.join(", ") || "–")),
+    el("div", "stand", "Niemals: " + (sd.niemals.join(", ") || "–")));
+  const bearb = el("button", "chip", "✎ Suchbegriffe");
+  bearb.onclick = sheetScanBegriffe;
+  const bz = el("div", "chips");
+  bz.append(bearb);
+  begriffe.append(bz);
+  c.append(begriffe);
+
+  if (sd.suche.length) {
+    const links = el("div", "chips");
+    for (const [art, text] of [["web", "🔎 Web"], ["instagram", "📷 Instagram"],
+                               ["startup", "🌱 Neugründungen"]])
+      links.append(scanKnopf(text, scanLink(art, sd.suche, sd.niemals)));
+    for (const w of sd.suche) links.append(scanKnopf("📍 Maps: " + w, scanLink("maps", [w], [])));
+    c.append(links);
+  } else {
+    c.append(el("div", "leerzustand", "Erst Suchbegriffe eintragen."));
+  }
+
+  const neu = el("button", "chip haupt", "＋ Firma eintragen");
+  neu.onclick = sheetScanFirma;
+  const nz = el("div", "chips");
+  nz.append(neu);
+  c.append(nz);
+
+  const offen = scanListe("offen");
+  c.append(el("div", "stand", `Offen (${offen.length})`));
+  // Einmal pro Zeichnen indizieren - markeZuName je Karte waere
+  // Kandidaten x Marken schluessel()-Aufrufe.
+  const marken = new Map((datenstand.marken || []).map((x) => [schluessel(x.name), x]));
+  for (const k of offen) c.append(scanKarte(k, marken));
+  const pausiert = scanListe("pausiert"), ignoriert = scanListe("ignoriert");
+  if (pausiert.length) c.append(scanGruppe("Pausiert", pausiert, false));
+  if (ignoriert.length) c.append(scanGruppe("Ignoriert", ignoriert, true));
 }
 
 // ---------------------------------------------------------------- Ansichten
@@ -7078,6 +7420,22 @@ function renderUgc() {
   c.append(el("div", "stand",
     `${z.label}: ${z.start} – ${z.ende} · ${snap.quelldateien} Dateien · Stand ${snap.erzeugt.replace("T", " ")}${hinweis}`));
   c.append(kpiKacheln(z.gesamt));
+
+  // Zugang zum Scanner (v209): Firmen finden, bevor sie Marken sind. Steht
+  // VOR dem Brand Rating, wie im Ablauf. IMMER sichtbar - sonst kaeme Andrea
+  // beim ersten Mal gar nicht hinein. Badge = offene Kandidaten.
+  // SCAN_KACHEL: bis zur KI-Suche (Stufe 2) aus - die Google-Links fanden
+  // im Test nicht, was Andrea braucht (Tobias 25.10., Weg A).
+  if (SCAN_KACHEL && datenstand) {
+    const offen = scanListe("offen").length;
+    const zugang = el("div", "karte block zugang");
+    const kopf = el("div", "kopf");
+    kopf.append(el("span", "pill", "Suche"), el("span", "badge", String(offen)));
+    zugang.append(kopf, el("div", "titel", "Scanner"),
+      el("div", "kontext", offen ? `${offen} Firmen offen` : "Neue Firmen zum Pitchen finden"));
+    zugang.onclick = () => { location.hash = "#/scanner"; };
+    c.append(zugang);
+  }
 
   // Zugang zum Brand Rating (v32): Andreas Vorrat an bewerteten Marken.
   // Badge = Marken ohne Brand-Book (das ist dort die offene Arbeit).
@@ -7293,7 +7651,7 @@ function renderFehler() {
 // diese Liste mit den Routen in render(); eine vergessene Ansicht macht den
 // Test rot, statt sich erst beim Tippen zu zeigen.
 const UGC_UNTER = ["#/pitchliste", "#/brandrating", "#/kundenauftraege", "#/kundenpflege",
-                   "#/nutzungsrechte"];
+                   "#/nutzungsrechte", "#/scanner"];
 
 function render() {
   sheetEntfernen(); // beim Ansichtswechsel darf kein Sheet haengenbleiben
@@ -7322,6 +7680,8 @@ function render() {
     renderNutzungsrechte();
   } else if (h === "#/brandrating") {
     renderBrandrating();
+  } else if (h === "#/scanner") {
+    renderScanner();
   } else if (h === "#/buecher") {
     renderBuecher();
   } else {
@@ -8261,10 +8621,13 @@ function rueckgaengig(m, la) {
 // selbst ein — NICHT berechnen, Tobias 29.08.) + Pitchlisten-Eintrag
 // "nächste Aktion: Pitch, heute". Löschen-Gegenstück: brandLoeschen()
 // in der Detailansicht (Regel: Erstellen nur zusammen mit Löschen).
-function sheetNeueBrand() {
+// vorlage (v209, Scanner): {name, website, instagram, danach}. Vorbelegt,
+// nie automatisch gespeichert - Andrea sieht und aendert alles vor dem Anlegen.
+function sheetNeueBrand(vorlage) {
   const wrap = el("div");
   const name = el("input", "suche");
   name.placeholder = "Name der Brand";
+  name.value = (vorlage && vorlage.name) || "";
   const kategorie = el("input", "suche");
   kategorie.placeholder = "Kategorie/Nische";
   kategorie.setAttribute("list", "kategorien-liste");
@@ -8282,6 +8645,14 @@ function sheetNeueBrand() {
     dl.append(o);
   }
   wrap.append(name, kategorie, dl);
+  const web = el("input", "suche"), ig = el("input", "suche");
+  if (vorlage) {
+    web.placeholder = "Website";
+    web.value = vorlage.website || "";
+    ig.placeholder = "Instagram";
+    ig.value = vorlage.instagram || "";
+    wrap.append(web, ig);
+  }
   // Erfolgschance im Standard 3 (Andreas Workflow, 31.08.)
   const f = { rating: "", fit: "", geist: "", chance: 3 };
   const skala = [1, 2, 3, 4, 5].map((n) => [n, String(n)]);
@@ -8299,7 +8670,14 @@ function sheetNeueBrand() {
     if (!n) { banner("Name fehlt."); return; }
     if (!bookNameOk(n)) { banner(BOOK_NAME_HINWEIS); return; }
     if (markeExistiert(n)) { banner("Diese Brand gibt es schon."); return; }
-    brandAnlegen(n, kategorie.value.trim(), f);
+    const ki = {};
+    // Als volle Adresse: kontaktWert verlinkt nur http/www (Code-Review 25.10.)
+    if (web.value.trim()) ki.Website = scanHref("website", web.value);
+    if (ig.value.trim()) ki["Social Media"] = scanHref("instagram", ig.value);
+    // ERST nach allen Pruefungen, VOR brandAnlegen: das speichert Scanner
+    // und neue Marke in einem Lauf (kein zweites Hochladen).
+    if (vorlage && vorlage.danach) vorlage.danach();
+    brandAnlegen(n, kategorie.value.trim(), f, ki);
     history.back(); // Sheet zu, popstate zeichnet die Liste frisch
   };
   okZ.append(ok);
@@ -8352,10 +8730,10 @@ async function webVorschlag(name) {
   return "";
 }
 
-function brandAnlegen(name, kategorie, f) {
+function brandAnlegen(name, kategorie, f, kerninfos) {
   const jetzt = lokalIso();
   datenstand.marken.push({
-    name, quelle: "", gruppe: "", kerninfos: {}, events: [],
+    name, quelle: "", gruppe: "", kerninfos: { ...(kerninfos || {}) }, events: [],
     // KEIN Pitchlisten-Eintrag mehr (Tobias 01.09., v42): der Weg in die
     // Pitchliste fuehrt jetzt immer ueber Brand-Book erstellen + befüllt.
     pitchliste: null,
