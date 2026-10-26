@@ -654,7 +654,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v209"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v210"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -817,6 +817,7 @@ const REITER = {
   "Datenlogging": "Logfiles",
   "Pfad Logfiles": "Logfiles",
   "ACHTUNG Logfile": "Logfiles",
+  "KI-Suche": "KI-Suche",            // v210, Schluessel + Monatssumme
   "Warteliste": "Warteliste",
   "Nichts offen": "Warteliste",
   "Braucht dich": "Warteliste",
@@ -1394,6 +1395,41 @@ function sheetEinstellungen(reiter) {
       ? "Liegt auch in OneDrive: " + achtungDatei().split("/").pop()
       : "In OneDrive nur bei eingeschaltetem Datenlogging.")));
 
+  // KI-Suche (v210): Schluessel NUR hier, im Geraet (einst/localStorage).
+  // Nie im Datenstand, nie in Backups, nie in Meldungen. Angezeigt wird er
+  // nur gekuerzt.
+  const kiMaske = (s) => s ? s.slice(0, 7) + "…" + s.slice(-3) : "kein Schlüssel";
+  const kiStatus = el("div", "stand", "Schlüssel: " + kiMaske(einst.kiSchluessel));
+  const kiFeld = el("input", "suche");
+  kiFeld.type = "password";
+  kiFeld.autocomplete = "off";
+  kiFeld.placeholder = "sk-ant-…";
+  const kiZeile = el("div", "chips");
+  const kiSetzen = (v) => {
+    if (!einstSpeichern({ kiSchluessel: v })) {
+      banner("Gerätespeicher hat abgelehnt — Schlüssel nicht geändert.");
+      return;
+    }
+    kiFeld.value = "";
+    kiStatus.textContent = "Schlüssel: " + kiMaske(v);
+    listeVeraltet = true;   // Scanner zeigt danach den passenden KI-Knopf
+  };
+  const kiOk = el("button", "chip", "Speichern");
+  kiOk.onclick = () => {
+    const v = kiFeld.value.trim();
+    if (!/^sk-ant-\S+$/.test(v)) { banner("Das sieht nicht wie ein Claude-Schlüssel aus (beginnt mit sk-ant-)."); return; }
+    kiSetzen(v);
+  };
+  const kiWeg = el("button", "chip", "Entfernen");
+  kiWeg.onclick = () => kiSetzen(undefined);
+  kiZeile.append(kiOk, kiWeg);
+  wrap.append(abschnitt("KI-Suche", kiStatus, kiFeld, kiZeile,
+    el("div", "stand", "Dieser Monat auf diesem Gerät: " + scanKiDollar(scanKiMonatSumme())),
+    erklaerung("KI-Suche",
+      "Der Schlüssel bleibt auf diesem Gerät und wird nicht mit OneDrive " +
+      "abgeglichen. Die Summe ist eine Schätzung nur für dieses Gerät — " +
+      "was alle Geräte zusammen verbraucht haben, steht in der Claude Console.")));
+
   // Warteliste (v103): fest erreichbar. Das Fenster geht von allein nur
   // auf, wenn ein Eintrag Andreas Zutun braucht - alles andere traegt sich
   // selbst nach. Trotzdem muss sie jederzeit nachsehen koennen, was noch
@@ -1960,6 +1996,9 @@ function backupLaden() {
   inp.onchange = async () => {
     const datei = inp.files[0];
     if (!datei) return;
+    // v210 (Codex Runde 2, Fund 2): ein Tausch waehrend der KI-Suche liesse
+    // deren Speichern den neuen Stand ohne ihre Funde schreiben.
+    if (scanKiLauf) { banner(SCAN_KI_SPERRE); return; }
     let d = null;
     try { d = JSON.parse(await datei.text()); } catch (_) {}
     if (!d || !Array.isArray(d.marken)) {
@@ -2040,6 +2079,9 @@ function backupLaden() {
         return;
       }
     }
+    // Nochmal direkt vor dem Tausch: die Sicherung oben hat gewartet, in der
+    // Zeit kann eine KI-Suche gestartet sein (Codex Runde 3, Fund 1).
+    if (scanKiLauf) { banner(SCAN_KI_SPERRE); return; }
     datenstand = d;
     await datenstandPersistieren();
     listeVeraltet = true;
@@ -2529,10 +2571,8 @@ window.addEventListener("popstate", () => {
   // ihrem Speichern, las OneDrive noch ohne die Änderung und hielt die eben
   // gelöschte Marke für einen Markenverlust ("Datenstände unterscheiden
   // sich ... OK = den älteren nehmen"). OK holte sie ohne Book zurück.
-  if (abgleichNachholen) {
-    abgleichNachholen = false;
-    persistKette.then(() => abgleichBeiRueckkehr());
-  }
+  // v210: laeuft noch eine KI-Suche, holt deren Ende nach.
+  abgleichNachholenFalls();
 });
 
 // Verlaufs-Diagramm (Inline-SVG, Specs aus der dataviz-Skill): Hairline-
@@ -6887,7 +6927,7 @@ function renderBrandrating() {
 // einem Lauf). Kandidaten heissen nie `m` (test_invarianten 7a).
 const SCAN_LAND = "&cr=" + encodeURIComponent("countryDE|countryAT|countryCH");
 const SCAN_PAUSE = [["1 Monat", 30], ["3 Monate", 91], ["6 Monate", 182]];
-const SCAN_KACHEL = false;   // Stufe 2 schaltet ein (siehe renderUgc)
+const SCAN_KACHEL = true;    // an seit v210 (KI-Suche), siehe renderUgc
 
 function scanner() {
   if (!datenstand.scanner) datenstand.scanner = { suche: [], niemals: [], kandidaten: [] };
@@ -6983,10 +7023,12 @@ function scanPruefen(name, website, instagram) {
 
 // EINZIGER Weg in die Kandidatenliste - auch fuer die KI-Suche (Stufe 2).
 // Prueft selbst, damit kein Aufrufer die Sperre vergessen kann.
-function scanAufnehmen(name, website, instagram) {
+// `warum` (v210): Begruendung der KI-Suche, bei Handeintrag leer.
+function scanAufnehmen(name, website, instagram, warum) {
   if (scanPruefen(name, website, instagram).sperre) return null;
   const k = { name: String(name).trim(), website: String(website || "").trim(),
               instagram: String(instagram || "").trim(), status: "offen", bis: "" };
+  if (warum) k.warum = String(warum).trim();
   scanner().kandidaten.push(k);
   return k;
 }
@@ -7005,6 +7047,131 @@ function scanRaus(name) {
   const vorher = sc.kandidaten.length;
   sc.kandidaten = sc.kandidaten.filter((k) => schluessel(k.name) !== s);
   return sc.kandidaten.length < vorher;
+}
+
+// ---------------------------------------------------------- KI-Suche (v210)
+// Scanner Stufe 2 (Backlog 66, Bauplan doku/Bauplan KI-Suche.md). Claude
+// sucht mit Websuche Firmen, die zu Andreas A/B-Marken passen. Hier nur die
+// reinen Teile (Anfrage, Antwort pruefen, Kosten) - Netz und Sheet unten.
+// Was an Anthropic geht: Markennamen, Kategorien, Suchbegriffe. KEINE
+// Notizen, Kontakte, Kunden. Der Schluessel steht nie im Datenstand.
+// Kein output_config.format: ob es mit den Zitaten der Websuche kollidiert,
+// ist ungeklaert (Codex 26.10., Fund 1) - Claude schreibt einen ```json-
+// Block, scanKiFirmen() prueft ihn vollstaendig.
+const SCAN_KI_MODELL = "claude-sonnet-5-5";
+const SCAN_KI_PREIS = { ein: 2, aus: 10, suche: 0.01 };   // $ je Mio. Token / je Suche
+const SCAN_KI_ANZAHL = [5, 10, 20];
+
+// Zielbild (Tobias 26.10.): Andrea beschreibt sich SELBST - es kann sich
+// spontan aendern. Steht in datenstand.scanner.zielbild (gilt auf allen
+// Geraeten, APP_TOP schuetzt es). Leer/gleich Standard = nicht gespeichert,
+// dann zieht eine spaetere Verbesserung des Standards automatisch.
+const SCAN_KI_ZIEL =
+  "Ich bin UGC-Creatorin aus Deutschland und suche Marken, denen ich " +
+  "bezahlten Content anbieten kann.\n\n" +
+  "Passend: kleine bis mittlere Manufakturen und Onlineshops aus " +
+  "Deutschland, Österreich oder der Schweiz mit EIGENEN Produkten für " +
+  "Endkunden, aktivem Instagram-Auftritt und erkennbarem Werbe- oder " +
+  "Content-Budget (z. B. laufende Anzeigen, Kooperationen).\n\n" +
+  "Nicht passend: Konzerne und große internationale Marken, Firmen ohne " +
+  "Ansprechpartner im DACH-Raum, reine Affiliate-Programme, Marken ohne " +
+  "aktive Werbung oder ohne aktives Instagram, Händler ohne eigene Marke, " +
+  "Agenturen, Schulungs- und Kursanbieter, Creator- und Influencer-Profile, " +
+  "Verzeichnisse, Vergleichs- und Listenseiten.";
+
+// Fester Teil - NICHT editierbar: ohne ihn kann die App die Antwort nicht lesen.
+const SCAN_KI_TECHNIK =
+  "Du suchst mit der Websuche Marken für die Creatorin, die sich oben " +
+  "beschreibt. Nenne nur Firmen, die du in der Websuche tatsächlich " +
+  "gefunden hast, und keine aus der Liste „schon bekannt“. Antworte am " +
+  "Ende mit genau einem ```json-Block der Form " +
+  '{"firmen":[{"name":"…","website":"…","instagram":"…","warum":"…"}]} — ' +
+  "website und instagram als Link oder leer, warum = ein kurzer Satz, " +
+  "weshalb die Marke passt.";
+const SCAN_KI_ZIEL_MAX = 3000;
+
+function scanZielbild() {
+  return String(scanDaten().zielbild || "").trim() || SCAN_KI_ZIEL;
+}
+
+// Baut den Request-Body. Liest den aktuellen Datenstand - bei jedem Scan neu,
+// damit neue Ratings sofort mitzaehlen.
+function scanKiAnfrage(anzahl) {
+  const marken = (datenstand && datenstand.marken) || [];
+  const sd = scanDaten();
+  const vorbilder = marken.filter((x) => x.brandrating &&
+    /^[AB]$/.test(String(x.brandrating.rating || "").trim().toUpperCase()))
+    .map((x) => x.name + (x.brandrating.kategorie ? ` (${x.brandrating.kategorie})` : ""));
+  const bekannt = marken.map((x) => x.name).concat(sd.kandidaten.map((k) => k.name));
+  const zeilen = [
+    `Finde ${anzahl} neue passende Marken.`,
+    "Vorbilder (so sehen gute Treffer aus): " + (vorbilder.join(", ") || "–"),
+  ];
+  if (sd.suche.length) zeilen.push("Schwerpunkt diesmal: " + sd.suche.join(", "));
+  if (sd.niemals.length) zeilen.push("Niemals: " + sd.niemals.join(", "));
+  zeilen.push("Schon bekannt (nicht nennen): " + (bekannt.join(", ") || "–"));
+  return {
+    model: SCAN_KI_MODELL,
+    max_tokens: 16000,
+    system: scanZielbild() + "\n\n---\n\n" + SCAN_KI_TECHNIK,
+    output_config: { effort: "medium" },
+    fallbacks: "default",   // Server weicht bei Ablehnung selbst aus (Beta-Header in scanKiRufen)
+    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 8,
+              user_location: { type: "approximate", country: "DE" } }],
+    messages: [{ role: "user", content: zeilen.join("\n\n") }],
+  };
+}
+
+// Letzter ```json-Block aus den Textbloecken -> geprueft. null = Antwort
+// unbrauchbar (nichts uebernehmen). Abgeschnittenes JSON scheitert an
+// JSON.parse - bewusst keine Reparatur (Codex 26.10., Fund 6).
+function scanKiFirmen(content) {
+  const text = (content || []).filter((b) => b && b.type === "text")
+    .map((b) => b.text).join("");
+  const bloecke = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
+  if (!bloecke.length) return null;
+  let roh;
+  try { roh = JSON.parse(bloecke[bloecke.length - 1][1]); } catch (_) { return null; }
+  if (!roh || !Array.isArray(roh.firmen)) return null;
+  const feld = (w, max) => (typeof w === "string" ? w.trim().slice(0, max) : null);
+  const firmen = [];
+  let ungueltig = 0;
+  for (const f of roh.firmen) {
+    const name = f && feld(f.name, 120);
+    const ok = name && [f.website, f.instagram, f.warum]
+      .every((w) => w == null || typeof w === "string");
+    if (!ok) { ungueltig++; continue; }
+    firmen.push({ name, website: feld(f.website, 200) || "",
+                  instagram: feld(f.instagram, 200) || "", warum: feld(f.warum, 300) || "" });
+  }
+  return { firmen, ungueltig };
+}
+
+// Summe ueber ALLE Antworten eines Laufs (pause_turn, Codex Fund 9).
+function scanKiKosten(usages) {
+  let d = 0;
+  for (const u of usages || []) {
+    if (!u) continue;
+    const ein = (u.input_tokens || 0) + 1.25 * (u.cache_creation_input_tokens || 0) +
+                0.1 * (u.cache_read_input_tokens || 0);
+    d += (ein * SCAN_KI_PREIS.ein + (u.output_tokens || 0) * SCAN_KI_PREIS.aus) / 1e6;
+    d += ((u.server_tool_use && u.server_tool_use.web_search_requests) || 0) * SCAN_KI_PREIS.suche;
+  }
+  return d;
+}
+
+// Uebernimmt gepruefte Firmen. Speichert NICHT (wie alle scan*-Mutatoren).
+// Niemals-Treffer werden hier GESPERRT, nicht nur gewarnt: beim Handeintrag
+// entscheidet Andrea selbst, hier niemand (Code-Review 26.10.).
+function scanKiUebernehmen(firmen) {
+  let neu = 0, uebersprungen = 0;   // schon da, Niemals-Wort oder Name ohne Buchstaben
+  const niemals = scanDaten().niemals;
+  for (const f of firmen) {
+    if (scanNiemals([f.name, f.website, f.instagram].join(" "), niemals)) uebersprungen++;
+    else if (scanAufnehmen(f.name, f.website, f.instagram, f.warum)) neu++;
+    else uebersprungen++;
+  }
+  return { neu, uebersprungen };
 }
 
 // "fritz.de" und "@fritz" sind keine Links - kontaktWert verlinkt nur
@@ -7046,23 +7213,39 @@ function sheetScanBegriffe() {
   const nie = el("input", "suche");
   nie.placeholder = "z.B. Baby, Kinder";
   nie.value = sd.niemals.join(", ");
+  const ziel = el("textarea", "suche");
+  ziel.rows = 10;
+  ziel.maxLength = SCAN_KI_ZIEL_MAX;   // Feld nimmt nicht mehr an, statt still zu kuerzen
+  ziel.value = scanZielbild();
+  const std = el("button", "chip", "↺ Standard");
+  std.onclick = () => { ziel.value = SCAN_KI_ZIEL; };
+  const stdZ = el("div", "chips");
+  stdZ.append(std);
   const okZ = el("div", "chips");
   const ok = el("button", "chip haupt", "✓ Speichern");
   ok.onclick = () => {
     const sc = scanner();
     sc.suche = scanWoerter(suche.value);
     sc.niemals = scanWoerter(nie.value);
+    const z = ziel.value.trim().slice(0, SCAN_KI_ZIEL_MAX);
+    if (z && z !== SCAN_KI_ZIEL) sc.zielbild = z;
+    else delete sc.zielbild;
     listeVeraltet = true;
     datenstandPersistieren();
     history.back();
   };
   okZ.append(ok);
   wrap.append(el("div", "stand", "Suche nach — eins davon reicht"), suche,
-    el("div", "stand", "Niemals"), nie, okZ,
+    el("div", "stand", "Niemals"), nie,
+    el("div", "stand", "Wen suche ich? (für die KI-Suche)"), ziel, stdZ, okZ,
     erklaerung("Suchbegriffe", "Mit Komma trennen. „Niemals“-Wörter schließt " +
       "die Google-Suche aus; beim Eintragen warnt die App zusätzlich, wenn " +
-      "Name, Website oder Instagram eins davon enthält."));
-  sheetOeffnen("Suchbegriffe", erklaerungenAnsEnde(wrap));
+      "Name, Website oder Instagram eins davon enthält."),
+    erklaerung("Wen suche ich?", "So beschreibst du der KI-Suche, welche " +
+      "Marken zu dir passen — in deinen eigenen Worten, jederzeit änderbar. " +
+      "Deine A- und B-Marken schickt die App zusätzlich als Beispiele mit. " +
+      "„Standard“ holt den ursprünglichen Text zurück."));
+  sheetOeffnen("Suche einstellen", erklaerungenAnsEnde(wrap));
 }
 
 function sheetScanFirma() {
@@ -7093,6 +7276,222 @@ function sheetScanFirma() {
   sheetOeffnen("Firma eintragen", wrap);
 }
 
+// Laufende KI-Suche (v210): { ctrl, stand }. Haengt NICHT am Sheet (Tobias
+// 26.10.: Andrea soll das Fenster schliessen duerfen). Stattdessen sperrt
+// sie selbst den Standtausch - standGesperrt() wird an allen fuenf Stellen
+// gefragt, die vorher nur auf ein offenes Sheet schauten. Die Sperre haelt,
+// bis das Speichern durch ist (Codex 26.10., Fund 3).
+let scanKiLauf = null;
+
+// Liefert den GRUND ("Sheet offen" / "KI-Suche") oder "" - wahr/falsch fuer
+// die Gates, der Text fuer die Logzeilen.
+function standGesperrt() {
+  if (typeof document !== "undefined" && document.getElementById("schleier")) return "Sheet offen";
+  return scanKiLauf ? "KI-Suche" : "";
+}
+
+const SCAN_KI_SPERRE = "Die KI-Suche läuft noch — es wurde nichts ersetzt. " +
+  "Bitte abwarten oder im Scanner abbrechen.";
+
+// Vorgemerkten Abgleich nachholen, sobald nichts mehr sperrt - ERST nach der
+// Speicherkette (Großtest 04.10., Befund 10). Gerufen von popstate (Sheet zu)
+// und vom Ende der KI-Suche; wer zuletzt freigibt, holt nach.
+function abgleichNachholenFalls() {
+  if (!standGesperrt() && abgleichNachholen) {
+    abgleichNachholen = false;
+    persistKette.then(() => abgleichBeiRueckkehr());
+  }
+}
+
+// Geraete-Einstellung aendern: erst die KOPIE speichern, dann einst - scheitert
+// localStorage, bleibt einst wie es war (Muster v11384, Codex R2 Fund 8).
+// undefined im patch = Schluessel entfernen.
+function einstSpeichern(patch) {
+  const kopie = { ...einst, ...patch };
+  for (const k in patch) if (patch[k] === undefined) delete kopie[k];
+  try { localStorage.setItem(EINST_KEY, JSON.stringify(kopie)); } catch (_) { return false; }
+  for (const k in patch) { if (patch[k] === undefined) delete einst[k]; else einst[k] = patch[k]; }
+  return true;
+}
+
+// Fehlertexte NUR aus Status + festem Text - der Schluessel darf nie in
+// banner()/Log/Meldungen landen (Codex Fund 7).
+// Codex Runde 2, Fund 7: error.message wird NUR gelesen, nie angezeigt -
+// es koennte Teile der Anfrage zurueckspiegeln. Angezeigt wird hoechstens
+// error.type (feste Kennung wie "invalid_request_error").
+function scanKiFehlertext(status, antwort) {
+  const fehler = (antwort && antwort.error) || {};
+  const msg = String(fehler.message || "");
+  if (status === 401) return "Schlüssel ungültig oder abgelaufen — in den Einstellungen neu eintragen.";
+  if (/credit|balance|billing/i.test(msg)) return "Guthaben für diesen Monat aufgebraucht.";
+  if (status === 429 || status >= 500) return "Claude ist gerade ausgelastet — später nochmal versuchen.";
+  const typ = /^[a-z_]{1,40}$/.test(String(fehler.type || "")) ? ` (${fehler.type})` : "";
+  return `Claude meldet Fehler ${status}${typ}.`;
+}
+
+async function scanKiRufen(body, signal, kiKey) {
+  let r;
+  try {
+    r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST", signal, body: JSON.stringify(body),
+      headers: { "content-type": "application/json", "x-api-key": kiKey,
+                 "anthropic-version": "2023-06-01",
+                 "anthropic-beta": "server-side-fallback-2026-07-01",
+                 "anthropic-dangerous-direct-browser-access": "true" } });
+  } catch (f) {
+    if (signal.aborted) throw f;
+    throw new Error("Keine Verbindung zu Claude.");
+  }
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(scanKiFehlertext(r.status, j));
+  return j;
+}
+
+// pause_turn: ganze Antwort anhaengen und weiter, hoechstens 3x (Fund 9).
+// usages wird vom Aufrufer gehalten - auch ein Abbruch zaehlt, was schon kam.
+async function scanKiLaufen(anzahl, signal, usages) {
+  const body = scanKiAnfrage(anzahl);
+  const kiKey = einst.kiSchluessel;   // EINMAL je Lauf (Entfernen mittendrin)
+  for (let i = 0; i < 4; i++) {
+    const j = await scanKiRufen(body, signal, kiKey);
+    usages.push(j.usage);
+    if (j.stop_reason !== "pause_turn") return j;
+    body.messages.push({ role: "assistant", content: j.content });
+  }
+  return null;
+}
+
+function scanKiDollar(d) {
+  return "≈ " + d.toFixed(2).replace(".", ",") + " $";
+}
+
+// Monatssumme DIESES Geraets (localStorage). Die echte Abrechnung beider
+// Handys steht in der Console.
+function scanKiMonat() {
+  return lokalIso().slice(0, 7);   // Ortszeit: 1. des Monats 00-02 Uhr zaehlt zum neuen
+}
+
+function scanKiMonatSumme() {
+  return einst.kiMonat && einst.kiMonat.monat === scanKiMonat() ? einst.kiMonat.summe : 0;
+}
+
+function scanKiKostenMerken(d) {
+  einstSpeichern({ kiMonat: { monat: scanKiMonat(), summe: scanKiMonatSumme() + d } });
+}
+
+// Ein Suchlauf, unabhaengig vom Sheet. `zeige(text)` meldet das Ergebnis -
+// ins offene KI-Sheet, sonst als Banner. Uebernommen wird nur, wenn der
+// Lauf nicht abgebrochen wurde UND noch derselbe Datenstand gilt: ein
+// zurueckgespieltes Backup oder "Andreas Stand holen" tauscht das Objekt
+// an der Sperre vorbei (Codex 26.10., Fund 4) - dann lieber verwerfen.
+async function scanKiStarten(anzahl, zeige) {
+  if (scanKiLauf || !datenstand) return;    // Sperre VOR dem ersten await
+  const lauf = { ctrl: new AbortController(), stand: datenstand, zuLang: false };
+  scanKiLauf = lauf;
+  // Codex Runde 2, Fund 3: ohne Obergrenze hielte ein haengender fetch die
+  // Abgleich-Sperre fuer immer. 5 Minuten fuer die Suche.
+  const uhr = setTimeout(() => { lauf.zuLang = true; lauf.ctrl.abort(); }, 5 * 60000);
+  const abbruch = () => lauf.zuLang ? "dauerte zu lange — nichts übernommen."
+                                    : "abgebrochen — nichts übernommen.";
+  const usages = [];
+  let text;
+  try {
+    const j = await scanKiLaufen(anzahl, lauf.ctrl.signal, usages);
+    const erg = !j || j.stop_reason === "refusal" ? null : scanKiFirmen(j.content);
+    // Ab hier kein await, bis uebernommen ist - und direkt davor geprueft.
+    if (lauf.ctrl.signal.aborted) text = abbruch();
+    else if (datenstand !== lauf.stand) text = "der Datenstand wurde inzwischen ersetzt — nichts übernommen.";
+    else if (!j) text = "die Suche wurde nicht fertig — nichts übernommen.";
+    else if (!erg) text = "kein brauchbares Ergebnis — nichts übernommen.";
+    else {
+      const r = scanKiUebernehmen(erg.firmen);
+      text = `${r.neu} neu · ${r.uebersprungen} übersprungen` +
+        (erg.ungueltig ? ` · ${erg.ungueltig} unbrauchbar` : "");
+      if (r.neu) {
+        listeVeraltet = true;
+        // Sperre haelt bis gespeichert ist - OHNE Zeitgrenze. Eine Minute
+        // Obergrenze (Runde 2) gab die Sperre frei, bevor die Funde sicher
+        // waren (Codex Runde 3, Fund 2). Ein langsamer Upload verzoegert nur
+        // den Abgleich; eine haengende Speicherkette blockiert ohnehin alles.
+        const ok = await datenstandPersistieren();
+        if (!ok) text += " · ⚠ OneDrive hat nicht bestätigt, siehe Meldung";
+      }
+    }
+  } catch (f) {
+    text = lauf.ctrl.signal.aborted ? abbruch() : (f.message || "Unbekannter Fehler.");
+  } finally {
+    clearTimeout(uhr);
+    const kosten = scanKiKosten(usages);
+    if (kosten) scanKiKostenMerken(kosten);
+    if (scanKiLauf === lauf) scanKiLauf = null;
+    zeige("KI-Suche: " + text + (kosten ? " · " + scanKiDollar(kosten) : ""));
+    abgleichNachholenFalls();   // bei offenem Sheet macht es popstate
+  }
+}
+
+function scanKiAbbrechen() {
+  if (scanKiLauf) scanKiLauf.ctrl.abort();
+}
+
+// Knoepfe/Status im KI-Sheet nach dem Laufzustand - ueber ids, damit auch
+// ein spaeter NEU geoeffnetes Sheet das Ergebnis eines aelteren Laufs zeigt.
+function scanKiSheetStand(text) {
+  const status = document.getElementById("ki-status");
+  if (!status) return false;
+  const an = !!scanKiLauf;
+  document.getElementById("ki-start").disabled = an;
+  document.getElementById("ki-stopp").hidden = !an;
+  if (an) status.textContent = "Claude sucht … das dauert 1–2 Minuten. " +
+    "Du kannst das Fenster schließen, aber bitte in der App bleiben.";
+  else if (text) {
+    status.textContent = text;
+    document.getElementById("ki-start").textContent = "✨ Nochmal suchen";
+  }
+  return true;
+}
+
+// Ergebnis ins KI-Sheet, wenn es offen ist - sonst Banner und Liste neu
+// (bei einem anderen offenen Sheet zeichnet popstate beim Schliessen).
+function scanKiZeige(text) {
+  listeVeraltet = true;   // "läuft …" muss weg, auch bei 0 neuen
+  if (scanKiSheetStand(text)) return;
+  banner(text);
+  if (!document.getElementById("schleier")) { listeVeraltet = false; render(); }
+}
+
+function sheetScanKi() {
+  const wrap = el("div");
+  if (!SCAN_KI_ANZAHL.includes(einst.kiAnzahl)) einst.kiAnzahl = 10;   // Standard sichtbar markiert
+  const anzahl = () => einst.kiAnzahl;
+  const status = el("div", "stand");
+  status.id = "ki-status";
+  const startZ = el("div", "chips");
+  const start = el("button", "chip haupt", "✨ Suche starten");
+  start.id = "ki-start";
+  const stopp = el("button", "chip", "Abbrechen");
+  stopp.id = "ki-stopp";
+  stopp.onclick = scanKiAbbrechen;
+  startZ.append(start, stopp);
+  start.onclick = () => {
+    if (scanKiLauf) return;
+    scanKiStarten(anzahl(), scanKiZeige);
+    listeVeraltet = true;   // Scanner zeigt nach dem Schliessen "läuft …"
+    scanKiSheetStand();
+  };
+  const sd = scanDaten();
+  wrap.append(einstZeile("Wie viele?", SCAN_KI_ANZAHL.map((n) => [n, `${n} Firmen`]), "kiAnzahl"),
+    startZ, status,
+    erklaerung("KI-Suche",
+      "Claude sucht im Netz nach Marken, die zu deiner Beschreibung und deinen " +
+      "A- und B-Marken passen" +
+      (sd.suche.length ? ` (Schwerpunkt: ${sd.suche.join(", ")})` : "") +
+      ". Firmen, die schon in der App oder im Scanner stehen, werden übersprungen. " +
+      "Solange die Suche läuft, wartet der Abgleich mit OneDrive. Wechselst du " +
+      "in eine andere App, kann Android die Suche anhalten."));
+  sheetOeffnen("KI-Suche", erklaerungenAnsEnde(wrap));
+  scanKiSheetStand();
+}
+
 function sheetScanPause(name) {
   const wrap = el("div", "chips");
   const wahl = (text, bis) => {
@@ -7111,13 +7510,20 @@ function sheetScanPause(name) {
   sheetOeffnen(`„${name}“ pausieren`, wrap);
 }
 
-function scanKarte(k, marken) {
-  const karte = el("div", "karte block");
-  karte.append(el("div", "titel", k.name));
+// Begruendung + Links - offene Karte UND Pausiert/Ignoriert zeigen dasselbe
+// (Tobias 26.10.: auch blockierte Treffer sollen ihre Infos behalten).
+function scanInfo(karte, k) {
+  if (k.warum) karte.append(el("div", "kontext", "✨ " + k.warum));   // v210
   const links = el("div", "chips");
   if (k.website) links.append(scanKnopf("🌐 Website", scanHref("website", k.website)));
   if (k.instagram) links.append(scanKnopf("📷 Instagram", scanHref("instagram", k.instagram)));
   if (links.childNodes.length) karte.append(links);
+}
+
+function scanKarte(k, marken) {
+  const karte = el("div", "karte block");
+  karte.append(el("div", "titel", k.name));
+  scanInfo(karte, k);
   const aktionen = el("div", "chips");
   // Inzwischen als Marke angelegt (anderer Weg, anderes Geraet): keine
   // Aktionen mehr, nur noch aus der Liste nehmen.
@@ -7152,6 +7558,7 @@ function scanGruppe(titel, liste, mitLoeschen) {
     const bis = k.status === "pausiert"
       ? (k.bis ? ` · bis ${deDatum(k.bis)}` : " · unbefristet") : "";
     zeile.append(el("div", "titel", k.name + bis));
+    scanInfo(zeile, k);
     const chips = el("div", "chips");
     const zurueck = el("button", "chip", "↩ Zurückholen");
     zurueck.onclick = () => scanFertig(scanSetzen(k.name, "offen"));
@@ -7182,13 +7589,25 @@ function renderScanner() {
   const sd = scanDaten();
   const begriffe = el("div", "karte block");
   begriffe.append(el("div", "stand", "Suche nach: " + (sd.suche.join(", ") || "–")),
-    el("div", "stand", "Niemals: " + (sd.niemals.join(", ") || "–")));
-  const bearb = el("button", "chip", "✎ Suchbegriffe");
+    el("div", "stand", "Niemals: " + (sd.niemals.join(", ") || "–")),
+    el("div", "stand", "Zielbild: " + (sd.zielbild ? "eigene Beschreibung" : "Standard")));
+  const bearb = el("button", "chip", "✎ Suche einstellen");
   bearb.onclick = sheetScanBegriffe;
   const bz = el("div", "chips");
   bz.append(bearb);
   begriffe.append(bz);
   c.append(begriffe);
+
+  // KI-Suche (v210) - braucht keine Suchbegriffe, die A/B-Marken reichen.
+  if (scanKiLauf) c.append(el("div", "stand", "✨ KI-Suche läuft … das Ergebnis erscheint hier."));
+  const [kiText, kiKlasse, kiTat] = scanKiLauf ? ["Abbrechen", "chip", scanKiAbbrechen]
+    : einst.kiSchluessel ? ["✨ KI-Suche", "chip haupt", sheetScanKi]
+    : ["✨ KI-Suche einrichten", "chip", () => sheetEinstellungen("KI-Suche")];
+  const ki = el("button", kiKlasse, kiText);
+  ki.onclick = kiTat;
+  const kiZ = el("div", "chips");
+  kiZ.append(ki);
+  c.append(kiZ);
 
   if (sd.suche.length) {
     const links = el("div", "chips");
@@ -10713,7 +11132,8 @@ function importStoerungNeu(b) {
 }
 
 async function importAutomatisch() {
-  if (typeof document !== "undefined" && document.getElementById("schleier")) {
+  if (standGesperrt()) {
+    if (scanKiLauf) abgleichNachholen = true;   // v210: nach der Suche nachholen (Codex R2, Fund 5)
     return null;
   }
   if (typeof OD === "undefined" || !OD.konto()) return null;
@@ -10723,8 +11143,7 @@ async function importAutomatisch() {
   // vormerken - nicht erst nach dem Speichern. Schliesst Andrea das Sheet
   // in der Zwischenzeit, findet popstate den Merker sonst noch nicht (Codex).
   const sheetOffen = () => {
-    const offen = typeof document !== "undefined" &&
-                  !!document.getElementById("schleier");
+    const offen = standGesperrt();   // v210: auch waehrend der KI-Suche
     if (offen) abgleichNachholen = true;
     return offen;
   };
@@ -14074,10 +14493,13 @@ async function standWahlKlaeren(kandidaten) {
   // datenstandUebernehmen() sonst selbst prueft). Waehrend der Sicherungs-
   // Uploads kann Andrea im warmen Pfad eine Marke angetippt haben
   // (Codex v180, Fund 2b; bestand fuer "aelteren nehmen" seit v136).
-  if (direkt && document.getElementById("schleier")) {
-    logZeile("stand-verlust-abgebrochen", { grund: "Sheet offen" });
-    banner("Eine Marke ist gerade offen — es wurde nichts übernommen. "
-           + "Die Frage kommt nach dem Schließen wieder.");
+  if (direkt && standGesperrt()) {
+    logZeile("stand-verlust-abgebrochen", { grund: standGesperrt() });
+    if (scanKiLauf) abgleichNachholen = true;   // sonst kommt die Frage nicht wieder (Codex R2, Fund 5)
+    banner(scanKiLauf
+      ? "Die KI-Suche läuft — es wurde nichts übernommen. Die Frage kommt danach wieder."
+      : "Eine Marke ist gerade offen — es wurde nichts übernommen. "
+        + "Die Frage kommt nach dem Schließen wieder.");
     standWahlOffen = true;
     return false;
   }
@@ -14155,8 +14577,8 @@ function datenstandUebernehmen(paar) {
                                     ist: alt }) });
     return false;
   }
-  if (document.getElementById("schleier")) {
-    logZeile("stand-verworfen", { grund: "Sheet offen", quelle: paar[1],
+  if (standGesperrt()) {
+    logZeile("stand-verworfen", { grund: standGesperrt(), quelle: paar[1],
       ...logMehr({ soll: paar[0] && paar[0].geaendert, ist: alt }) });
     abgleichNachholen = true;   // popstate holt es nach, sobald das Sheet zu ist
     return false;
@@ -14206,6 +14628,8 @@ function datenstandUebernehmen(paar) {
 // Fehler mehr".
 async function andreasStandUebernehmen(melde) {
   const sag = (t) => { if (melde) melde(t); };
+  // v210: wie backupLaden() - nicht waehrend einer KI-Suche (Codex Runde 2, Fund 2).
+  if (scanKiLauf) return { fehler: SCAN_KI_SPERRE };
 
   // 1. Sicherheitskopie. Muster aus backupLaden(): die CLOUD-Kopie ist die
   // Bedingung, der Download laeuft nur zusaetzlich mit. Einbahnstrassen
@@ -14231,6 +14655,8 @@ async function andreasStandUebernehmen(melde) {
     ? await OD.graphLeise(OD_DATENSTAND())
     : null;
   let standGetauscht = false;
+  // Nochmal direkt vor dem Tausch (Codex Runde 3, Fund 1) - siehe backupLaden().
+  if (scanKiLauf) return { fehler: SCAN_KI_SPERRE };
   if (cloud && Array.isArray(cloud.marken)) {
     logZeile("andrea-stand-uebernommen", { quelle: "OneDrive",
       ...logMehr({ soll: cloud.geaendert,
@@ -14902,7 +15328,7 @@ async function abgleichBeiRueckkehr() {
   // Parsen entsteht immer ein neues Objekt, egal ob der Inhalt gleich ist.
   // Bis v95 schuetzte die Klausel unten nur das NEUZEICHNEN - die Daten
   // wurden trotzdem ausgetauscht. Genau diese Luecke.
-  if (document.getElementById("schleier")) { abgleichNachholen = true; return; }
+  if (standGesperrt()) { abgleichNachholen = true; return; }
   abgleichLaeuft = true;
   // v177: dasselbe OBJEKT, nicht derselbe Zeitstempel. Ein eigenes Speichern
   // (seit S6 auch der Import) stempelt `geaendert` am selben Objekt um - fiel

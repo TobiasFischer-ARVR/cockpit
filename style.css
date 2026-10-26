@@ -378,6 +378,7 @@ main {
   font-size: 14px;
 }
 .suche::placeholder { color: var(--text-leise); }
+textarea.suche { padding: 10px 14px; font: inherit; line-height: 1.4; resize: vertical; }  /* v210 Zielbild */
 
 /* Tage-Abstand im Erledigt-Bereich (Phase 5) */
 .tage,
