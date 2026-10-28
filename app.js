@@ -654,7 +654,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v210"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v211"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1424,8 +1424,11 @@ function sheetEinstellungen(reiter) {
   kiWeg.onclick = () => kiSetzen(undefined);
   kiZeile.append(kiOk, kiWeg);
   wrap.append(abschnitt("KI-Suche", kiStatus, kiFeld, kiZeile,
-    el("div", "stand", "Dieser Monat auf diesem Gerät: " + scanKiDollar(scanKiMonatSumme())),
+    el("div", "stand", "KI gesamt diesen Monat (Suche + Kontakte) auf diesem Gerät: " +
+      scanKiDollar(scanKiMonatSumme())),
     erklaerung("KI-Suche",
+      "Derselbe Schlüssel gilt für die KI-Suche im Scanner und für " +
+      "„✨ Kontakt suchen“ in den Kontaktdaten. " +
       "Der Schlüssel bleibt auf diesem Gerät und wird nicht mit OneDrive " +
       "abgeglichen. Die Summe ist eine Schätzung nur für dieses Gerät — " +
       "was alle Geräte zusammen verbraucht haben, steht in der Claude Console.")));
@@ -6115,9 +6118,14 @@ function formularKnopf(z, bau, modus, label) {
   const b = el("button", "chip", label);
   b.onclick = () => {
     if (z.modus === modus) { history.back(); return; } // erneut = Formular zu
+    // Wechsel Kontakt -> Rating: dieselbe Ebene ersetzen, KEIN zweiter
+    // History-Eintrag - sonst tat danach eine Zurueck-Geste nichts
+    // (Codex 27.10., Fund 5).
+    if (!z.modus) {
+      sheetEbene = () => { z.modus = null; bau(); };
+      history.pushState({ sheet: true }, "");
+    }
     z.modus = modus;
-    sheetEbene = () => { z.modus = null; bau(); };
-    history.pushState({ sheet: true }, "");
     bau();
   };
   return b;
@@ -6263,6 +6271,14 @@ function kontaktFormular(m, fertig) {
   const email2 = el("input", "feld");
   email2.type = "email";
   email2.value = m.email2 || "";
+  // v211: "✨ Kontakt suchen" oben - liest die Felder erst beim Klick.
+  const felder = { email2: { input: email2, hinweis: el("div", "stand") } };
+  wrap.append(...kontaktKiKnopf(m, felder), erklaerung("Kontakt suchen",
+    "Claude sucht Website, Instagram, Ansprechpartner und E-Mail der Marke " +
+    "(Impressum, Kontakt- und Presseseite). An Claude gehen nur der Name und " +
+    "die Website. Leere Felder werden vorausgefüllt, ausgefüllte nie " +
+    "überschrieben — weicht ein Fund ab, steht er darunter. Gespeichert wird " +
+    "erst mit „✓ Speichern“. Etwa 1–5 Cent je Suche."));
   for (const label of KONTAKT_FELDER) {
     wrap.append(el("div", "stand", label));
     const i = el("input", "feld");
@@ -6282,6 +6298,7 @@ function kontaktFormular(m, fertig) {
       const z = el("div", "chips");
       const b = el("button", "chip", "🔎 " + label + " suchen");
       const hinweis = el("div", "stand");
+      felder[label] = { input: i, hinweis };
       // Website: erst raten lassen (webVorschlag prueft marke.de/.com per
       // DNS - kein Schluessel, kein Kontingent, kein CORS). Trifft es nicht,
       // oeffnet wie bisher die Browser-Suche. Social Media laesst sich so
@@ -6297,6 +6314,7 @@ function kontaktFormular(m, fertig) {
         }
         b.disabled = true;
         hinweis.textContent = "Suche Domain …";
+        const vorher = i.value;
         const gefunden = await webVorschlag(m.name);
         b.disabled = false;
         if (!gefunden) {
@@ -6304,6 +6322,9 @@ function kontaktFormular(m, fertig) {
           window.open(suche(), "_blank", "noopener");
           return;
         }
+        // Inzwischen getippt oder von der KI gefuellt: nicht ueberschreiben
+        // (Codex 27.10., Fund 9).
+        if (i.value !== vorher) { hinweis.textContent = "Geraten: " + gefunden + " — Feld nicht geändert."; return; }
         i.value = gefunden;
         hinweis.textContent = "Geraten und per DNS bestätigt — bitte kurz prüfen.";
       };
@@ -6311,7 +6332,7 @@ function kontaktFormular(m, fertig) {
       wrap.append(z, hinweis);
     }
     if (label === "E-Mail")
-      wrap.append(el("div", "stand", "E-Mail 2 (nur in der App)"), email2);
+      wrap.append(el("div", "stand", "E-Mail 2 (nur in der App)"), email2, felder.email2.hinweis);
   }
 
   // Direktlinks auf die ueblichen Unterseiten - ein Tipp statt Umweg ueber
@@ -6348,6 +6369,14 @@ function kontaktFormular(m, fertig) {
   const okZ = el("div", "chips");
   const ok = el("button", "chip haupt", "✓ Speichern");
   ok.onclick = () => {
+    // Backup, "Andreas Stand holen" oder ein Import aus den Einstellungen
+    // koennen die Marke unter dem offenen Formular austauschen - dann ginge
+    // das Speichern still ins Leere (Codex 27.10., Fund 1+2).
+    if (markeZuName(m.name) !== m) {
+      banner("Der Datenstand wurde inzwischen ersetzt — nichts gespeichert. " +
+             "Bitte das Fenster schließen und die Marke neu öffnen.");
+      return;
+    }
     m.kerninfos = m.kerninfos || {};
     for (const [label, i] of Object.entries(eingaben))
       m.kerninfos[label] = i.value.trim();
@@ -6917,8 +6946,9 @@ function renderBrandrating() {
 
 // ---------------------------------------------------------------- Scanner
 // Firmen finden, bevor sie Marken sind (v209, Tobias 25.10.). Stufe 1: die
-// App baut Google-Links, Andrea traegt Funde von Hand ein. Stufe 2 (KI-Suche)
-// liefert spaeter ueber scanAufnehmen() - der Rest bleibt, wie er ist.
+// App baut Google-Links. Stufe 2 (KI-Suche, v210) fuellt die Liste ueber
+// scanAufnehmen(). Den Handeintrag gibt es seit v211 nicht mehr: Handfunde
+// gehen direkt ins Brand Rating.
 // Eigener Top-Level-Schluessel, NICHT in marken: Kandidaten sind noch keine
 // Marken und haben in Kennzahlen, Pitchliste und Import nichts verloren.
 // datenstand.py fuehrt "scanner" in APP_TOP, sonst loescht ein --merge ihn.
@@ -7023,7 +7053,9 @@ function scanPruefen(name, website, instagram) {
 
 // EINZIGER Weg in die Kandidatenliste - auch fuer die KI-Suche (Stufe 2).
 // Prueft selbst, damit kein Aufrufer die Sperre vergessen kann.
-// `warum` (v210): Begruendung der KI-Suche, bei Handeintrag leer.
+// `warum` (v210): Begruendung der KI-Suche. Seit v211 ist die KI-Suche der
+// einzige Aufrufer ("Firma eintragen" ist weg); den Warntext von scanPruefen
+// liest nur noch test_v209.
 function scanAufnehmen(name, website, instagram, warum) {
   if (scanPruefen(name, website, instagram).sperre) return null;
   const k = { name: String(name).trim(), website: String(website || "").trim(),
@@ -7122,16 +7154,20 @@ function scanKiAnfrage(anzahl) {
   };
 }
 
-// Letzter ```json-Block aus den Textbloecken -> geprueft. null = Antwort
-// unbrauchbar (nichts uebernehmen). Abgeschnittenes JSON scheitert an
-// JSON.parse - bewusst keine Reparatur (Codex 26.10., Fund 6).
-function scanKiFirmen(content) {
+// Letzter ```json-Block aus den Textbloecken, geparst. null = kein Block oder
+// kaputtes JSON. Abgeschnittenes JSON scheitert an JSON.parse - bewusst keine
+// Reparatur (Codex 26.10., Fund 6). Geteilt mit der Kontakt-KI (v211).
+function scanKiJson(content) {
   const text = (content || []).filter((b) => b && b.type === "text")
     .map((b) => b.text).join("");
   const bloecke = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
   if (!bloecke.length) return null;
-  let roh;
-  try { roh = JSON.parse(bloecke[bloecke.length - 1][1]); } catch (_) { return null; }
+  try { return JSON.parse(bloecke[bloecke.length - 1][1]); } catch (_) { return null; }
+}
+
+// Firmenliste aus der Antwort -> geprueft. null = unbrauchbar (nichts uebernehmen).
+function scanKiFirmen(content) {
+  const roh = scanKiJson(content);
   if (!roh || !Array.isArray(roh.firmen)) return null;
   const feld = (w, max) => (typeof w === "string" ? w.trim().slice(0, max) : null);
   const firmen = [];
@@ -7141,28 +7177,31 @@ function scanKiFirmen(content) {
     const ok = name && [f.website, f.instagram, f.warum]
       .every((w) => w == null || typeof w === "string");
     if (!ok) { ungueltig++; continue; }
-    firmen.push({ name, website: feld(f.website, 200) || "",
-                  instagram: feld(f.instagram, 200) || "", warum: feld(f.warum, 300) || "" });
+    // Links nach derselben Regel wie bei der Kontakt-KI (v211): kaputter Link
+    // -> leer, die Firma selbst bleibt brauchbar.
+    firmen.push({ name, website: kontaktKiLink(f.website, "web"),
+                  instagram: kontaktKiLink(f.instagram, "instagram"), warum: feld(f.warum, 300) || "" });
   }
   return { firmen, ungueltig };
 }
 
 // Summe ueber ALLE Antworten eines Laufs (pause_turn, Codex Fund 9).
-function scanKiKosten(usages) {
+// `preis` je Modell (v211: die Kontakt-KI laeuft auf Haiku).
+function scanKiKosten(usages, preis = SCAN_KI_PREIS) {
   let d = 0;
   for (const u of usages || []) {
     if (!u) continue;
     const ein = (u.input_tokens || 0) + 1.25 * (u.cache_creation_input_tokens || 0) +
                 0.1 * (u.cache_read_input_tokens || 0);
-    d += (ein * SCAN_KI_PREIS.ein + (u.output_tokens || 0) * SCAN_KI_PREIS.aus) / 1e6;
-    d += ((u.server_tool_use && u.server_tool_use.web_search_requests) || 0) * SCAN_KI_PREIS.suche;
+    d += (ein * preis.ein + (u.output_tokens || 0) * preis.aus) / 1e6;
+    d += ((u.server_tool_use && u.server_tool_use.web_search_requests) || 0) * preis.suche;
   }
   return d;
 }
 
 // Uebernimmt gepruefte Firmen. Speichert NICHT (wie alle scan*-Mutatoren).
-// Niemals-Treffer werden hier GESPERRT, nicht nur gewarnt: beim Handeintrag
-// entscheidet Andrea selbst, hier niemand (Code-Review 26.10.).
+// Niemals-Treffer werden hier GESPERRT, nicht nur gewarnt: hier entscheidet
+// niemand mit (Code-Review 26.10.; den Handeintrag gibt es seit v211 nicht mehr).
 function scanKiUebernehmen(firmen) {
   let neu = 0, uebersprungen = 0;   // schon da, Niemals-Wort oder Name ohne Buchstaben
   const niemals = scanDaten().niemals;
@@ -7248,34 +7287,6 @@ function sheetScanBegriffe() {
   sheetOeffnen("Suche einstellen", erklaerungenAnsEnde(wrap));
 }
 
-function sheetScanFirma() {
-  const wrap = el("div");
-  const feld = (ph) => { const i = el("input", "suche"); i.placeholder = ph; return i; };
-  const name = feld("Name der Firma"), web = feld("Website (optional)"),
-        ig = feld("Instagram (optional)");
-  const hinweis = el("div", "stand");
-  const pruef = () => {
-    hinweis.textContent = scanPruefen(name.value, web.value, ig.value).text;
-  };
-  name.oninput = pruef;
-  web.oninput = pruef;
-  ig.oninput = pruef;
-  const okZ = el("div", "chips");
-  const ok = el("button", "chip haupt", "＋ Aufnehmen");
-  ok.onclick = () => {
-    if (!scanAufnehmen(name.value, web.value, ig.value)) {   // prueft selbst
-      banner(scanPruefen(name.value, web.value, ig.value).text || "Name fehlt.");
-      return;
-    }
-    listeVeraltet = true;
-    datenstandPersistieren();
-    history.back();
-  };
-  okZ.append(ok);
-  wrap.append(name, web, ig, hinweis, okZ);
-  sheetOeffnen("Firma eintragen", wrap);
-}
-
 // Laufende KI-Suche (v210): { ctrl, stand }. Haengt NICHT am Sheet (Tobias
 // 26.10.: Andrea soll das Fenster schliessen duerfen). Stattdessen sperrt
 // sie selbst den Standtausch - standGesperrt() wird an allen fuenf Stellen
@@ -7347,12 +7358,14 @@ async function scanKiRufen(body, signal, kiKey) {
   return j;
 }
 
-// pause_turn: ganze Antwort anhaengen und weiter, hoechstens 3x (Fund 9).
+// pause_turn: ganze Antwort anhaengen und weiter, hoechstens runden-1 mal (Fund 9).
 // usages wird vom Aufrufer gehalten - auch ein Abbruch zaehlt, was schon kam.
-async function scanKiLaufen(anzahl, signal, usages) {
-  const body = scanKiAnfrage(anzahl);
+// v211: nimmt den fertigen Body (Scanner UND Kontakt-KI). Die Kontakt-KI
+// gibt 2 Runden vor - jede Fortsetzung zaehlt den ganzen Verlauf erneut
+// als Eingabe (Codex 27.10., Fund 8).
+async function scanKiLaufen(body, signal, usages, runden = 4) {
   const kiKey = einst.kiSchluessel;   // EINMAL je Lauf (Entfernen mittendrin)
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < runden; i++) {
     const j = await scanKiRufen(body, signal, kiKey);
     usages.push(j.usage);
     if (j.stop_reason !== "pause_turn") return j;
@@ -7396,7 +7409,7 @@ async function scanKiStarten(anzahl, zeige) {
   const usages = [];
   let text;
   try {
-    const j = await scanKiLaufen(anzahl, lauf.ctrl.signal, usages);
+    const j = await scanKiLaufen(scanKiAnfrage(anzahl), lauf.ctrl.signal, usages);
     const erg = !j || j.stop_reason === "refusal" ? null : scanKiFirmen(j.content);
     // Ab hier kein await, bis uebernommen ist - und direkt davor geprueft.
     if (lauf.ctrl.signal.aborted) text = abbruch();
@@ -7510,6 +7523,215 @@ function sheetScanPause(name) {
   sheetOeffnen(`„${name}“ pausieren`, wrap);
 }
 
+// ------------------------------------------- Kontakt-KI (v211, Backlog 68)
+// "✨ Kontakt suchen" im Kontaktformular - gilt fuer Brand Rating UND
+// Pitchliste (beide zeigen dasselbe Formular). Bauplan: doku/Bauplan
+// Kontakt suchen.md. Fuellt NUR leere Eingabefelder vor, Abweichungen
+// stehen als Hinweis darunter (Tobias 27.10.). Gespeichert wird erst ueber
+// "✓ Speichern" - nichts hier schreibt in m. Raus geht nur Name + Domain.
+// Haiku statt Sonnet: Abschreiben aus dem Impressum braucht kein Urteil,
+// Ziel 3-5 Cent je Marke.
+// ponytail: Preisstufe ueber 100k Prompt-Token nicht gerechnet - 2 Runden
+// und max_content_tokens halten darunter. Massgeblich ist die Console.
+const KONTAKT_KI_MODELL = "claude-haiku-5-5";
+const KONTAKT_KI_PREIS = { ein: 0.10, aus: 0.50, suche: 0.01 };   // $ je Mio. Token / je Suche
+const KONTAKT_KI_TECHNIK =
+  "Du suchst Kontaktdaten einer Marke für eine UGC-Creatorin. Nutze Websuche " +
+  "und Seitenabruf, bevorzuge Impressum, Kontakt-, Kooperations- und " +
+  "Presseseite der offiziellen Website und das offizielle Instagram-Profil.\n" +
+  // Probe 27.10.: Haiku las nur die Startseite und gab auf, wenn /impressum
+  // nicht existierte - und liess den Ansprechpartner trotz Impressum leer.
+  "Lies IMMER das Impressum (in Deutschland Pflicht). Gibt es eine der " +
+  "genannten Unterseiten nicht, nimm den Impressum- bzw. Kontakt-Link von der " +
+  "Startseite oder suche per Websuche nach „<Marke> Impressum“.\n" +
+  "website = offizielle Startseite. instagram = Link zum Instagram-Profil der " +
+  "Marke. ansprechpartner = Person für Marketing, Kooperationen oder " +
+  "Influencer; steht keine da, IMMER der Geschäftsführer bzw. die " +
+  "Geschäftsführerin laut Impressum (nur der Name). email = Adresse für " +
+  "Kooperationen, Marketing oder Presse, sonst die allgemeine Kontaktadresse. " +
+  "email2 = eine zweite, andere Adresse, sonst leer.\n" +
+  "Nur was du auf einer Seite tatsächlich gelesen hast. Nichts raten, keine " +
+  "Adresse zusammensetzen. Unbekanntes bleibt leer. Keine Bewertung, kein " +
+  "Anschreiben, keine Erklärung. Antworte am Ende mit genau einem ```json-Block " +
+  '{"website":"…","instagram":"…","ansprechpartner":"…","email":"…","email2":"…","quellen":["…"]} — ' +
+  "quellen = Links der Seiten, auf denen du die Angaben gefunden hast.";
+// ":" vor dem @ verboten: sonst geht "mailto:info@…" durch (Code-Review 28.10.)
+const KONTAKT_KI_MAIL = /^[^\s@<>":]+@[^\s@<>"]+\.[a-z]{2,}$/i;
+
+// web_fetch holt nur Adressen, die vorher im Gespraech standen - die
+// Unterseiten gehoeren deshalb in die USER-Nachricht, nicht ins System.
+function kontaktKiAnfrage(name, website) {
+  const d = domainVon(website);   // Freitext im Feld -> keine Website
+  const zeilen = [`Marke: „${String(name || "").trim().slice(0, 120)}“`];
+  if (d) zeilen.push(`Website: https://${d}/`, "Diese Seiten darfst du direkt abrufen:\n" +
+    [`https://${d}/`].concat(MARKEN_SEITEN.map(([p]) => seitenLink(d, p))).join("\n"));
+  else zeilen.push("Website unbekannt – zuerst suchen.");
+  return {
+    model: KONTAKT_KI_MODELL,
+    max_tokens: 6000,
+    system: KONTAKT_KI_TECHNIK,
+    output_config: { effort: "low" },
+    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3,
+              user_location: { type: "approximate", country: "DE" } },
+            { type: "web_fetch_20250910", name: "web_fetch", max_uses: 4,
+              max_content_tokens: 6000 }],
+    messages: [{ role: "user", content: zeilen.join("\n\n") }],
+  };
+}
+
+// "" = unbrauchbar. Nur http(s), hoechstens 200 Zeichen (Codex 27.10., Fund 7),
+// Instagram nur als Profil-Link: keine reservierten Pfade (explore, p, reels…),
+// ohne ?hl=de (Code-Review 28.10.).
+function kontaktKiLink(w, art) {
+  if (typeof w !== "string" || !w.trim() || w.length > 200) return "";
+  let u;
+  try { u = new URL(scanHref(art, w)); } catch (_) { return ""; }
+  if (!/^https?:$/.test(u.protocol) || !domainVon(u.hostname) || u.href.length > 200) return "";
+  if (art !== "instagram") return u.href;
+  return /^(www\.)?instagram\.com$/.test(u.hostname) &&
+    /^\/(?!(?:explore|p|reel|reels|stories|accounts|tv|direct)\/?$)[A-Za-z0-9._]+\/?$/i.test(u.pathname)
+    ? u.origin + u.pathname : "";
+}
+
+// Antwort der KI ist untrusted (gelesene Seiten koennen alles enthalten):
+// jedes Feld einzeln pruefen, nichts reparieren. null = gar nichts brauchbar.
+function kontaktKiErgebnis(content) {
+  const roh = scanKiJson(content);
+  if (!roh || typeof roh !== "object" || Array.isArray(roh)) return null;
+  let ungueltig = 0;
+  const leer = (w) => w == null || (typeof w === "string" && !w.trim());
+  const text = (w, max, muster) => {
+    if (leer(w)) return "";
+    const t = typeof w === "string" ? w.trim() : "";
+    if (t.length <= max && muster.test(t)) return t;
+    ungueltig++;
+    return "";
+  };
+  const link = (w, art) => {
+    if (leer(w)) return "";
+    const l = kontaktKiLink(w, art);
+    if (!l) ungueltig++;
+    return l;
+  };
+  const erg = {
+    website: link(roh.website, "web"),
+    instagram: link(roh.instagram, "instagram"),
+    // Mind. 2 Buchstaben, keine Platzhalter wie "…" aus der JSON-Vorlage (Code-Review 28.10.)
+    ansprechpartner: text(roh.ansprechpartner, 80,
+      /^(?!(?:unbekannt|n\/?a|keine?|nicht angegeben)$)(?=(?:[^<>\r\n]*\p{L}){2})[^<>\r\n]+$/iu),
+    email: text(roh.email, 120, KONTAKT_KI_MAIL),
+    email2: text(roh.email2, 120, KONTAKT_KI_MAIL),
+  };
+  if (erg.email2.toLowerCase() === erg.email.toLowerCase()) erg.email2 = "";
+  if (!erg.email) [erg.email, erg.email2] = [erg.email2, ""];
+  erg.quellen = (Array.isArray(roh.quellen) ? roh.quellen : [])
+    .map((q) => kontaktKiLink(q, "web")).filter(Boolean).slice(0, 5);
+  erg.ungueltig = ungueltig;
+  return erg;
+}
+
+function kontaktKiNorm(w) {
+  return String(w || "").trim().toLowerCase()
+    .replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, "");
+}
+
+// felder: { Website, Ansprechpartner, "E-Mail", "Social Media", email2 },
+// je { input, hinweis }. Leeres Feld -> Wert rein. Gefuellt und anders ->
+// nur Hinweis, NIE ueberschreiben (Tobias 27.10.). Neue Mail-Adressen
+// fuellen die freien Mail-Felder der Reihe nach (Kooperation zuerst).
+function kontaktKiEinsetzen(felder, ki) {
+  let eingetragen = 0, hinweise = 0;
+  for (const f of Object.values(felder)) f.hinweis.textContent = "";
+  const fand = (f, neu) => {
+    const alt = f.hinweis.textContent;
+    f.hinweis.textContent = alt.startsWith("✨ KI fand: ") ? alt + ", " + neu
+      : (alt ? alt + " · " : "") + "✨ KI fand: " + neu;
+    hinweise++;
+  };
+  // "Gleich" = gleich nach kontaktKiNorm, je Wert im Feld (Trenner , ; Zeile).
+  // Kein includes: "o@marke.de" steckt in "info@marke.de" (Code-Review 28.10.).
+  const werte = (v, wie = (t) => t) =>
+    v.split(/[,;\n]/).map((t) => kontaktKiNorm(wie(t.trim()))).filter(Boolean);
+  const setze = (f, neu, wie) => {
+    if (!neu) return;
+    if (!f.input.value.trim()) {
+      f.input.value = neu;
+      f.hinweis.textContent = "✨ von der KI — bitte prüfen";
+      eingetragen++;
+    } else if (!werte(f.input.value, wie).includes(kontaktKiNorm(neu))) fand(f, neu);
+  };
+  setze(felder.Website, ki.website);
+  setze(felder["Social Media"], ki.instagram, (t) => scanHref("instagram", t));
+  setze(felder.Ansprechpartner, ki.ansprechpartner);
+  const mailFelder = [felder["E-Mail"], felder.email2];
+  const da = mailFelder.flatMap((f) => werte(f.input.value));
+  for (const mail of [ki.email, ki.email2]) {
+    if (!mail || da.includes(kontaktKiNorm(mail))) continue;
+    const frei = mailFelder.find((f) => !f.input.value.trim());
+    if (frei) setze(frei, mail);
+    else fand(felder["E-Mail"], mail);
+  }
+  return { eingetragen, hinweise };
+}
+
+// Knopf + Statuszeile + Quellen fuers Kontaktformular. Laeuft nur, solange
+// das Formular steht: Wache statt popstate-Listener, weil das Formular auch
+// OHNE popstate verschwindet (✎ Rating, bau() nach dem Book, render() -
+// Codex 27.10., Fund 4). Kein globales Lock: das offene Sheet sperrt den
+// Standtausch schon ("Sheet offen"), Speichern prueft die Marke selbst.
+function kontaktKiKnopf(m, felder) {
+  const z = el("div", "chips");
+  const b = el("button", "chip", "✨ Kontakt suchen");
+  const status = el("div", "stand");
+  const quellen = el("div", "chips");
+  b.onclick = async () => {
+    if (!einst.kiSchluessel) {
+      status.textContent = "Erst unter Einstellungen → KI-Suche einen Claude-Schlüssel eintragen.";
+      return;
+    }
+    b.disabled = true;   // Sperre VOR dem ersten await (Doppeltipp)
+    const ctrl = new AbortController();
+    let zuLang = false;
+    const uhr = setTimeout(() => { zuLang = true; ctrl.abort(); }, 90000);
+    const wache = setInterval(() => { if (!b.isConnected) ctrl.abort(); }, 1000);
+    const usages = [];
+    status.textContent = "✨ Claude sucht … (etwa 20–40 Sekunden)";
+    quellen.textContent = "";
+    let text = "";
+    try {
+      const j = await scanKiLaufen(kontaktKiAnfrage(m.name, felder.Website.input.value),
+                                   ctrl.signal, usages, 2);
+      // Ab hier kein await mehr - und direkt davor geprueft.
+      if (!b.isConnected) return;   // Formular weg: verwerfen (finally verbucht)
+      const erg = !j || j.stop_reason === "refusal" ? null : kontaktKiErgebnis(j.content);
+      if (!j) text = "Suche nicht fertig geworden — nichts eingetragen.";
+      else if (!erg) text = "Kein brauchbares Ergebnis — nichts eingetragen.";
+      else {
+        const r = kontaktKiEinsetzen(felder, erg);
+        text = r.eingetragen || r.hinweise
+          ? `✨ ${r.eingetragen} eingetragen · ${r.hinweise} Hinweis${r.hinweise === 1 ? "" : "e"} — bitte prüfen und speichern`
+          : "✨ Nichts Neues gefunden.";
+        if (erg.ungueltig) text += ` · ${erg.ungueltig} unbrauchbar`;   // wie im Scanner (Code-Review 28.10.)
+        for (const q of erg.quellen) quellen.append(scanKnopf("Quelle: " + domainVon(q), q));
+      }
+    } catch (f) {
+      text = ctrl.signal.aborted ? (zuLang ? "Dauerte zu lange — nichts eingetragen." : "Abgebrochen.")
+                                 : (f.message || "Unbekannter Fehler.");
+    } finally {
+      clearTimeout(uhr);
+      clearInterval(wache);
+      const kosten = scanKiKosten(usages, KONTAKT_KI_PREIS);
+      if (kosten) scanKiKostenMerken(kosten);
+      if (b.isConnected) {
+        b.disabled = false;
+        status.textContent = text + (kosten ? " · " + scanKiDollar(kosten) : "");
+      }
+    }
+  };
+  z.append(b);
+  return [z, status, quellen];
+}
+
 // Begruendung + Links - offene Karte UND Pausiert/Ignoriert zeigen dasselbe
 // (Tobias 26.10.: auch blockierte Treffer sollen ihre Infos behalten).
 function scanInfo(karte, k) {
@@ -7619,12 +7841,6 @@ function renderScanner() {
   } else {
     c.append(el("div", "leerzustand", "Erst Suchbegriffe eintragen."));
   }
-
-  const neu = el("button", "chip haupt", "＋ Firma eintragen");
-  neu.onclick = sheetScanFirma;
-  const nz = el("div", "chips");
-  nz.append(neu);
-  c.append(nz);
 
   const offen = scanListe("offen");
   c.append(el("div", "stand", `Offen (${offen.length})`));
