@@ -654,7 +654,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v211"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v212"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -15550,8 +15550,17 @@ async function abgleichBeiRueckkehr() {
   // (seit S6 auch der Import) stempelt `geaendert` am selben Objekt um - fiel
   // das in laden(), hiess es faelschlich "anderes Geraet" (S6-Szenario
   // rueckkehr_serie, 4/20). Ein fremder Stand tauscht das Objekt aus.
-  const vorher = datenstand;
+  let vorher = datenstand;
   try {
+    // Backlog 67 (Codex 25.10.): erst die Speicherkette leerlaufen lassen.
+    // Sonst tauscht laden() den Stand, waehrend ein Speichern noch wartet -
+    // und das schreibt danach den frisch geladenen Stand OHNE die Aenderung.
+    // ponytail: wartet ohne Zeitgrenze wie abgleichNachholenFalls() - haengt
+    // ein PUT, haengt auch der Abgleich. Zeitgrenze gehoert zu Backlog 71.
+    await persistRuhe();
+    // Waehrend des Wartens kann ein Sheet aufgegangen sein: wie oben vormerken.
+    if (standGesperrt()) { abgleichNachholen = true; return; }
+    vorher = datenstand;
     await laden();     // zieht den Datenstand selbst mit (siehe dort)
   } catch (_) {
     // offline oder OneDrive nicht erreichbar: alter Stand bleibt stehen
