@@ -633,6 +633,16 @@ textarea.suche { padding: 10px 14px; font: inherit; line-height: 1.4; resize: ve
   padding: 0 8px;
   text-align: center;
 }
+/* Einstellungen (v214): vier Reiter je Reihe, der Rest darunter. Die Schrift
+   bleibt im Chip - notfalls mit Trennstrich in zwei Zeilen (lang="de"). */
+.chips.reiter.zweizeilig { flex-wrap: wrap; }
+.chips.reiter.zweizeilig .chip {
+  flex: 1 1 calc(25% - 6px);
+  padding: 4px;
+  line-height: 1.2;
+  hyphens: auto;
+  overflow-wrap: break-word;
+}
 /* Link-Farbe = blauer Hervorhebungstext aus dem Design-System */
 .link { color: var(--link); word-break: break-all; text-decoration: underline; }
 .tabelle .zeile a.link { text-align: right; }

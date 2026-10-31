@@ -20,7 +20,7 @@ const KACHEL_TITEL = {
   kooperationen: "Kooperationen",
   koop_quote: "Kooperationsquote",
   abschlussquote: "Abschlussquote",
-  auftragswert: "Ø Auftragswert",
+  auftragswert: "Auftragswert",     // v214: Summe brutto, Ø klein darunter
   // Ohne eigene Kachel: nur als Prozentwert oben rechts in ihrer Kachel
   // und als zweites Diagramm im Verlaufs-Sheet.
   quote_antworten: "Antwortquote",
@@ -38,18 +38,20 @@ const KACHEL_SEITEN = [
 // Welche Kachel traegt oben rechts eine Quote.
 const KACHEL_QUOTE = { antworten: "quote_antworten", positiv: "quote_positiv" };
 
-// Kleine Zeile unter dem Wert (C7, Tobias 31.10.), in der Kachel und in der
-// Monatstabelle des Verlaufs. Netto erst beim Zeichnen: gesamt traegt nur
-// brutto, der Satz steht in den Einstellungen (ustSatz). Leer = keine Zeile.
+// Kleine Zeilen unter dem Wert (C7, Tobias 31.10./01.11.), in der Kachel
+// untereinander, in der Monatstabelle des Verlaufs mit " · " verbunden.
+// Netto erst beim Zeichnen: gesamt traegt nur brutto, der Satz steht in den
+// Einstellungen (ustSatz). Leere Liste = keine Zeile.
 const KACHEL_UNTER = {
   auftragswert: (g) => {
-    if (!g.abschluesse) return "";
+    if (!g.abschluesse) return [];
     const u = ustSatz();
-    return "Summe " + kpiText("umsatz", g.umsatz) +
-      (u ? " · netto " + kpiText("umsatz", g.umsatz / (1 + u / 100)) : "");
+    return [...(u ? ["netto " + kpiText("umsatz", g.umsatz / (1 + u / 100))] : []),
+            "Ø " + kpiText("umsatz", g.umsatz / g.abschluesse)];
   },
-  abschlussquote: (g) => !("abschluesse" in g) ? "" :
-    g.abschluesse + (g.abschluesse === 1 ? " Abschluss" : " Abschlüsse"),
+  abschlussquote: (g) => !("abschluesse" in g) ? [] :
+    [g.abschluesse + (g.abschluesse === 1 ? " Abschluss" : " Abschlüsse") +
+     " von " + g.marken + (g.marken === 1 ? " Marke" : " Marken")],
 };
 
 // Quoten in PROZENTPUNKTEN (0-100), nicht als Bruch: das Verlaufs-Diagramm
@@ -78,9 +80,11 @@ const KPI_ABGELEITET = {
   // C7 (Tobias 31.10.): die Zaehler setzt kpiZeitraum (abschluesse, umsatz).
   // Fehlen sie (alter Snapshot ohne Datenstand), bleibt es bei "—" - der
   // `in`-Test verhindert quote(undefined, n) = NaN. Quote darf ueber 100 %
-  // liegen: Auftraege ohne Pitch zaehlen mit. Kein Abschluss -> Ø "—", nicht 0 €.
+  // liegen: Auftraege ohne Pitch zaehlen mit. Auftragswert = Summe brutto
+  // (v214, Tobias 01.11.: die Summe gross, Ø klein darunter); ohne Abschluss
+  // ehrlich 0 €, ohne Zaehler (alter Snapshot) "—".
   abschlussquote:  (g) => "abschluesse" in g ? quote(g.abschluesse, g.marken) : null,
-  auftragswert:    (g) => g.abschluesse ? g.umsatz / g.abschluesse : null,
+  auftragswert:    (g) => "abschluesse" in g ? g.umsatz : null,
 };
 
 const KPI_EINHEIT = { quote_antworten: " %", quote_positiv: " %",
@@ -718,7 +722,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v213"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v214"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -845,7 +849,7 @@ const REITER = {
   "Sonstiges": "Sonstiges",
   // Einstellungs-Sheet (v61)
   "Darstellung": "Darstellung",
-  "Umsatzsteuer": "Kennzahlen",   // C7/v213, gilt fuer alle Geraete
+  "Umsatzsteuer": "Steuer",       // C7/v213, gilt fuer alle Geraete (v214 umbenannt)
   "Datenstand-Sicherung": "Sicherung",
   "Excel erzeugen": "Sicherung",
   "Automatisches Backup": "Sicherung",
@@ -916,7 +920,10 @@ function zuReitern(wrap, merker) {
   if (gruppen.size < 2) return;       // ein Reiter ist kein Reiter
   wrap.innerHTML = "";               // loest die Knoten nur aus dem DOM,
   wrap.append(...kopf);              // die Referenzen oben bleiben gueltig
-  const leiste = el("div", "chips reiter");
+  // Einstellungen haben seit v213 sieben Reiter - gleich breit in EINER
+  // Reihe passt die Schrift nicht mehr hinein (Tobias 01.11.). Dort vier je
+  // Reihe; die Marken-Sheets bleiben bewusst einzeilig.
+  const leiste = el("div", "chips reiter" + (merker === "reiterEinst" ? " zweizeilig" : ""));
   const buehne = el("div", "buehne");
   // Feste Reihenfolge in ALLEN Marken-Sheets (v196, Tobias: "ich mag's
   // ordentlich"). Bis dahin galt die Reihenfolge der Abschnitte im Sheet -
@@ -1326,7 +1333,7 @@ function sheetEinstellungen(reiter) {
       ustZeile.append(c);
     }
     wrap.append(abschnitt("Umsatzsteuer",
-      el("div", "stand", "Satz für netto in der Kachel Ø Auftragswert:"), ustZeile,
+      el("div", "stand", "Satz für netto in der Kachel Auftragswert:"), ustZeile,
       erklaerung("Umsatzsteuer",
         "Gilt für alle Geräte (steht im Datenstand) und rückwirkend für alle " +
         "Aufträge. 0 % = Kleinunternehmerin, dann keine Netto-Angabe.")));
@@ -2230,7 +2237,8 @@ function sheetInfo() {
       zeile("Antwortquote = Antworten ÷ (Pitches + Follow-ups). " +
             "Positivquote = positive ÷ alle Antworten. Beide stehen als " +
             "Prozentwert oben rechts in ihrer Kachel."),
-      zeile("Ø Auftragswert und Abschlussquote kommen aus dem Umsatz im " +
+      zeile("Auftragswert (Summe brutto, darunter netto und Ø) und " +
+            "Abschlussquote kommen aus dem Umsatz im " +
             "Kundenauftrag: ein abgeschlossener Auftrag mit Umsatz zählt im " +
             "Monat seines Abschlusses. Abschlussquote = Abschlüsse ÷ " +
             "angeschriebene Marken (Aufträge ohne Pitch zählen mit, daher " +
@@ -2537,8 +2545,8 @@ function kpiKachel(gesamt, schluessel) {
     kopf.append(el("div", "quote", kpiText(quoteK, kpiWert(gesamt, quoteK))));
   }
   kachel.append(kopf, el("div", "wert", kpiText(schluessel, wert)));
-  const unter = KACHEL_UNTER[schluessel] && KACHEL_UNTER[schluessel](gesamt);
-  if (unter) kachel.append(el("div", "unter", unter));
+  for (const zeile of KACHEL_UNTER[schluessel] ? KACHEL_UNTER[schluessel](gesamt) : [])
+    kachel.append(el("div", "unter", zeile));
   const sp = sparkline(schluessel);
   if (sp) {
     kachel.append(sp);
@@ -2833,7 +2841,7 @@ function sheetVerlauf(schluessel) {
                       kpiText(quoteK, kpiWert(z.gesamt, quoteK))));
     }
     const unterK = KACHEL_UNTER[schluessel];   // C7: Summe/netto bzw. Anzahl
-    if (unterK) zeile.append(el("span", "leise", unterK(z.gesamt)));
+    if (unterK) zeile.append(el("span", "leise", unterK(z.gesamt).join(" · ")));
     tab.append(zeile);
   });
   wrap.append(tab);
