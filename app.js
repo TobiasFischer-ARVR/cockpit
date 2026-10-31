@@ -38,6 +38,20 @@ const KACHEL_SEITEN = [
 // Welche Kachel traegt oben rechts eine Quote.
 const KACHEL_QUOTE = { antworten: "quote_antworten", positiv: "quote_positiv" };
 
+// Kleine Zeile unter dem Wert (C7, Tobias 31.10.), in der Kachel und in der
+// Monatstabelle des Verlaufs. Netto erst beim Zeichnen: gesamt traegt nur
+// brutto, der Satz steht in den Einstellungen (ustSatz). Leer = keine Zeile.
+const KACHEL_UNTER = {
+  auftragswert: (g) => {
+    if (!g.abschluesse) return "";
+    const u = ustSatz();
+    return "Summe " + kpiText("umsatz", g.umsatz) +
+      (u ? " · netto " + kpiText("umsatz", g.umsatz / (1 + u / 100)) : "");
+  },
+  abschlussquote: (g) => !("abschluesse" in g) ? "" :
+    g.abschluesse + (g.abschluesse === 1 ? " Abschluss" : " Abschlüsse"),
+};
+
 // Quoten in PROZENTPUNKTEN (0-100), nicht als Bruch: das Verlaufs-Diagramm
 // rechnet seine Gitterlinien in ganzen Schritten, bei Werten unter 1 haette
 // es nur die Linien 0 und 1 gezogen.
@@ -61,25 +75,48 @@ function quote(a, b) {
 const KPI_ABGELEITET = {
   quote_antworten: (g) => quote(g.antworten, g.pitches + g.followups),
   quote_positiv:   (g) => quote(g.positiv, g.antworten),
+  // C7 (Tobias 31.10.): die Zaehler setzt kpiZeitraum (abschluesse, umsatz).
+  // Fehlen sie (alter Snapshot ohne Datenstand), bleibt es bei "—" - der
+  // `in`-Test verhindert quote(undefined, n) = NaN. Quote darf ueber 100 %
+  // liegen: Auftraege ohne Pitch zaehlen mit. Kein Abschluss -> Ø "—", nicht 0 €.
+  abschlussquote:  (g) => "abschluesse" in g ? quote(g.abschluesse, g.marken) : null,
+  auftragswert:    (g) => g.abschluesse ? g.umsatz / g.abschluesse : null,
 };
 
 const KPI_EINHEIT = { quote_antworten: " %", quote_positiv: " %",
                       koop_quote: " %", abschlussquote: " %",
-                      auftragswert: " €" };
+                      auftragswert: " €", umsatz: " €" };
 
-// Ohne Datenquelle (Stand 05.09.): Kennenlerngespraeche, Kooperationen und
-// Auftragswert stehen in keinem Brand-Book, Andrea tippt sie heute von Hand
-// ins Excel; Kooperations- und Abschlussquote haengen daran. Solange das so
-// ist, zeigt die Kachel einen Platzhalter - eine 0 waere eine Behauptung.
+// Ohne Datenquelle (Stand 05.09.): Kennenlerngespraeche und Kooperationen
+// stehen in keinem Brand-Book, Andrea tippt sie heute von Hand ins Excel; die
+// Kooperationsquote haengt daran. Solange das so ist, zeigt die Kachel einen
+// Platzhalter - eine 0 waere eine Behauptung. Auftragswert und
+// Abschlussquote kommen seit C7 (v213) aus den abgeschlossenen Auftraegen.
 function kpiWert(gesamt, schluessel) {
   if (schluessel in gesamt) return gesamt[schluessel];
   const f = KPI_ABGELEITET[schluessel];
   return f ? f(gesamt) : null;
 }
 
+// Umsatzsteuersatz in Prozentpunkten (C7). Erste Einstellung im DATENSTAND
+// statt im Geraet: alle Geraete sollen dieselbe Netto-Zahl zeigen. Die
+// Vorgabe bleibt im Code und wird beim Lesen NICHT angelegt (wie
+// scanZielbild). ponytail: EIN Satz fuer alle Auftraege, rueckwirkend
+// (Tobias 31.10.) - Satz je Auftrag erst, wenn ein Wechsel Kleinunternehmer
+// <-> Regelbesteuerung ansteht.
+const UST_SAETZE = [19, 7, 0];
+function ustSatz() {
+  const u = datenstand && datenstand.einstellungen && datenstand.einstellungen.ust;
+  return Number.isFinite(u) && u >= 0 ? u : 19;
+}
+
 function kpiText(schluessel, wert) {
-  return wert === null || wert === undefined
-    ? "—" : String(wert) + (KPI_EINHEIT[schluessel] || "");
+  if (wert === null || wert === undefined) return "—";
+  const einheit = KPI_EINHEIT[schluessel] || "";
+  // Euro ganzzahlig mit Tausenderpunkt (C7): "1.251 €" statt "1250.5 €".
+  return (einheit === " €"
+    ? wert.toLocaleString("de-DE", { maximumFractionDigits: 0 })
+    : String(wert)) + einheit;
 }
 
 // ------------------------------------------- KPI aus dem Datenstand (v87)
@@ -191,11 +228,33 @@ const KPI_SUMMEN = ["pitches", "followups", "antworten", "positiv",
 // Ein Zeitraum, frisch gerechnet: {gesamt, marken}. `historien` ist die
 // vorbereitete Liste [{marke, ereignisse}], damit historieAktuell() nicht
 // je Zeitraum erneut läuft.
+// Abschluesse einer Marke (C7, Tobias 31.10.): abgeschlossener Auftrag MIT
+// Umsatz > 0, gezaehlt am Enddatum a.ende. Ohne Betrag kein Abschluss - seit
+// v197 landet auch ein geplatzter Auftrag in m.auftraege. Der Altwert
+// "kundenpflege" (bis v196) kann keinen Umsatz tragen und bleibt draussen.
+// Form wie ein Ereignis ({datum}), damit eventDatum() und die Datums-
+// Schleifen ihn lesen; unlesbares Ende zaehlt nirgends. EINE Regel fuer
+// kpiZeitraum, kpiNachrechnen und zeitraeumeAusDatenstand.
+function abschluesse(marke) {
+  return ((marke && marke.auftraege) || [])
+    .filter((a) => a && a.ausgang === "abgeschlossen" && Number(a.umsatz) > 0)
+    .map((a) => ({ datum: a.ende, umsatz: Number(a.umsatz) }))
+    .filter((a) => eventDatum(a) !== null);
+}
+
 function kpiZeitraum(historien, von, bis) {
-  const gesamt = { marken: 0 };
+  const gesamt = { marken: 0, abschluesse: 0, umsatz: 0 };
   for (const k of KPI_SUMMEN) gesamt[k] = 0;
   const marken = [];
   for (const { marke, ereignisse } of historien) {
+    // C7: VOR dem continue - ein Auftrag ohne Pitch zaehlt auch in einem
+    // Monat, in dem die Marke sonst nichts hatte (Tobias 31.10.).
+    for (const a of abschluesse(marke)) {
+      const d = eventDatum(a);
+      if (d < von || d > bis) continue;
+      gesamt.abschluesse++;
+      gesamt.umsatz += a.umsatz;
+    }
     const k = kpiMarke(ereignisse, von, bis);
     if (!k) continue;
     if (k.kontaktiert) gesamt.marken++;
@@ -255,9 +314,12 @@ function kpiNachrechnen() {
   // am letzten Ereignis ZUM EXPORTZEITPUNKT. Ohne das Nachziehen fiele ein
   // heute erledigter Follow-up aus der Gesamtspalte heraus, während die
   // Monatskachel ihn zeigt.
+  // C7: auch Auftragsenden - sonst fiele ein heute abgeschlossener Auftrag
+  // ohne spaeteres Ereignis aus "Gesamt".
   let juengste = 0;
-  for (const { ereignisse } of historien)
-    for (const e of ereignisse) juengste = Math.max(juengste, eventDatum(e) || 0);
+  for (const { marke, ereignisse } of historien)
+    for (const e of [...ereignisse, ...abschluesse(marke)])
+      juengste = Math.max(juengste, eventDatum(e) || 0);
 
   snap.zeitraeume.forEach((z, i) => {
     if (i === 0 && juengste > datumWert(z.ende)) z.ende = isoZuDe(juengste);
@@ -300,7 +362,9 @@ const MONATE = ["Jan", "Feb", "Mrz", "Apr", "Mai", "Jun",
 function zeitraeumeAusDatenstand(marken) {
   let min = 0, max = 0;
   for (const m of marken || []) {
-    for (const e of (m && m.events) || []) {
+    // C7: ein Monat nur mit Abschluss bekommt seinen Chip. Abweichung vom
+    // PC-Spiegel monats_zeitraeume (kennt keine Auftraege) - test_s1 Abschnitt 6.
+    for (const e of [...((m && m.events) || []), ...abschluesse(m)]) {
       const d = eventDatum(e);
       if (!d) continue;
       if (!min || d < min) min = d;
@@ -654,7 +718,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v212"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v213"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -781,6 +845,7 @@ const REITER = {
   "Sonstiges": "Sonstiges",
   // Einstellungs-Sheet (v61)
   "Darstellung": "Darstellung",
+  "Umsatzsteuer": "Kennzahlen",   // C7/v213, gilt fuer alle Geraete
   "Datenstand-Sicherung": "Sicherung",
   "Excel erzeugen": "Sicherung",
   "Automatisches Backup": "Sicherung",
@@ -1244,6 +1309,28 @@ function sheetEinstellungen(reiter) {
       "WARUM etwas so funktioniert. Bedienhinweise und Zustandsmeldungen " +
       "bleiben stehen."),
     erklaerung("Darstellung", "Gilt nur für dieses Gerät.")));
+  // Umsatzsteuer (C7, Tobias 31.10.): die erste Einstellung, die im
+  // DATENSTAND steht statt im Geraet - alle Geraete rechnen dasselbe netto.
+  // Nur mit Datenstand; ohne ihn gaebe es nichts, wohin sie schreiben koennte.
+  if (datenstand) {
+    const ustZeile = el("div", "chips");
+    for (const satz of UST_SAETZE) {
+      const c = el("button", "chip" + (ustSatz() === satz ? " aktiv" : ""), satz + " %");
+      c.onclick = () => {
+        (datenstand.einstellungen = datenstand.einstellungen || {}).ust = satz;
+        listeVeraltet = true;          // Kachel rechnet beim Schliessen neu
+        datenstandPersistieren();
+        [...ustZeile.children].forEach((k, i) =>
+          k.classList.toggle("aktiv", UST_SAETZE[i] === satz));
+      };
+      ustZeile.append(c);
+    }
+    wrap.append(abschnitt("Umsatzsteuer",
+      el("div", "stand", "Satz für netto in der Kachel Ø Auftragswert:"), ustZeile,
+      erklaerung("Umsatzsteuer",
+        "Gilt für alle Geräte (steht im Datenstand) und rückwirkend für alle " +
+        "Aufträge. 0 % = Kleinunternehmerin, dann keine Netto-Angabe.")));
+  }
   // Datenstand-Sicherung (Tobias 30.08.): hier statt im OneDrive-Sheet -
   // das Zahnrad ist auch im UGC Dashboard immer erreichbar
   const sStatus = el("div", "stand", sicherungsText());
@@ -2143,9 +2230,13 @@ function sheetInfo() {
       zeile("Antwortquote = Antworten ÷ (Pitches + Follow-ups). " +
             "Positivquote = positive ÷ alle Antworten. Beide stehen als " +
             "Prozentwert oben rechts in ihrer Kachel."),
-      zeile("Kennenlerngespräche, Kooperationen und Ø Auftragswert stehen " +
-            "in keinem Brand-Book — sie zeigen „—“, bis es eine Quelle " +
-            "gibt. Kooperations- und Abschlussquote hängen daran."),
+      zeile("Ø Auftragswert und Abschlussquote kommen aus dem Umsatz im " +
+            "Kundenauftrag: ein abgeschlossener Auftrag mit Umsatz zählt im " +
+            "Monat seines Abschlusses. Abschlussquote = Abschlüsse ÷ " +
+            "angeschriebene Marken (Aufträge ohne Pitch zählen mit, daher " +
+            "auch über 100 % möglich)."),
+      zeile("Kennenlerngespräche, Kooperationen und Kooperationsquote stehen " +
+            "in keinem Brand-Book — sie zeigen „—“, bis es eine Quelle gibt."),
       titel("Bedienung"),
       zeile("Kachelblock nach links wischen → die restlichen sechs " +
             "Kennzahlen. Die Punkte darunter zeigen, wo man ist."),
@@ -2383,9 +2474,20 @@ function chartTyp(schluessel) {
 // Sparkline in der KPI-Kachel (dataviz-Skill): Monatswerte als gedaempfte
 // 2px-Linie, der gewaehlte Monat als Punkt mit 2px Flaechen-Ring.
 // Balken-Typ: der gewaehlte Monat ist der volle, die anderen gedaempft.
+// Indizes der Monate MIT Wert (C7) - Sparkline und Verlaufsdiagramm lassen
+// null-Monate aus, statt sie als 0 zu zeichnen.
+function mitWert(werte) {
+  return [...werte.keys()].filter((i) => werte[i] !== null);
+}
+
 function sparkline(schluessel) {
   const werte = monate().map((z) => kpiWert(z.gesamt, schluessel));
-  if (werte.length < 2 || werte.some((w) => w === null)) return null;
+  // C7: Luecken (null = Monat ohne Wert, z.B. Ø ohne Abschluss) sind erlaubt,
+  // gezeichnet wird nur, wo ein Wert ist. Ganz leere Platzhalter-Kacheln
+  // (Kennenlerngespraeche ...) haben keine 2 Werte und bleiben ohne Linie.
+  // ponytail: Linie ueberbrueckt Luecken; getrennte Teilstuecke erst bei Bedarf.
+  const da = mitWert(werte);
+  if (da.length < 2) return null;
   const typ = chartTyp(schluessel);
   const B = 120, H = 30, R = 4, P = R + 2;
   const max = Math.max(...werte, 1);
@@ -2399,25 +2501,26 @@ function sparkline(schluessel) {
   let s = "";
   if (typ === "balken") {
     const bw = Math.min(8, ((B - 2 * P) / werte.length) * 0.6);
-    s = werte.map((w, i) =>
-      `<rect x="${x(i) - bw / 2}" y="${y(w)}" width="${bw}"` +
-      ` height="${Math.max(1, H - P - y(w))}" rx="1"` +
+    s = da.map((i) =>
+      `<rect x="${x(i) - bw / 2}" y="${y(werte[i])}" width="${bw}"` +
+      ` height="${Math.max(1, H - P - y(werte[i]))}" rx="1"` +
       ` fill="var(--blau)" opacity="${i === akt ? "1" : ".4"}"/>`).join("");
   } else {
-    const punkte = werte.map((w, i) => `${x(i)},${y(w)}`).join(" ");
+    const punkte = da.map((i) => `${x(i)},${y(werte[i])}`).join(" ");
     if (typ === "flaeche") {
-      s += `<polygon points="${x(0)},${H - P} ${punkte}` +
-           ` ${x(werte.length - 1)},${H - P}" fill="var(--blau)" opacity=".15"/>`;
+      s += `<polygon points="${x(da[0])},${H - P} ${punkte}` +
+           ` ${x(da[da.length - 1])},${H - P}" fill="var(--blau)" opacity=".15"/>`;
     }
     s += `<polyline points="${punkte}"` +
          ` fill="none" stroke="var(--blau)" stroke-width="2"` +
          ` stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>`;
     if (typ === "punkte") {
-      s += werte.map((w, i) => `<circle cx="${x(i)}" cy="${y(w)}" r="2"` +
-                               ` fill="var(--blau)" opacity=".55"/>`).join("");
+      s += da.map((i) => `<circle cx="${x(i)}" cy="${y(werte[i])}" r="2"` +
+                         ` fill="var(--blau)" opacity=".55"/>`).join("");
     }
-    s += `<circle cx="${x(akt)}" cy="${y(werte[akt])}" r="${R}"` +
-         ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
+    if (werte[akt] !== null)
+      s += `<circle cx="${x(akt)}" cy="${y(werte[akt])}" r="${R}"` +
+           ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
   }
   svg.innerHTML = s;
   return svg;
@@ -2434,6 +2537,8 @@ function kpiKachel(gesamt, schluessel) {
     kopf.append(el("div", "quote", kpiText(quoteK, kpiWert(gesamt, quoteK))));
   }
   kachel.append(kopf, el("div", "wert", kpiText(schluessel, wert)));
+  const unter = KACHEL_UNTER[schluessel] && KACHEL_UNTER[schluessel](gesamt);
+  if (unter) kachel.append(el("div", "unter", unter));
   const sp = sparkline(schluessel);
   if (sp) {
     kachel.append(sp);
@@ -2587,9 +2692,16 @@ window.addEventListener("popstate", () => {
 function verlaufsDiagramm(schluessel, readout, typK) {
   const ms = monate();
   const werte = ms.map((z) => kpiWert(z.gesamt, schluessel));
-  const B = 340, H = 190, L = 34, R = 14, O = 16, U = 26;
+  // C7: Euro-Achse ("2.000 €") braucht mehr Rand links als "20 %".
+  const euro = KPI_EINHEIT[schluessel] === " €";
+  const L = euro ? 48 : 34;
+  const B = 340, H = 190, R = 14, O = 16, U = 26;
   const max = Math.max(...werte, 1);
-  const schritt = Math.max(1, Math.ceil(max / 4));
+  // C7: Euro-Achsen in runden Schritten (500 €, nicht 313 €) - 1/2/5 x 10^n.
+  const roh = Math.max(1, Math.ceil(max / 4));
+  const zehner = 10 ** Math.floor(Math.log10(roh));
+  const schritt = euro
+    ? [1, 2, 5, 10].map((f) => f * zehner).find((v) => v >= roh) : roh;
   const oben = Math.ceil(max / schritt) * schritt;
   const x = (i) => werte.length < 2
     ? (L + B - R) / 2
@@ -2614,35 +2726,42 @@ function verlaufsDiagramm(schluessel, readout, typK) {
   // Serie je nach gewaehltem Diagrammtyp (chartTyp), danach fuer alle:
   // Endwert-Label + unsichtbarer Tipp-Punkt
   const typ = chartTyp(typK || schluessel);
-  const punkte = werte.map((w, i) => `${x(i)},${y(w)}`).join(" ");
-  const letzte = werte.length - 1;
+  // C7: Monate ohne Wert (null) werden ausgelassen statt als 0 gezeichnet -
+  // gilt seitdem auch fuer Antwort-/Positivquote ohne Nenner (Codex R1).
+  const da = mitWert(werte);
+  const punkte = da.map((i) => `${x(i)},${y(werte[i])}`).join(" ");
+  const letzte = da.length ? da[da.length - 1] : werte.length - 1;
+  const endWert = werte[letzte] !== null;
   if (typ === "balken") {
     const bw = Math.min(28, ((B - L - R) / werte.length) * 0.6);
     werte.forEach((w, i) => {
+      if (w === null) return;
       s += `<rect x="${x(i) - bw / 2}" y="${y(w)}" width="${bw}"` +
            ` height="${Math.max(1, y(0) - y(w))}" rx="2"` +
            ` fill="var(--blau)" opacity=".85"/>`;
     });
   } else {
     if (typ === "flaeche") {
-      s += `<polygon points="${L},${y(0)} ${punkte} ${x(letzte)},${y(0)}"` +
+      s += `<polygon points="${x(da[0] || 0)},${y(0)} ${punkte} ${x(letzte)},${y(0)}"` +
            ` fill="var(--blau)" opacity=".1"/>`;
     }
     s += `<polyline points="${punkte}" fill="none" stroke="var(--blau)"` +
          ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
     if (typ === "punkte") {
-      werte.forEach((w, i) => {
-        s += `<circle cx="${x(i)}" cy="${y(w)}" r="3" fill="var(--blau)"` +
+      for (const i of da) {
+        s += `<circle cx="${x(i)}" cy="${y(werte[i])}" r="3" fill="var(--blau)"` +
              ` stroke="var(--panel)" stroke-width="1.5"/>`;
-      });
+      }
     }
-    s += `<circle cx="${x(letzte)}" cy="${y(werte[letzte])}" r="4"` +
-         ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
+    if (endWert)
+      s += `<circle cx="${x(letzte)}" cy="${y(werte[letzte])}" r="4"` +
+           ` fill="var(--blau)" stroke="var(--panel)" stroke-width="2"/>`;
   }
-  s += `<text x="${x(letzte)}" y="${y(werte[letzte]) - 9}" text-anchor="end"` +
-       ` font-size="10" font-weight="600" fill="var(--text)">` +
-       `${kpiText(schluessel, werte[letzte])}</text>` +
-       `<circle id="tipp-punkt" r="4" fill="var(--blau)"` +
+  if (endWert)
+    s += `<text x="${x(letzte)}" y="${y(werte[letzte]) - 9}" text-anchor="end"` +
+         ` font-size="10" font-weight="600" fill="var(--text)">` +
+         `${kpiText(schluessel, werte[letzte])}</text>`;
+  s += `<circle id="tipp-punkt" r="4" fill="var(--blau)"` +
        ` stroke="var(--panel)" stroke-width="2" visibility="hidden"/>`;
 
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -2658,8 +2777,8 @@ function verlaufsDiagramm(schluessel, readout, typK) {
       Math.round(((px - L) / (B - L - R)) * (werte.length - 1))));
     const p = svg.querySelector("#tipp-punkt");
     p.setAttribute("cx", x(i));
-    p.setAttribute("cy", y(werte[i]));
-    p.setAttribute("visibility", "visible");
+    p.setAttribute("cy", y(werte[i] || 0));
+    p.setAttribute("visibility", werte[i] === null ? "hidden" : "visible");
     readout.textContent =
       `${ms[i].label}: ${kpiText(schluessel, werte[i])}`;
   };
@@ -2713,6 +2832,8 @@ function sheetVerlauf(schluessel) {
       zeile.append(el("span", "num",
                       kpiText(quoteK, kpiWert(z.gesamt, quoteK))));
     }
+    const unterK = KACHEL_UNTER[schluessel];   // C7: Summe/netto bzw. Anzahl
+    if (unterK) zeile.append(el("span", "leise", unterK(z.gesamt)));
     tab.append(zeile);
   });
   wrap.append(tab);
@@ -3691,6 +3812,32 @@ function sheetPitch(p) {
     }
     frag.append(el("div", "stand", "Priorität:"), prioZeile);
 
+    // --- Umsatz brutto (C7, Tobias 31.10.), am AUFTRAG: auftragAblegen()
+    // kopiert {...ka}, der Betrag wandert beim Abschliessen von selbst nach
+    // m.auftraege. sichern(false): kein Neuzeichnen beim Verlassen des Feldes,
+    // sonst verschwaende der Knopf, auf den gerade getippt wird
+    // (blur -> change -> click). Der gelesene Betrag steht danach formatiert
+    // im Feld - so faellt ein "500.000" fuer 500 € sofort auf (Codex R1 #4).
+    const uFeld = el("input", "feld");
+    uFeld.type = "text";
+    uFeld.inputMode = "decimal";
+    uFeld.placeholder = "z. B. 1.250,50";
+    const uAnzeige = () => (Number(ka.umsatz) > 0
+      ? Number(ka.umsatz).toLocaleString("de-DE", { maximumFractionDigits: 2 }) : "");
+    uFeld.value = uAnzeige();
+    uFeld.onchange = () => {
+      const n = umsatzLesen(uFeld.value);
+      if (Number.isNaN(n)) {
+        banner("Betrag nicht lesbar — bitte z. B. 1.250,50 eingeben.");
+        uFeld.value = uAnzeige();
+        return;
+      }
+      if (n) ka.umsatz = n; else delete ka.umsatz;
+      uFeld.value = uAnzeige();
+      sichern(false);
+    };
+    frag.append(el("div", "stand", "Umsatz brutto (€):"), uFeld);
+
     frag.append(checklisteBlock(ka, sichern));
 
     // --- Einziger Ausgang (v197): Auftrag ins Archiv, Marke gleichzeitig in
@@ -3702,6 +3849,9 @@ function sheetPitch(p) {
       if (!confirm(`Auftrag für „${m.name}“ abschließen?\n\n` +
           (o.length ? `${o.length} Punkt(e) der Checkliste sind noch offen — ` +
             "sie werden archiviert, nicht erledigt.\n\n" : "") +
+          // C7: ohne Betrag kein Abschluss in den Kennzahlen (geplatzt = ok)
+          (Number(ka.umsatz) > 0 ? "" : "Kein Umsatz eingetragen — dieser " +
+            "Auftrag zählt nicht als Abschluss.\n\n") +
           "Der Auftrag wandert ins Archiv, die Marke in die Kundenpflege mit " +
           "zwei Aufgaben: nach Performance und nach einer neuen Kooperation " +
           "fragen.")) return;
@@ -5200,6 +5350,17 @@ function pflegeBeenden(m, notiz, jetzt) {
   return true;
 }
 
+// Umsatz-Eingabe (C7): "1250" · "1.250" · "1250,50" · "1.250,50" · "1250.50"
+// · "1.250 €" -> Zahl; leer -> null; unlesbar/negativ -> NaN. Punkt vor genau
+// 3 Ziffern = Tausenderpunkt, sonst Dezimalpunkt (manche Handy-Tastaturen
+// haben kein Komma).
+function umsatzLesen(text) {
+  const t = String(text == null ? "" : text).replace(/[\s€]/g, "");
+  if (!t) return null;
+  const n = Number(t.replace(/\.(?=\d{3}(?!\d))/g, "").replace(",", "."));
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : NaN;
+}
+
 // Den laufenden Auftrag als fertiges Objekt nach m.auftraege legen (v193).
 // EINE Stelle fuer das Abschliessen. Die Checkliste wird
 // ARCHIVIERT, nicht weggeworfen (Codex, 17.09.): offene Punkte bleiben darin
@@ -6430,9 +6591,15 @@ function bereichVerwaltung(m) {
   }
   const lk = el("button", "chip", "🗑 Brand löschen");
   lk.onclick = async () => {
+    // C7 (Codex R1 #3): mit der Marke gehen auch ihre Umsaetze aus den
+    // Kennzahlen - das soll vor dem Loeschen dastehen, nicht danach auffallen.
+    const ab = abschluesse(m);
+    const summe = ab.reduce((s, a) => s + a.umsatz, 0);
     if (!confirm(`„${m.name}“ komplett löschen?\n` +
         "Verschwindet aus allen Listen; ein per App angelegtes " +
-        "Brand-Book wandert in den OneDrive-Papierkorb.")) return;
+        "Brand-Book wandert in den OneDrive-Papierkorb." +
+        (ab.length ? `\n\n${ab.length} abgeschlossene(r) Auftrag/Aufträge ` +
+          `(${kpiText("umsatz", summe)}) verschwinden damit aus den Kennzahlen.` : ""))) return;
     // v176: erst schliessen, wenn geloescht ist - bleibt das Book
     // gesperrt, bleibt auch das Sheet offen, samt Hinweis.
     // Nur zurueck, wenn DIESES Sheet noch offen ist (Review 26.09.): hat
@@ -8116,10 +8283,9 @@ function renderUgc() {
   // (Liste2346), sondern m.kundenauftrag im Datenstand - gesetzt beim
   // Verschieben aus der Pitchliste.
   //
-  // Die vier KPI-Kacheln (Kennenlerngespraeche, Kooperationen,
-  // Abschlussquote, Oe Auftragswert) bleiben vorerst leer: dafuer braucht es
-  // Auftragswerte, die noch nirgends erfasst werden. Weiterhin keine 0 -
-  // eine 0 waere eine Behauptung.
+  // Kennenlerngespraeche und Kooperationen bleiben vorerst leer (keine
+  // Quelle, keine 0 - eine 0 waere eine Behauptung). Abschlussquote und
+  // Oe Auftragswert kommen seit C7 (v213) aus dem Umsatz der Auftraege.
   const kListe = kundenauftraegeAktuell();
   const kunden = el("div", "karte block zugang" + (kartenRot(kListe) ? " ampel-rot" : ""));
   const kAnzahl = kListe.length;
@@ -8169,7 +8335,8 @@ function renderUgc() {
   c.append(bestand);
 
   if (!z.marken.length) {
-    c.append(el("div", "leerzustand", "Keine Aktivität in diesem Zeitraum."));
+    // C7 (Codex R1 #2): "Pitch-" - ein Monat nur mit Abschluss ist nicht leer.
+    c.append(el("div", "leerzustand", "Keine Pitch-Aktivität in diesem Zeitraum."));
     return;
   }
 
