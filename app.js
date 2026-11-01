@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v215"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v216"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -3461,10 +3461,21 @@ function sheetPitch(p) {
                    document.createTextNode(verlaufText(h)));
       zeile.append(el("span", "num leise datum", h.datum || "—"), label);
       tab.append(zeile);
+      const a = auftragZuEintrag(m, h);
+      // Umsatz nachtragen (v216, Tobias 01.11.): unter jedem abgeschlossenen
+      // Auftrag, der in m.auftraege liegt (Alt-Eintraege mit h.archiv zaehlen
+      // nicht und bekommen kein Feld). Der Auftrag wird beim Speichern FRISCH
+      // aufgeloest - ein OneDrive-Abgleich bei offenem Sheet tauscht den
+      // Datenstand aus, ein festgehaltenes Objekt waere dann verwaist.
+      if (h.richtung === "abgeschlossen" && a && !h.archiv) {
+        tab.append(umsatzFeld(() => {
+          const mm = datenstand && markeZuName(p.name);
+          return mm && auftragZuEintrag(mm, h);
+        }, () => { listeVeraltet = true; datenstandPersistieren(); }));
+      }
       // Archivierte Checkliste: offene Punkte bleiben offen (Codex, 17.09.).
       // Sie stehen hier, damit nachvollziehbar ist, was beim Rueckweg
       // liegengeblieben ist.
-      const a = auftragZuEintrag(m, h);
       if (!a || !(a.checkliste || []).length) return;
       const offen = a.checkliste.filter((z) => !z.erledigt);
       tab.append(el("div", "leise",
@@ -3595,9 +3606,14 @@ function sheetPitch(p) {
       datenstandPersistieren();
       if (weg && neuZeichnen !== false) bau();
     };
+    const la = letzterAuftrag(m);
     frag.append(el("div", "stand",
       `In der Kundenpflege seit ${kp.seit || "—"} · Ende letzter Auftrag: ` +
-      ((letzterAuftrag(m) || {}).ende || "—")));
+      ((la || {}).ende || "—")));
+    // v216: sonst weiss Andrea nicht, dass ein Betrag fehlt und wo er hingehoert
+    if (la) frag.append(el("div", "stand", Number(la.umsatz) > 0
+      ? "Umsatz letzter Auftrag: " + kpiText("umsatz", la.umsatz)
+      : "Umsatz letzter Auftrag: fehlt — im Reiter „Historie“ nachtragen."));
     frag.append(checklisteBlock(kp, sichern, true), neuerAuftragKnopf(m));
 
     // --- Pflege beenden (v197): Notiz freiwillig, steht im Verlauf.
@@ -3836,27 +3852,8 @@ function sheetPitch(p) {
     // kopiert {...ka}, der Betrag wandert beim Abschliessen von selbst nach
     // m.auftraege. sichern(false): kein Neuzeichnen beim Verlassen des Feldes,
     // sonst verschwaende der Knopf, auf den gerade getippt wird
-    // (blur -> change -> click). Der gelesene Betrag steht danach formatiert
-    // im Feld - so faellt ein "500.000" fuer 500 € sofort auf (Codex R1 #4).
-    const uFeld = el("input", "feld");
-    uFeld.type = "text";
-    uFeld.inputMode = "decimal";
-    uFeld.placeholder = "z. B. 1.250,50";
-    const uAnzeige = () => (Number(ka.umsatz) > 0
-      ? Number(ka.umsatz).toLocaleString("de-DE", { maximumFractionDigits: 2 }) : "");
-    uFeld.value = uAnzeige();
-    uFeld.onchange = () => {
-      const n = umsatzLesen(uFeld.value);
-      if (Number.isNaN(n)) {
-        banner("Betrag nicht lesbar — bitte z. B. 1.250,50 eingeben.");
-        uFeld.value = uAnzeige();
-        return;
-      }
-      if (n) ka.umsatz = n; else delete ka.umsatz;
-      uFeld.value = uAnzeige();
-      sichern(false);
-    };
-    frag.append(el("div", "stand", "Umsatz brutto (€):"), uFeld);
+    // (blur -> change -> click).
+    frag.append(umsatzFeld(() => ka, () => sichern(false)));
 
     frag.append(checklisteBlock(ka, sichern));
 
@@ -5368,6 +5365,37 @@ function pflegeBeenden(m, notiz, jetzt) {
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
+}
+
+// Umsatz-Feld (C7/v216): im laufenden Auftrag UND zum Nachtragen im Verlauf -
+// EIN Baustein, damit beide Stellen gleich lesen, pruefen und anzeigen.
+// `hol()` liefert den Auftrag beim Speichern (null = nicht mehr da),
+// `speichern()` persistiert ohne Neuzeichnen. Der gelesene Betrag steht danach
+// formatiert im Feld - so faellt ein "500.000" fuer 500 € auf (Codex R1 #4).
+function umsatzFeld(hol, speichern) {
+  const feld = el("input", "feld");
+  feld.type = "text";
+  feld.inputMode = "decimal";
+  feld.placeholder = "z. B. 1.250,50";
+  const anzeige = (a) => (a && Number(a.umsatz) > 0
+    ? Number(a.umsatz).toLocaleString("de-DE", { maximumFractionDigits: 2 }) : "");
+  feld.value = anzeige(hol());
+  feld.onchange = () => {
+    const a = hol();
+    if (!a) { banner("Das ging nicht — bitte die Liste einmal neu laden."); return; }
+    const n = umsatzLesen(feld.value);
+    if (Number.isNaN(n)) {
+      banner("Betrag nicht lesbar — bitte z. B. 1.250,50 eingeben.");
+      feld.value = anzeige(a);
+      return;
+    }
+    if (n) a.umsatz = n; else delete a.umsatz;
+    feld.value = anzeige(a);
+    speichern();
+  };
+  const frag = document.createDocumentFragment();
+  frag.append(el("div", "stand", "Umsatz brutto (€):"), feld);
+  return frag;
 }
 
 // Umsatz-Eingabe (C7): "1250" · "1.250" · "1250,50" · "1.250,50" · "1250.50"
