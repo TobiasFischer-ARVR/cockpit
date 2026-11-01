@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v219"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v220"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -7303,6 +7303,14 @@ function scanSetzen(name, status, bis) {
   return true;
 }
 
+// v220: wie scanRaus, fuer alle Offenen (inkl. abgelaufener Pausen - die
+// zeigt der Scanner auch unter "Offen"). Liefert die Anzahl.
+function scanOffenLeeren() {
+  const sc = scanner(), vorher = sc.kandidaten.length;
+  sc.kandidaten = sc.kandidaten.filter((k) => scanZustand(k) !== "offen");
+  return vorher - sc.kandidaten.length;
+}
+
 function scanRaus(name) {
   const s = schluessel(name), sc = scanner();
   const vorher = sc.kandidaten.length;
@@ -8114,6 +8122,19 @@ function renderScanner() {
 
   const offen = scanListe("offen");
   c.append(el("div", "stand", `Offen (${offen.length})`));
+  // v220 (Tobias 01.11.): alle Offenen weg, ohne sie zu ignorieren (dann
+  // waeren sie "So NICHT"-Beispiele) - Pausierte und Ignorierte bleiben.
+  if (offen.length) {
+    const leeren = el("button", "chip", "🗑 Offene leeren");
+    leeren.onclick = () => {
+      if (confirm(`Alle ${offen.length} offenen Treffer löschen? Pausierte und ignorierte ` +
+                  "bleiben. Gelöschte Firmen kann die KI-Suche später wieder vorschlagen."))
+        scanFertig(scanOffenLeeren() > 0);
+    };
+    const lz = el("div", "chips");
+    lz.append(leeren);
+    c.append(lz);
+  }
   // Einmal pro Zeichnen indizieren - markeZuName je Karte waere
   // Kandidaten x Marken schluessel()-Aufrufe.
   const marken = new Map((datenstand.marken || []).map((x) => [schluessel(x.name), x]));
