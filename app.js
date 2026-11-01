@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v217"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v218"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -7995,9 +7995,9 @@ function scanInfo(karte, k) {
   karte.append(links);
 }
 
-// v217 (C8): Facebook-Werbebibliothek, Land DE, nur aktive Anzeigen.
+// v217 (C8): Facebook-Werbebibliothek, alle Laender (v218: auch AT/CH), nur aktive Anzeigen.
 function werbeLink(name) {
-  return "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=DE&q=" +
+  return "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=" +
     encodeURIComponent(String(name || "").trim()) + "&search_type=keyword_unordered";
 }
 
