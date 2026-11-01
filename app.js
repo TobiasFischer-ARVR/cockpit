@@ -25,6 +25,7 @@ const KACHEL_TITEL = {
   // und als zweites Diagramm im Verlaufs-Sheet.
   quote_antworten: "Antwortquote",
   quote_positiv: "Positivquote",
+  auftrag_schnitt: "Ø Auftragswert",   // v215: oben rechts in "Auftragswert"
 };
 
 // Zwei Seiten zu je sechs Kacheln, horizontal wischbar (Tobias 05.09.).
@@ -36,7 +37,12 @@ const KACHEL_SEITEN = [
 ];
 
 // Welche Kachel traegt oben rechts eine Quote.
-const KACHEL_QUOTE = { antworten: "quote_antworten", positiv: "quote_positiv" };
+const KACHEL_QUOTE = { antworten: "quote_antworten", positiv: "quote_positiv",
+                       auftragswert: "auftrag_schnitt" };
+// Ecke und Monatstabelle: "Ø 750 €" statt nur "750 €" neben "Auftragswert".
+function quoteText(k, g) {
+  return (k === "auftrag_schnitt" ? "Ø " : "") + kpiText(k, kpiWert(g, k));
+}
 
 // Kleine Zeilen unter dem Wert (C7, Tobias 31.10./01.11.), in der Kachel
 // untereinander, in der Monatstabelle des Verlaufs mit " · " verbunden.
@@ -44,14 +50,13 @@ const KACHEL_QUOTE = { antworten: "quote_antworten", positiv: "quote_positiv" };
 // Einstellungen (ustSatz). Leere Liste = keine Zeile.
 const KACHEL_UNTER = {
   auftragswert: (g) => {
-    if (!g.abschluesse) return [];
     const u = ustSatz();
-    return [...(u ? ["netto " + kpiText("umsatz", g.umsatz / (1 + u / 100))] : []),
-            "Ø " + kpiText("umsatz", g.umsatz / g.abschluesse)];
+    return g.abschluesse && u
+      ? ["netto " + kpiText("umsatz", g.umsatz / (1 + u / 100))] : [];
   },
-  abschlussquote: (g) => !("abschluesse" in g) ? [] :
+  abschlussquote: (g) => !("abschluesse" in g && "pitchliste" in g) ? [] :
     [g.abschluesse + (g.abschluesse === 1 ? " Abschluss" : " Abschlüsse") +
-     " von " + g.marken + (g.marken === 1 ? " Marke" : " Marken")],
+     " von " + g.pitchliste + " in der Pitchliste"],
 };
 
 // Quoten in PROZENTPUNKTEN (0-100), nicht als Bruch: das Verlaufs-Diagramm
@@ -83,13 +88,17 @@ const KPI_ABGELEITET = {
   // liegen: Auftraege ohne Pitch zaehlen mit. Auftragswert = Summe brutto
   // (v214, Tobias 01.11.: die Summe gross, Ø klein darunter); ohne Abschluss
   // ehrlich 0 €, ohne Zaehler (alter Snapshot) "—".
-  abschlussquote:  (g) => "abschluesse" in g ? quote(g.abschluesse, g.marken) : null,
+  // v215: Quote = Abschluesse ÷ Marken in der Pitchliste (heute), nicht mehr
+  // ÷ angeschriebene Marken des Monats (Tobias 01.11.).
+  abschlussquote:  (g) => "abschluesse" in g && "pitchliste" in g
+    ? quote(g.abschluesse, g.pitchliste) : null,
   auftragswert:    (g) => "abschluesse" in g ? g.umsatz : null,
+  auftrag_schnitt: (g) => g.abschluesse ? g.umsatz / g.abschluesse : null,
 };
 
 const KPI_EINHEIT = { quote_antworten: " %", quote_positiv: " %",
                       koop_quote: " %", abschlussquote: " %",
-                      auftragswert: " €", umsatz: " €" };
+                      auftragswert: " €", umsatz: " €", auftrag_schnitt: " €" };
 
 // Ohne Datenquelle (Stand 05.09.): Kennenlerngespraeche und Kooperationen
 // stehen in keinem Brand-Book, Andrea tippt sie heute von Hand ins Excel; die
@@ -325,10 +334,15 @@ function kpiNachrechnen() {
     for (const e of [...ereignisse, ...abschluesse(marke)])
       juengste = Math.max(juengste, eventDatum(e) || 0);
 
+  // Nenner der Abschlussquote (v215): die Pitchliste von HEUTE, fuer jeden
+  // Zeitraum derselbe. ponytail: kein Rueckblick, wie gross sie im Juli war -
+  // das gibt der Datenstand nicht her.
+  const pitchliste = datenstand.marken.filter(sichtbarInPitchliste).length;
   snap.zeitraeume.forEach((z, i) => {
     if (i === 0 && juengste > datumWert(z.ende)) z.ende = isoZuDe(juengste);
     const { gesamt, marken } = kpiZeitraum(historien, datumWert(z.start),
                                                       datumWert(z.ende));
+    gesamt.pitchliste = pitchliste;
     z.gesamt = gesamt;
     z.marken = marken;
   });
@@ -722,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v214"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v215"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2237,12 +2251,11 @@ function sheetInfo() {
       zeile("Antwortquote = Antworten ÷ (Pitches + Follow-ups). " +
             "Positivquote = positive ÷ alle Antworten. Beide stehen als " +
             "Prozentwert oben rechts in ihrer Kachel."),
-      zeile("Auftragswert (Summe brutto, darunter netto und Ø) und " +
+      zeile("Auftragswert (Summe brutto, oben rechts Ø, darunter netto) und " +
             "Abschlussquote kommen aus dem Umsatz im " +
             "Kundenauftrag: ein abgeschlossener Auftrag mit Umsatz zählt im " +
-            "Monat seines Abschlusses. Abschlussquote = Abschlüsse ÷ " +
-            "angeschriebene Marken (Aufträge ohne Pitch zählen mit, daher " +
-            "auch über 100 % möglich)."),
+            "Monat seines Abschlusses. Abschlussquote = Abschlüsse ÷ Marken, " +
+            "die heute in der Pitchliste stehen."),
       zeile("Kennenlerngespräche, Kooperationen und Kooperationsquote stehen " +
             "in keinem Brand-Book — sie zeigen „—“, bis es eine Quelle gibt."),
       titel("Bedienung"),
@@ -2542,7 +2555,7 @@ function kpiKachel(gesamt, schluessel) {
   kopf.append(el("div", "titel", KACHEL_TITEL[schluessel]));
   const quoteK = KACHEL_QUOTE[schluessel];
   if (quoteK) {
-    kopf.append(el("div", "quote", kpiText(quoteK, kpiWert(gesamt, quoteK))));
+    kopf.append(el("div", "quote", quoteText(quoteK, gesamt)));
   }
   kachel.append(kopf, el("div", "wert", kpiText(schluessel, wert)));
   for (const zeile of KACHEL_UNTER[schluessel] ? KACHEL_UNTER[schluessel](gesamt) : [])
@@ -2837,8 +2850,7 @@ function sheetVerlauf(schluessel) {
                  el("span", "num",
                     kpiText(schluessel, kpiWert(z.gesamt, schluessel))));
     if (quoteK) {
-      zeile.append(el("span", "num",
-                      kpiText(quoteK, kpiWert(z.gesamt, quoteK))));
+      zeile.append(el("span", "num", quoteText(quoteK, z.gesamt)));
     }
     const unterK = KACHEL_UNTER[schluessel];   // C7: Summe/netto bzw. Anzahl
     if (unterK) zeile.append(el("span", "leise", unterK(z.gesamt).join(" · ")));
@@ -4497,30 +4509,30 @@ function markeExistiert(name, ausser) {
 // damit reine Ausgabe (Tobias 10.09.: "Die Excel soll komplett raus. Das
 // einzige was wir machen ist ein Export, aber die Daten kommen aus dem
 // Datenbestand.").
+// Steht die Marke SICHTBAR in der Pitchliste? EINE Regel fuer die Liste und
+// den Nenner der Abschlussquote (v215, Tobias 01.11.: "in meiner Pitchliste
+// sind 32 Marken"). Nicht verwechseln mit inPitchliste() (= hat eine
+// Pitchzeile, Stufe 2 erledigt).
+// D-Brands = inaktiv/Archiv bei Andrea (Tobias 01.09.): erscheinen nie in der
+// Pitchliste - egal ob das D in der Pitchzeile oder im Brand Rating steht.
+// Marken im Kundenbereich verschwinden ebenfalls (Release 6, seit v193 der
+// ganze Kundenbereich - sonst stuende jede abgeschlossene Marke wieder
+// drin, wichtigster Test in 2b). Gefiltert wird die ANSICHT, die Daten
+// bleiben unangetastet.
+function sichtbarInPitchliste(m) {
+  const d = (r) => String(r || "").trim().toUpperCase() === "D";
+  return Boolean(m && m.pitchliste && !d(m.pitchliste.rating) &&
+    !(m.brandrating && d(m.brandrating.rating)) && !imKundenbereich(m));
+}
+
 function pitchlisteAktuell() {
-  const liste = (datenstand ? datenstand.marken || [] : [])
-    .filter((m) => m.pitchliste)
+  return (datenstand ? datenstand.marken || [] : [])
+    .filter(sichtbarInPitchliste)
     // `status` zuletzt: er wird aus den Ereignissen ueberlagert
     // (Etappe C, v167). Hier statt in pitchKarte/pitchPasst/Detail,
     // weil `p` keine Ereignisse traegt - eine Stelle statt vier.
     .map((m) => ({ name: m.name, ...m.pitchliste,
                    status: statusAnzeige(m) }));
-  // D-Brands = inaktiv/Archiv bei Andrea (Tobias 01.09.): erscheinen nie
-  // in der Pitchliste - egal ob das D aus Andreas Altbestand stammt oder
-  // per Rating-Edit in der App gesetzt wurde.
-  const istD = (p) => {
-    if (String(p.rating || "").trim().toUpperCase() === "D") return true;
-    const m = datenstand && markeZuName(p.name);
-    return Boolean(m && m.brandrating &&
-      String(m.brandrating.rating || "").trim().toUpperCase() === "D");
-  };
-  // Marken im Kundenauftrag verschwinden aus der Pitchliste (Release 6).
-  // EXAKT dasselbe Muster wie istD: gefiltert wird die ANSICHT, die Daten
-  // bleiben unangetastet (einen Rueckweg in die Pitchliste gibt es seit v197 nicht mehr).
-  // Seit v193 der ganze Kundenbereich - sonst stuende jede abgeschlossene
-  // Marke wieder in der Pitchliste (wichtigster Test in 2b).
-  const kunde = (p) => imKundenbereich(datenstand && markeZuName(p.name));
-  return liste.filter((p) => !istD(p) && !kunde(p));
 }
 
 // Ampel der Excel-Pitchliste, live gerechnet (Regeln siehe Projektnotiz):
