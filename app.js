@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v220"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v221"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -7336,20 +7336,24 @@ const SCAN_KI_ANZAHL = [5, 10, 20];
 // Geraeten, APP_TOP schuetzt es). Leer/gleich Standard = nicht gespeichert,
 // dann zieht eine spaetere Verbesserung des Standards automatisch.
 const SCAN_KI_ZIEL =
-  "Ich bin UGC-Creatorin aus Deutschland und suche Marken, denen ich " +
-  "bezahlten Content anbieten kann.\n\n" +
+  // v221 (Tobias 01.11.): Andrea ist UGC-Creatorin, KEINE Influencerin -
+  // Influencer-Suchen sind kein Signal. Klarstellung gleich im ersten Absatz.
+  "Ich bin UGC-Creatorin aus Deutschland, keine Influencerin: Ich produziere " +
+  "bezahlten Content (Videos, Fotos), den die Marke auf ihren eigenen Kanälen " +
+  "und in Anzeigen nutzt. Meine eigene Reichweite spielt dabei keine Rolle. " +
+  "Ich suche Marken, denen ich diesen Content anbieten kann.\n\n" +
   // v217 (C8): "klein" raus - Claude nahm es woertlich (1.500-Follower-Roestereien).
   "Passend: Marken aus Deutschland, Österreich oder der Schweiz mit " +
   "EIGENEN Produkten für Endkunden, die schon Geld für Content ausgeben: " +
   "Sie schalten Werbeanzeigen (z. B. auf Instagram oder Facebook), suchen " +
-  "UGC-Creator oder Influencer, bieten Kooperationen an oder zeigen bereits " +
-  "Creator-Videos. Die Größe ist egal, entscheidend ist ein erkennbares " +
-  "Budget.\n\n" +
+  "UGC-Creator, bieten Kooperationen an oder zeigen bereits UGC-Videos. " +
+  "Die Größe ist egal, entscheidend ist ein erkennbares Budget.\n\n" +
   "Nicht passend: Kleinstbetriebe ohne Werbung, die nur einen schönen Shop " +
   "haben, Konzerne und große internationale Marken, Firmen ohne " +
   "Ansprechpartner im DACH-Raum, reine Affiliate-Programme, Marken ohne " +
   "aktive Werbung oder ohne aktives Instagram, Händler ohne eigene Marke, " +
   "Agenturen, Schulungs- und Kursanbieter, Creator- und Influencer-Profile, " +
+  "Marken, die nur Influencer mit Reichweite suchen, " +
   "Verzeichnisse, Vergleichs- und Listenseiten.";
 
 // Fester Teil - NICHT editierbar: ohne ihn kann die App die Antwort nicht lesen.
@@ -7359,8 +7363,8 @@ const SCAN_KI_TECHNIK =
   "gefunden hast, und keine aus den Listen „schon bekannt“ und „So NICHT“. " +
   "Jede Firma braucht einen Beleg aus der Websuche: signal = \"anzeigen\" " +
   "(schaltet Werbeanzeigen), \"sucht_creator\" (sucht UGC-Creator oder " +
-  "Influencer, bietet Kooperationen an) oder \"arbeitet_mit_creatorn\" " +
-  "(zeigt Creator- oder UGC-Inhalte), beleg = Link auf die Seite, auf der " +
+  "bietet Kooperationen an - eine reine Influencer-Suche zählt nicht) oder " +
+  "\"arbeitet_mit_creatorn\" (zeigt UGC-Inhalte), beleg = Link auf die Seite, auf der " +
   "das steht. Ohne Beleg weglassen, lieber weniger Firmen. Antworte am " +
   "Ende mit genau einem ```json-Block der Form " +
   '{"firmen":[{"name":"…","website":"…","instagram":"…","warum":"…","signal":"…","beleg":"…"}]} — ' +
@@ -8009,15 +8013,12 @@ function scanInfo(karte, k) {
 }
 
 // v217 (C8): Facebook-Werbebibliothek, alle Laender (v218: auch AT/CH), nur aktive Anzeigen.
-// v219 (Tobias 01.11.): Auf Android schnappt sich die Facebook-App den Link,
-// Zurueckwischen landet dann im Feed statt in der App. Deshalb dort als
-// Intent fest an Chrome - zurueck schliesst den Tab. Ohne Chrome: normaler Link.
+// Ist die Facebook-App installiert, schnappt sie sich den Link. Ein Intent
+// fest an Chrome (v219) half nicht und ist in v221 wieder raus. Abhilfe nur
+// am Handy: bei Facebook "Unterstuetzte Links oeffnen" aus.
 function werbeLink(name) {
-  const url = "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=" +
+  return "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=" +
     encodeURIComponent(String(name || "").trim()) + "&search_type=keyword_unordered";
-  if (!/Android/i.test((globalThis.navigator && navigator.userAgent) || "")) return url;
-  return "intent://" + url.slice("https://".length) + "#Intent;scheme=https;package=com.android.chrome;" +
-    "S.browser_fallback_url=" + encodeURIComponent(url) + ";end";
 }
 
 function scanKarte(k, marken) {
