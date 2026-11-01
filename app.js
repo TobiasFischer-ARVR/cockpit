@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v218"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v219"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1329,6 +1329,11 @@ function sheetEinstellungen(reiter) {
       "„ohne Begründungen“ blendet die Erklärtexte aus, die nur sagen " +
       "WARUM etwas so funktioniert. Bedienhinweise und Zustandsmeldungen " +
       "bleiben stehen."),
+    // v219 (Tobias 01.11.): wozu der Schalter gut ist
+    erklaerung("Archiv",
+      "„aus“ blendet die beendeten Kundenaufträge aus: kein Archiv-Umschalter " +
+      "in den Kundenaufträgen, keine Archiv-Zahl auf dem Dashboard. Gelöscht " +
+      "wird nichts, mit „an“ ist alles wieder da."),
     erklaerung("Darstellung", "Gilt nur für dieses Gerät.")));
   // Umsatzsteuer (C7, Tobias 31.10.): die erste Einstellung, die im
   // DATENSTAND steht statt im Geraet - alle Geraete rechnen dasselbe netto.
@@ -7996,9 +8001,15 @@ function scanInfo(karte, k) {
 }
 
 // v217 (C8): Facebook-Werbebibliothek, alle Laender (v218: auch AT/CH), nur aktive Anzeigen.
+// v219 (Tobias 01.11.): Auf Android schnappt sich die Facebook-App den Link,
+// Zurueckwischen landet dann im Feed statt in der App. Deshalb dort als
+// Intent fest an Chrome - zurueck schliesst den Tab. Ohne Chrome: normaler Link.
 function werbeLink(name) {
-  return "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=" +
+  const url = "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=" +
     encodeURIComponent(String(name || "").trim()) + "&search_type=keyword_unordered";
+  if (!/Android/i.test((globalThis.navigator && navigator.userAgent) || "")) return url;
+  return "intent://" + url.slice("https://".length) + "#Intent;scheme=https;package=com.android.chrome;" +
+    "S.browser_fallback_url=" + encodeURIComponent(url) + ";end";
 }
 
 function scanKarte(k, marken) {
