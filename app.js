@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v216"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v217"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2954,6 +2954,9 @@ function bereichKontakt(m, quelle, ohneRating, knopf) {
     infos.splice(i < 0 ? infos.length : i + 1, 0, ["E-Mail 2", m.email2]);
   }
   if (!infos.length && !knopf) return frag;
+  // v217: Knopf bei jeder Marke, deren Kontakt-Abschnitt gezeichnet wird -
+  // nicht der Grund FUER den Abschnitt (sonst leerer Kontakt-Reiter in der Historie).
+  const werbung = m && String(m.name || "").trim();
   let inhalt;
   if (infos.length) {
     inhalt = el("div", "tabelle");
@@ -2969,7 +2972,11 @@ function bereichKontakt(m, quelle, ohneRating, knopf) {
       "Noch keine Kontaktdaten eingetragen.");
   }
   let kz = null;
-  if (knopf) { kz = el("div", "chips"); kz.append(knopf); }
+  if (knopf || werbung) {
+    kz = el("div", "chips");
+    if (knopf) kz.append(knopf);
+    if (werbung) kz.append(scanKnopf("📚 Werbebibliothek", werbeLink(m.name)));
+  }
   frag.append(abschnitt("Kontakt & Infos", inhalt, kz));
   return frag;
 }
@@ -7271,11 +7278,13 @@ function scanPruefen(name, website, instagram) {
 // `warum` (v210): Begruendung der KI-Suche. Seit v211 ist die KI-Suche der
 // einzige Aufrufer ("Firma eintragen" ist weg); den Warntext von scanPruefen
 // liest nur noch test_v209.
-function scanAufnehmen(name, website, instagram, warum) {
+// `signal`/`beleg` (v217): Pflicht-Beleg der KI-Suche, von scanKiFirmen geprueft.
+function scanAufnehmen(name, website, instagram, warum, signal, beleg) {
   if (scanPruefen(name, website, instagram).sperre) return null;
   const k = { name: String(name).trim(), website: String(website || "").trim(),
               instagram: String(instagram || "").trim(), status: "offen", bis: "" };
   if (warum) k.warum = String(warum).trim();
+  if (beleg) { k.signal = signal; k.beleg = beleg; }
   scanner().kandidaten.push(k);
   return k;
 }
@@ -7316,11 +7325,15 @@ const SCAN_KI_ANZAHL = [5, 10, 20];
 const SCAN_KI_ZIEL =
   "Ich bin UGC-Creatorin aus Deutschland und suche Marken, denen ich " +
   "bezahlten Content anbieten kann.\n\n" +
-  "Passend: kleine bis mittlere Manufakturen und Onlineshops aus " +
-  "Deutschland, Österreich oder der Schweiz mit EIGENEN Produkten für " +
-  "Endkunden, aktivem Instagram-Auftritt und erkennbarem Werbe- oder " +
-  "Content-Budget (z. B. laufende Anzeigen, Kooperationen).\n\n" +
-  "Nicht passend: Konzerne und große internationale Marken, Firmen ohne " +
+  // v217 (C8): "klein" raus - Claude nahm es woertlich (1.500-Follower-Roestereien).
+  "Passend: Marken aus Deutschland, Österreich oder der Schweiz mit " +
+  "EIGENEN Produkten für Endkunden, die schon Geld für Content ausgeben: " +
+  "Sie schalten Werbeanzeigen (z. B. auf Instagram oder Facebook), suchen " +
+  "UGC-Creator oder Influencer, bieten Kooperationen an oder zeigen bereits " +
+  "Creator-Videos. Die Größe ist egal, entscheidend ist ein erkennbares " +
+  "Budget.\n\n" +
+  "Nicht passend: Kleinstbetriebe ohne Werbung, die nur einen schönen Shop " +
+  "haben, Konzerne und große internationale Marken, Firmen ohne " +
   "Ansprechpartner im DACH-Raum, reine Affiliate-Programme, Marken ohne " +
   "aktive Werbung oder ohne aktives Instagram, Händler ohne eigene Marke, " +
   "Agenturen, Schulungs- und Kursanbieter, Creator- und Influencer-Profile, " +
@@ -7330,12 +7343,20 @@ const SCAN_KI_ZIEL =
 const SCAN_KI_TECHNIK =
   "Du suchst mit der Websuche Marken für die Creatorin, die sich oben " +
   "beschreibt. Nenne nur Firmen, die du in der Websuche tatsächlich " +
-  "gefunden hast, und keine aus der Liste „schon bekannt“. Antworte am " +
+  "gefunden hast, und keine aus den Listen „schon bekannt“ und „So NICHT“. " +
+  "Jede Firma braucht einen Beleg aus der Websuche: signal = \"anzeigen\" " +
+  "(schaltet Werbeanzeigen), \"sucht_creator\" (sucht UGC-Creator oder " +
+  "Influencer, bietet Kooperationen an) oder \"arbeitet_mit_creatorn\" " +
+  "(zeigt Creator- oder UGC-Inhalte), beleg = Link auf die Seite, auf der " +
+  "das steht. Ohne Beleg weglassen, lieber weniger Firmen. Antworte am " +
   "Ende mit genau einem ```json-Block der Form " +
-  '{"firmen":[{"name":"…","website":"…","instagram":"…","warum":"…"}]} — ' +
+  '{"firmen":[{"name":"…","website":"…","instagram":"…","warum":"…","signal":"…","beleg":"…"}]} — ' +
   "website und instagram als Link oder leer, warum = ein kurzer Satz, " +
   "weshalb die Marke passt.";
 const SCAN_KI_ZIEL_MAX = 3000;
+// v217 (C8): Pflicht-Beleg. Schluessel = was Claude liefert, Wert = Knopftext.
+const SCAN_KI_SIGNALE = { anzeigen: "schaltet Anzeigen", sucht_creator: "sucht Creator",
+                          arbeitet_mit_creatorn: "arbeitet mit Creatorn" };
 
 function scanZielbild() {
   return String(scanDaten().zielbild || "").trim() || SCAN_KI_ZIEL;
@@ -7349,11 +7370,17 @@ function scanKiAnfrage(anzahl) {
   const vorbilder = marken.filter((x) => x.brandrating &&
     /^[AB]$/.test(String(x.brandrating.rating || "").trim().toUpperCase()))
     .map((x) => x.name + (x.brandrating.kategorie ? ` (${x.brandrating.kategorie})` : ""));
-  const bekannt = marken.map((x) => x.name).concat(sd.kandidaten.map((k) => k.name));
+  // v217 (C8, Tobias 01.11.): Gegenbeispiele = was Andrea ignoriert hat,
+  // nicht die D-Marken. Stehen dann nicht nochmal unter "schon bekannt".
+  const nein = (k) => scanZustand(k) === "ignoriert";
+  const ignoriert = sd.kandidaten.filter(nein).map((k) => k.name);
+  const bekannt = marken.map((x) => x.name)
+    .concat(sd.kandidaten.filter((k) => !nein(k)).map((k) => k.name));
   const zeilen = [
     `Finde ${anzahl} neue passende Marken.`,
     "Vorbilder (so sehen gute Treffer aus): " + (vorbilder.join(", ") || "–"),
   ];
+  if (ignoriert.length) zeilen.push("So NICHT (abgelehnt, auch nicht nennen): " + ignoriert.join(", "));
   if (sd.suche.length) zeilen.push("Schwerpunkt diesmal: " + sd.suche.join(", "));
   if (sd.niemals.length) zeilen.push("Niemals: " + sd.niemals.join(", "));
   zeilen.push("Schon bekannt (nicht nennen): " + (bekannt.join(", ") || "–"));
@@ -7363,7 +7390,7 @@ function scanKiAnfrage(anzahl) {
     system: scanZielbild() + "\n\n---\n\n" + SCAN_KI_TECHNIK,
     output_config: { effort: "medium" },
     fallbacks: "default",   // Server weicht bei Ablehnung selbst aus (Beta-Header in scanKiRufen)
-    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 8,
+    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 12,   // v217: Belege brauchen Suchen
               user_location: { type: "approximate", country: "DE" } }],
     messages: [{ role: "user", content: zeilen.join("\n\n") }],
   };
@@ -7386,18 +7413,24 @@ function scanKiFirmen(content) {
   if (!roh || !Array.isArray(roh.firmen)) return null;
   const feld = (w, max) => (typeof w === "string" ? w.trim().slice(0, max) : null);
   const firmen = [];
-  let ungueltig = 0;
+  let ungueltig = 0, ohneBeleg = 0;
   for (const f of roh.firmen) {
     const name = f && feld(f.name, 120);
     const ok = name && [f.website, f.instagram, f.warum]
       .every((w) => w == null || typeof w === "string");
     if (!ok) { ungueltig++; continue; }
+    // v217 (C8): ohne bekanntes Signal + brauchbaren Beleg-Link verworfen.
+    const beleg = kontaktKiLink(f.beleg, "web");
+    if (!beleg || typeof f.signal !== "string" || !Object.hasOwn(SCAN_KI_SIGNALE, f.signal)) {
+      ohneBeleg++; continue;
+    }
     // Links nach derselben Regel wie bei der Kontakt-KI (v211): kaputter Link
     // -> leer, die Firma selbst bleibt brauchbar.
     firmen.push({ name, website: kontaktKiLink(f.website, "web"),
-                  instagram: kontaktKiLink(f.instagram, "instagram"), warum: feld(f.warum, 300) || "" });
+                  instagram: kontaktKiLink(f.instagram, "instagram"), warum: feld(f.warum, 300) || "",
+                  signal: f.signal, beleg });
   }
-  return { firmen, ungueltig };
+  return { firmen, ungueltig, ohneBeleg };
 }
 
 // Summe ueber ALLE Antworten eines Laufs (pause_turn, Codex Fund 9).
@@ -7422,7 +7455,7 @@ function scanKiUebernehmen(firmen) {
   const niemals = scanDaten().niemals;
   for (const f of firmen) {
     if (scanNiemals([f.name, f.website, f.instagram].join(" "), niemals)) uebersprungen++;
-    else if (scanAufnehmen(f.name, f.website, f.instagram, f.warum)) neu++;
+    else if (scanAufnehmen(f.name, f.website, f.instagram, f.warum, f.signal, f.beleg)) neu++;
     else uebersprungen++;
   }
   return { neu, uebersprungen };
@@ -7634,7 +7667,8 @@ async function scanKiStarten(anzahl, zeige) {
     else {
       const r = scanKiUebernehmen(erg.firmen);
       text = `${r.neu} neu · ${r.uebersprungen} übersprungen` +
-        (erg.ungueltig ? ` · ${erg.ungueltig} unbrauchbar` : "");
+        (erg.ungueltig ? ` · ${erg.ungueltig} unbrauchbar` : "") +
+        (erg.ohneBeleg ? ` · ${erg.ohneBeleg} ohne Beleg verworfen` : "");
       if (r.neu) {
         listeVeraltet = true;
         // Sperre haelt bis gespeichert ist - OHNE Zeitgrenze. Eine Minute
@@ -7954,7 +7988,17 @@ function scanInfo(karte, k) {
   const links = el("div", "chips");
   if (k.website) links.append(scanKnopf("🌐 Website", scanHref("website", k.website)));
   if (k.instagram) links.append(scanKnopf("📷 Instagram", scanHref("instagram", k.instagram)));
-  if (links.childNodes.length) karte.append(links);
+  // v217: beim Zeichnen nochmal pruefen - datenstand.json wird auch von Hand bearbeitet
+  const beleg = kontaktKiLink(k.beleg, "web");
+  if (beleg) links.append(scanKnopf("🔎 Beleg: " + (SCAN_KI_SIGNALE[k.signal] || "Quelle"), beleg));
+  links.append(scanKnopf("📚 Werbebibliothek", werbeLink(k.name)));
+  karte.append(links);
+}
+
+// v217 (C8): Facebook-Werbebibliothek, Land DE, nur aktive Anzeigen.
+function werbeLink(name) {
+  return "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=DE&q=" +
+    encodeURIComponent(String(name || "").trim()) + "&search_type=keyword_unordered";
 }
 
 function scanKarte(k, marken) {
