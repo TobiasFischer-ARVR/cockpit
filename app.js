@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v221"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v222"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -7362,16 +7362,19 @@ const SCAN_KI_TECHNIK =
   "beschreibt. Nenne nur Firmen, die du in der Websuche tatsächlich " +
   "gefunden hast, und keine aus den Listen „schon bekannt“ und „So NICHT“. " +
   "Jede Firma braucht einen Beleg aus der Websuche: signal = \"anzeigen\" " +
-  "(schaltet Werbeanzeigen), \"sucht_creator\" (sucht UGC-Creator oder " +
-  "bietet Kooperationen an - eine reine Influencer-Suche zählt nicht) oder " +
+  "(schaltet Werbeanzeigen), \"sucht_creator\" (sucht UGC-Creator gegen " +
+  "Bezahlung oder bietet bezahlte Kooperationen an - eine reine " +
+  "Influencer-Suche oder nur Produkt gegen Content zählt nicht) oder " +
   "\"arbeitet_mit_creatorn\" (zeigt UGC-Inhalte), beleg = Link auf die Seite, auf der " +
-  "das steht. Ohne Beleg weglassen, lieber weniger Firmen. Antworte am " +
+  "das steht. Ohne Beleg weglassen. Suche weiter, bis du die verlangte " +
+  "Anzahl belegter Firmen hast, und nutze dafür alle Suchen. Antworte am " +
   "Ende mit genau einem ```json-Block der Form " +
   '{"firmen":[{"name":"…","website":"…","instagram":"…","warum":"…","signal":"…","beleg":"…"}]} — ' +
   "website und instagram als Link oder leer, warum = ein kurzer Satz, " +
   "weshalb die Marke passt.";
 const SCAN_KI_ZIEL_MAX = 3000;
 // v217 (C8): Pflicht-Beleg. Schluessel = was Claude liefert, Wert = Knopftext.
+const SCAN_KI_BELEG_MAX = 1000;   // v222: Werbebibliothek-Links sind oft laenger als 200
 const SCAN_KI_SIGNALE = { anzeigen: "schaltet Anzeigen", sucht_creator: "sucht Creator",
                           arbeitet_mit_creatorn: "arbeitet mit Creatorn" };
 
@@ -7403,11 +7406,11 @@ function scanKiAnfrage(anzahl) {
   zeilen.push("Schon bekannt (nicht nennen): " + (bekannt.join(", ") || "–"));
   return {
     model: SCAN_KI_MODELL,
-    max_tokens: 16000,
+    max_tokens: 32000,   // v222: hohe Denktiefe braucht Platz
     system: scanZielbild() + "\n\n---\n\n" + SCAN_KI_TECHNIK,
-    output_config: { effort: "medium" },
+    output_config: { effort: "high" },   // v222: medium gab 1 von 5 (Andrea 04.11.)
     fallbacks: "default",   // Server weicht bei Ablehnung selbst aus (Beta-Header in scanKiRufen)
-    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 12,   // v217: Belege brauchen Suchen
+    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 25,   // v222: 12 reichten nicht fuer 5 belegte Firmen
               user_location: { type: "approximate", country: "DE" } }],
     messages: [{ role: "user", content: zeilen.join("\n\n") }],
   };
@@ -7437,15 +7440,18 @@ function scanKiFirmen(content) {
       .every((w) => w == null || typeof w === "string");
     if (!ok) { ungueltig++; continue; }
     // v217 (C8): ohne bekanntes Signal + brauchbaren Beleg-Link verworfen.
-    const beleg = kontaktKiLink(f.beleg, "web");
-    if (!beleg || typeof f.signal !== "string" || !Object.hasOwn(SCAN_KI_SIGNALE, f.signal)) {
-      ohneBeleg++; continue;
-    }
+    // v222: nachsichtiger - Gross/klein, mehrere Signale ("anzeigen, sucht_creator")
+    // oder Liste; das erste bekannte zaehlt. Lange Beleg-Links erlaubt.
+    const beleg = kontaktKiLink(f.beleg, "web", SCAN_KI_BELEG_MAX);
+    const signal = [].concat(f.signal).filter((x) => typeof x === "string")
+      .flatMap((x) => x.toLowerCase().split(/[\s,;|/]+/))
+      .find((x) => Object.hasOwn(SCAN_KI_SIGNALE, x));
+    if (!beleg || !signal) { ohneBeleg++; continue; }
     // Links nach derselben Regel wie bei der Kontakt-KI (v211): kaputter Link
     // -> leer, die Firma selbst bleibt brauchbar.
     firmen.push({ name, website: kontaktKiLink(f.website, "web"),
                   instagram: kontaktKiLink(f.instagram, "instagram"), warum: feld(f.warum, 300) || "",
-                  signal: f.signal, beleg });
+                  signal, beleg });
   }
   return { firmen, ungueltig, ohneBeleg };
 }
@@ -7667,8 +7673,8 @@ async function scanKiStarten(anzahl, zeige) {
   const lauf = { ctrl: new AbortController(), stand: datenstand, zuLang: false };
   scanKiLauf = lauf;
   // Codex Runde 2, Fund 3: ohne Obergrenze hielte ein haengender fetch die
-  // Abgleich-Sperre fuer immer. 5 Minuten fuer die Suche.
-  const uhr = setTimeout(() => { lauf.zuLang = true; lauf.ctrl.abort(); }, 5 * 60000);
+  // Abgleich-Sperre fuer immer. v222: 10 Minuten (25 Suchen, hohe Denktiefe).
+  const uhr = setTimeout(() => { lauf.zuLang = true; lauf.ctrl.abort(); }, 10 * 60000);
   const abbruch = () => lauf.zuLang ? "dauerte zu lange — nichts übernommen."
                                     : "abgebrochen — nichts übernommen.";
   const usages = [];
@@ -7848,11 +7854,11 @@ function kontaktKiAnfrage(name, website) {
 // "" = unbrauchbar. Nur http(s), hoechstens 200 Zeichen (Codex 27.10., Fund 7),
 // Instagram nur als Profil-Link: keine reservierten Pfade (explore, p, reels…),
 // ohne ?hl=de (Code-Review 28.10.).
-function kontaktKiLink(w, art) {
-  if (typeof w !== "string" || !w.trim() || w.length > 200) return "";
+function kontaktKiLink(w, art, max = 200) {
+  if (typeof w !== "string" || !w.trim() || w.length > max) return "";
   let u;
   try { u = new URL(scanHref(art, w)); } catch (_) { return ""; }
-  if (!/^https?:$/.test(u.protocol) || !domainVon(u.hostname) || u.href.length > 200) return "";
+  if (!/^https?:$/.test(u.protocol) || !domainVon(u.hostname) || u.href.length > max) return "";
   if (art !== "instagram") return u.href;
   return /^(www\.)?instagram\.com$/.test(u.hostname) &&
     /^\/(?!(?:explore|p|reel|reels|stories|accounts|tv|direct)\/?$)[A-Za-z0-9._]+\/?$/i.test(u.pathname)
@@ -8006,7 +8012,7 @@ function scanInfo(karte, k) {
   if (k.website) links.append(scanKnopf("🌐 Website", scanHref("website", k.website)));
   if (k.instagram) links.append(scanKnopf("📷 Instagram", scanHref("instagram", k.instagram)));
   // v217: beim Zeichnen nochmal pruefen - datenstand.json wird auch von Hand bearbeitet
-  const beleg = kontaktKiLink(k.beleg, "web");
+  const beleg = kontaktKiLink(k.beleg, "web", SCAN_KI_BELEG_MAX);
   if (beleg) links.append(scanKnopf("🔎 Beleg: " + (SCAN_KI_SIGNALE[k.signal] || "Quelle"), beleg));
   links.append(scanKnopf("📚 Werbebibliothek", werbeLink(k.name)));
   karte.append(links);
