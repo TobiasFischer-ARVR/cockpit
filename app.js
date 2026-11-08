@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v223"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v224"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -6708,12 +6708,37 @@ const SONST_FELDER = [
   ["Status", "brandrating", "status", true, false],
   ["Kategorie / Nische", "brandrating", "kategorie", true, true],
   ["Notizen", "brandrating", "notizen", false, true],
-  ["Kooperation (Ja/Nein, Datum)", "pitchliste", "kooperation", true, true],
 ];
+// Kooperation steht nicht mehr in der Liste: seit v224 Auswahl + Datum,
+// siehe koopTeile() und bereichSonstiges().
 
 // Fallback-Spaltenname, falls noch keine Marke die Spalte hat (frisch in
 // der App angelegt, Datenstand ohne die Spalte).
 const PAID_AD = "extra:Paid Ad Aktivität";
+
+// Kooperation (v224, Tobias 08.11.): gespeichert bleibt EIN Text
+// "Ja, 12.03.2026" / "Nein" / "" - Karte, Suche, Excel und Import lesen ihn
+// unveraendert. In der App sind es zwei Felder wie bei Paid Ad. Datum nur
+// bei "Ja" (Tobias 08.11., Variante A). null = passt nicht ins Muster, dann
+// zeigt der Reiter das alte Freitextfeld, statt den Wert zu verlieren.
+function koopTeile(wert) {
+  const t = String(wert == null ? "" : wert).trim();
+  if (!t) return ["", ""];
+  const m = t.match(/^(ja|nein)\s*(?:,\s*(\d{1,2})\.(\d{1,2})\.(\d{4}))?$/i);
+  if (!m) return null;
+  const jn = m[1].toLowerCase() === "ja" ? "Ja" : "Nein";
+  if (!m[2]) return [jn, ""];
+  // Unmoegliches Datum ("31.02.") nimmt <input type=date> nicht an - das
+  // Feld bliebe leer und Speichern loeschte den Wert still. Dann Freitext.
+  const d = new Date(+m[4], +m[3] - 1, +m[2]);
+  if (d.getMonth() !== +m[3] - 1 || d.getDate() !== +m[2]) return null;
+  return [jn, `${m[4]}-${m[3].padStart(2, "0")}-${m[2].padStart(2, "0")}`];
+}
+
+function koopText(jn, iso) {
+  if (jn !== "Ja") return jn || "";
+  return iso ? "Ja, " + deDatum(iso) : "Ja";
+}
 
 // Partnerart (v223, Andrea 08.11.): feste Werte, deshalb ein echtes
 // Auswahlfeld statt Freitext. Leer = noch nicht zugeordnet.
@@ -6808,6 +6833,31 @@ function bereichSonstiges(m, fertig) {
 
   for (const [label, zweig, name, vorschlag, breit] of SONST_FELDER)
     feld(label, zweig, name, vorschlag, breit);
+
+  // Kooperation: Ja/Nein + Datum (v224). Nur mit Pitchlisten-Zeile, wie zuvor.
+  if (m.pitchliste) {
+    const teile = koopTeile(m.pitchliste.kooperation);
+    if (!teile) {
+      feld("Kooperation (Ja/Nein, Datum)", "pitchliste", "kooperation", false, true);
+    } else {
+      const kJ = kachel("Kooperation", false);
+      const jn = el("select", "feld");
+      for (const v of ["", "Ja", "Nein"]) jn.append(new Option(v || "—", v));
+      jn.value = teile[0];
+      kJ.append(jn);
+      const kD = kachel("Datum", false);
+      const dat = el("input", "feld");
+      dat.type = "date";
+      dat.value = teile[1];
+      kD.append(dat);
+      const zeig = () => { kD.hidden = jn.value !== "Ja"; };
+      jn.onchange = zeig;
+      zeig();
+      speichern.push(() => {
+        m.pitchliste.kooperation = koopText(jn.value, dat.value);
+      });
+    }
+  }
 
   // Zwischen Kooperation und Paid Ad (Andrea 08.11.). Breit, damit das
   // Paid-Ad-Paar darunter in einer Zeile zusammenbleibt.
