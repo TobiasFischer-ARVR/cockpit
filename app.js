@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v222"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v223"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -4663,6 +4663,8 @@ function brandPasst(m, s) {
     (!bf.fit || symAnzahl(br.brandfit) >= bf.fit) &&
     (!bf.geist || symAnzahl(br.begeisterung) >= bf.geist) &&
     (!bf.chance || symAnzahl(br.erfolgschance) >= bf.chance) &&
+    (!bf.partner || (bf.partner === "ohne" ? !br.partnerart
+                                           : br.partnerart === bf.partner)) &&
     (!s || [m.name, br.status, br.kategorie, br.notizen]
       .join(" ").toLowerCase().includes(s));
 }
@@ -5728,7 +5730,7 @@ function sheetNeuerKunde() {
 // entstehen neue Brands ("+ Neue Brand", seit v32 hierher verlegt) und
 // hier kommt in Phase 5 der "Rating abgeschlossen"-Knopf dazu.
 const bf = { rating: [], hatRating: "", book: "", befuellt: "", fit: "",
-             geist: "", chance: "", suche: "", sortierung: "" };
+             geist: "", chance: "", partner: "", suche: "", sortierung: "" };
 
 // Skalenwert aus der Symbol-Kette des Brandrating-Blatts ("⭐⭐⭐" -> 3)
 function symAnzahl(s) {
@@ -6713,6 +6715,10 @@ const SONST_FELDER = [
 // der App angelegt, Datenstand ohne die Spalte).
 const PAID_AD = "extra:Paid Ad Aktivität";
 
+// Partnerart (v223, Andrea 08.11.): feste Werte, deshalb ein echtes
+// Auswahlfeld statt Freitext. Leer = noch nicht zugeordnet.
+const PARTNERART = ["Affiliate / Influencer", "Sonstiges"];
+
 // Die Excel-Zelle "Paid Ad Aktivität" ist EIN String "<Anzeigen> (<Budget>)"
 // - "3", "2 (350)", auch "0 ( 830)" mit Leerzeichen. In der App sind es zwei
 // Felder (Tobias 06.09.): laufende Anzeigen in der Werbebibliothek und
@@ -6803,6 +6809,22 @@ function bereichSonstiges(m, fertig) {
   for (const [label, zweig, name, vorschlag, breit] of SONST_FELDER)
     feld(label, zweig, name, vorschlag, breit);
 
+  // Zwischen Kooperation und Paid Ad (Andrea 08.11.). Breit, damit das
+  // Paid-Ad-Paar darunter in einer Zeile zusammenbleibt.
+  if (m.brandrating) {
+    const k = kachel("Partnerart", true);
+    const s = el("select", "feld");
+    const w = m.brandrating.partnerart || "";
+    s.append(new Option("— bitte wählen —", ""));
+    for (const v of PARTNERART) s.append(new Option(v, v));
+    // Fremder Wert (von Hand in den Datenstand getippt) bleibt waehlbar,
+    // sonst loescht ihn das naechste Speichern still.
+    if (w && !PARTNERART.includes(w)) s.append(new Option(w, w));
+    s.value = w;
+    k.append(s);
+    speichern.push(() => { m.brandrating.partnerart = s.value; });
+  }
+
   const extras = extraSpalten();
   const paidKey = extras.find((k) => k.toLowerCase().includes("paid ad")) || PAID_AD;
   if (m.brandrating) {
@@ -6861,8 +6883,10 @@ function brKarte(m) {
   const br = m.brandrating;
   const karte = el("div", "karte" + (br.brandbook ? "" : " leer"));
   const kopf = el("div", "kopf");
-  kopf.append(el("span", "pill", br.kategorie || "—"),
-              el("span", null, br.rating ? "Rating " + br.rating : ""));
+  // Rechts oben das Rating, darunter die Partnerart (v223) - leer = nichts.
+  const rechts = el("span", "kopf-rechts", br.rating ? "Rating " + br.rating : "");
+  if (br.partnerart) rechts.append(el("div", null, br.partnerart));
+  kopf.append(el("span", "pill", br.kategorie || "—"), rechts);
   const skalen = [br.brandfit, br.begeisterung, br.erfolgschance]
     .filter(Boolean).join(" · ");
   karte.append(kopf, el("div", "titel", m.name),
@@ -7128,6 +7152,9 @@ function renderBrandrating() {
     wrap.append(filterGruppe("Befüllt",
       [["ohne", "Nicht befüllt"], ["mit", "Befüllt"]],
       () => bf.befuellt, (w) => { bf.befuellt = w; }, zeichnen));
+    wrap.append(filterGruppe("Partnerart",
+      [...PARTNERART.map((v) => [v, v]), ["ohne", "Ohne Angabe"]],
+      () => bf.partner, (w) => { bf.partner = w; }, zeichnen));
     wrap.append(filterGruppe("Brand Fit", skalenChips(),
       () => bf.fit, (w) => { bf.fit = w; }, zeichnen));
     wrap.append(filterGruppe("Begeisterung", skalenChips(),
@@ -7146,8 +7173,8 @@ function renderBrandrating() {
   zeichnen();
 
   function zeichnen() {
-    const n = [bf.rating, bf.hatRating, bf.book, bf.befuellt, bf.fit,
-      bf.geist, bf.chance]
+    const n = [bf.rating, bf.hatRating, bf.book, bf.befuellt, bf.partner,
+      bf.fit, bf.geist, bf.chance]
       .filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (n ? ` · ${n} aktiv` : "");
     filterBtn.classList.toggle("aktiv", n > 0);
