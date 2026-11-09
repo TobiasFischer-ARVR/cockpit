@@ -1,7 +1,7 @@
 // ponytail: einfacher Cache-First fuer die App-Huelle, kein Update-Handling
 // ueber Versions-Diffing. Upgrade wenn's stoert: Cache-Namen bei jedem Release
 // hochzaehlen (cache-v2, ...) statt CACHE hart zu pflegen.
-const CACHE = "cockpit-v224"; // bei jedem Release hochzaehlen, sonst kriegt das Handy die alte Version
+const CACHE = "cockpit-v225"; // bei jedem Release hochzaehlen, sonst kriegt das Handy die alte Version
 const DATEIEN = ["index.html", "style.css", "app.js", "manifest.json",
                  "msal-browser.min.js", "jszip.min.js", "onedrive.js",
                  "icons/icon-192.png", "icons/icon-512.png"];
@@ -29,10 +29,11 @@ self.addEventListener("message", (e) => {
 // Beim Uebernehmen alle fremden Caches wegraeumen. Das erwischt auch die
 // Caches von Versionen, die nur im Wartestand standen und nie drankamen
 // (zwei Releases hintereinander, ohne dass dazwischen geladen wurde).
+// Nur eigene "cockpit-"-Caches: die Vorrats-App liegt auf derselben Domain (v225, 09.11.).
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+      Promise.all(keys.filter((k) => k.startsWith("cockpit-") && k !== CACHE).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
