@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v225"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v226"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -1511,12 +1511,15 @@ function sheetEinstellungen(reiter) {
   // KI-Suche (v210): Schluessel NUR hier, im Geraet (einst/localStorage).
   // Nie im Datenstand, nie in Backups, nie in Meldungen. Angezeigt wird er
   // nur gekuerzt.
-  const kiMaske = (s) => s ? s.slice(0, 7) + "…" + s.slice(-3) : "kein Schlüssel";
+  // v226: ein alter Claude-Schluessel bleibt stehen, wird aber nie benutzt.
+  const kiMaske = (s) => !s ? "kein Schlüssel"
+    : !kiSchluesselOk(s) ? "alter Claude-Schlüssel — bitte durch einen OpenAI-Schlüssel ersetzen"
+    : s.slice(0, 7) + "…" + s.slice(-3);
   const kiStatus = el("div", "stand", "Schlüssel: " + kiMaske(einst.kiSchluessel));
   const kiFeld = el("input", "suche");
   kiFeld.type = "password";
   kiFeld.autocomplete = "off";
-  kiFeld.placeholder = "sk-ant-…";
+  kiFeld.placeholder = "sk-…";
   const kiZeile = el("div", "chips");
   const kiSetzen = (v) => {
     if (!einstSpeichern({ kiSchluessel: v })) {
@@ -1530,7 +1533,7 @@ function sheetEinstellungen(reiter) {
   const kiOk = el("button", "chip", "Speichern");
   kiOk.onclick = () => {
     const v = kiFeld.value.trim();
-    if (!/^sk-ant-\S+$/.test(v)) { banner("Das sieht nicht wie ein Claude-Schlüssel aus (beginnt mit sk-ant-)."); return; }
+    if (!kiSchluesselOk(v)) { banner("Das sieht nicht wie ein OpenAI-Schlüssel aus (beginnt mit sk-, nicht sk-ant-)."); return; }
     kiSetzen(v);
   };
   const kiWeg = el("button", "chip", "Entfernen");
@@ -1544,7 +1547,8 @@ function sheetEinstellungen(reiter) {
       "„✨ Kontakt suchen“ in den Kontaktdaten. " +
       "Der Schlüssel bleibt auf diesem Gerät und wird nicht mit OneDrive " +
       "abgeglichen. Die Summe ist eine Schätzung nur für dieses Gerät — " +
-      "was alle Geräte zusammen verbraucht haben, steht in der Claude Console.")));
+      "was alle Geräte zusammen verbraucht haben, steht bei OpenAI unter " +
+      "platform.openai.com → Usage.")));
 
   // Warteliste (v103): fest erreichbar. Das Fenster geht von allein nur
   // auf, wenn ein Eintrag Andreas Zutun braucht - alles andere traegt sich
@@ -6497,8 +6501,8 @@ function kontaktFormular(m, fertig) {
   // v211: "✨ Kontakt suchen" oben - liest die Felder erst beim Klick.
   const felder = { email2: { input: email2, hinweis: el("div", "stand") } };
   wrap.append(...kontaktKiKnopf(m, felder), erklaerung("Kontakt suchen",
-    "Claude sucht Website, Instagram, Ansprechpartner und E-Mail der Marke " +
-    "(Impressum, Kontakt- und Presseseite). An Claude gehen nur der Name und " +
+    "ChatGPT sucht Website, Instagram, Ansprechpartner und E-Mail der Marke " +
+    "(Impressum, Kontakt- und Presseseite). An OpenAI gehen nur der Name und " +
     "die Website. Leere Felder werden vorausgefüllt, ausgefüllte nie " +
     "überschrieben — weicht ein Fund ab, steht er darunter. Gespeichert wird " +
     "erst mit „✓ Speichern“. Etwa 1–5 Cent je Suche."));
@@ -7396,17 +7400,25 @@ function scanRaus(name) {
 }
 
 // ---------------------------------------------------------- KI-Suche (v210)
-// Scanner Stufe 2 (Backlog 66, Bauplan doku/Bauplan KI-Suche.md). Claude
-// sucht mit Websuche Firmen, die zu Andreas A/B-Marken passen. Hier nur die
+// Scanner Stufe 2 (Backlog 66, Bauplan doku/Bauplan KI-Suche.md). Die KI
+// (seit v226 ChatGPT) sucht mit Websuche Firmen, die zu Andreas A/B-Marken passen. Hier nur die
 // reinen Teile (Anfrage, Antwort pruefen, Kosten) - Netz und Sheet unten.
-// Was an Anthropic geht: Markennamen, Kategorien, Suchbegriffe. KEINE
+// Was an OpenAI geht: Markennamen, Kategorien, Suchbegriffe. KEINE
 // Notizen, Kontakte, Kunden. Der Schluessel steht nie im Datenstand.
-// Kein output_config.format: ob es mit den Zitaten der Websuche kollidiert,
-// ist ungeklaert (Codex 26.10., Fund 1) - Claude schreibt einen ```json-
-// Block, scanKiFirmen() prueft ihn vollstaendig.
-const SCAN_KI_MODELL = "claude-sonnet-5-5";
-const SCAN_KI_PREIS = { ein: 2, aus: 10, suche: 0.01 };   // $ je Mio. Token / je Suche
+// v226 (C8, Tobias 13.11.): OpenAI statt Claude - Claudes Firmen passten
+// nicht zu Andrea. Weiter mit ```json-Block statt json_schema: Probe 13.11.
+// lieferte reinen Block ohne Zitatmarker, scanKiFirmen() prueft ihn vollstaendig.
+const SCAN_KI_MODELL = "gpt-6.1-sol";
+// OpenAI-Preise gpt-6.1-sol (developers.openai.com, 13.11.) - zufaellig gleich
+// wie frueher Sonnet. suche = je web_search_call (auch Seitenabrufe, eher zu hoch).
+const SCAN_KI_PREIS = { ein: 2, aus: 10, suche: 0.01 };   // $ je Mio. Token / je Suche-Aufruf
 const SCAN_KI_ANZAHL = [5, 10, 20];
+
+// OpenAI-Schluessel (sk-..., sk-proj-...). Ein alter Claude-Schluessel
+// (sk-ant-) geht NIE an OpenAI - er wuerde einem fremden Anbieter gezeigt.
+function kiSchluesselOk(k) {
+  return typeof k === "string" && /^sk-(?!ant-)[A-Za-z0-9_-]+$/.test(k);
+}
 
 // Zielbild (Tobias 26.10.): Andrea beschreibt sich SELBST - es kann sich
 // spontan aendern. Steht in datenstand.scanner.zielbild (gilt auf allen
@@ -7450,7 +7462,7 @@ const SCAN_KI_TECHNIK =
   "website und instagram als Link oder leer, warum = ein kurzer Satz, " +
   "weshalb die Marke passt.";
 const SCAN_KI_ZIEL_MAX = 3000;
-// v217 (C8): Pflicht-Beleg. Schluessel = was Claude liefert, Wert = Knopftext.
+// v217 (C8): Pflicht-Beleg. Schluessel = was die KI liefert, Wert = Knopftext.
 const SCAN_KI_BELEG_MAX = 1000;   // v222: Werbebibliothek-Links sind oft laenger als 200
 const SCAN_KI_SIGNALE = { anzeigen: "schaltet Anzeigen", sucht_creator: "sucht Creator",
                           arbeitet_mit_creatorn: "arbeitet mit Creatorn" };
@@ -7483,13 +7495,15 @@ function scanKiAnfrage(anzahl) {
   zeilen.push("Schon bekannt (nicht nennen): " + (bekannt.join(", ") || "–"));
   return {
     model: SCAN_KI_MODELL,
-    max_tokens: 32000,   // v222: hohe Denktiefe braucht Platz
-    system: scanZielbild() + "\n\n---\n\n" + SCAN_KI_TECHNIK,
-    output_config: { effort: "high" },   // v222: medium gab 1 von 5 (Andrea 04.11.)
-    fallbacks: "default",   // Server weicht bei Ablehnung selbst aus (Beta-Header in scanKiRufen)
-    tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 25,   // v222: 12 reichten nicht fuer 5 belegte Firmen
-              user_location: { type: "approximate", country: "DE" } }],
-    messages: [{ role: "user", content: zeilen.join("\n\n") }],
+    instructions: scanZielbild() + "\n\n---\n\n" + SCAN_KI_TECHNIK,
+    input: zeilen.join("\n\n"),   // String - eine Liste aus Strings waere 400 (Codex 13.11.)
+    reasoning: { effort: "high" },
+    tools: [{ type: "web_search", user_location: { type: "approximate", country: "DE" } }],
+    // Zaehlt Suchen UND Seitenabrufe (Codex 13.11.). Probe 13.11.: 5 Firmen
+    // brauchten 16 Suchen + 4 Seiten.
+    max_tool_calls: 25,
+    max_output_tokens: 32000,   // Denken zaehlt mit (Probe: 4.760 von 5.335)
+    store: false,
   };
 }
 
@@ -7533,14 +7547,15 @@ function scanKiFirmen(content) {
   return { firmen, ungueltig, ohneBeleg };
 }
 
-// Summe ueber ALLE Antworten eines Laufs (pause_turn, Codex Fund 9).
-// `preis` je Modell (v211: die Kontakt-KI laeuft auf Haiku).
+// Summe ueber alle Antworten eines Laufs (seit v226 genau eine).
+// `preis` je Modell (die Kontakt-KI laeuft auf dem kleinen Modell).
+// ponytail: cached = 10 % des Eingabepreises angenommen (bei GPT-5.x so
+// belegt, bei GPT-6 nicht). Massgeblich ist die OpenAI-Abrechnung.
 function scanKiKosten(usages, preis = SCAN_KI_PREIS) {
   let d = 0;
   for (const u of usages || []) {
     if (!u) continue;
-    const ein = (u.input_tokens || 0) + 1.25 * (u.cache_creation_input_tokens || 0) +
-                0.1 * (u.cache_read_input_tokens || 0);
+    const ein = (u.input_tokens || 0) + 0.1 * (u.cache_read_input_tokens || 0);
     d += (ein * preis.ein + (u.output_tokens || 0) * preis.aus) / 1e6;
     d += ((u.server_tool_use && u.server_tool_use.web_search_requests) || 0) * preis.suche;
   }
@@ -7682,44 +7697,54 @@ function scanKiFehlertext(status, antwort) {
   const fehler = (antwort && antwort.error) || {};
   const msg = String(fehler.message || "");
   if (status === 401) return "Schlüssel ungültig oder abgelaufen — in den Einstellungen neu eintragen.";
-  if (/credit|balance|billing/i.test(msg)) return "Guthaben für diesen Monat aufgebraucht.";
-  if (status === 429 || status >= 500) return "Claude ist gerade ausgelastet — später nochmal versuchen.";
+  // OpenAI meldet leeres Guthaben als 429 mit code insufficient_quota - VOR der 429-Regel.
+  if (fehler.code === "insufficient_quota" || /quota|billing/i.test(msg))
+    return "Guthaben bei OpenAI aufgebraucht — unter platform.openai.com aufladen.";
+  if (status === 429 || status >= 500) return "ChatGPT ist gerade ausgelastet — später nochmal versuchen.";
   const typ = /^[a-z_]{1,40}$/.test(String(fehler.type || "")) ? ` (${fehler.type})` : "";
-  return `Claude meldet Fehler ${status}${typ}.`;
+  return `ChatGPT meldet Fehler ${status}${typ}.`;
 }
 
+// v226: OpenAI Responses API. Letzte Sperre fuer den Schluessel HIER, damit
+// auch kuenftige Aufrufer keinen Claude-Schluessel an OpenAI schicken (Codex 13.11.).
 async function scanKiRufen(body, signal, kiKey) {
+  if (!kiSchluesselOk(kiKey)) throw new Error("Kein OpenAI-Schlüssel — unter Einstellungen → KI-Suche eintragen.");
   let r;
   try {
-    r = await fetch("https://api.anthropic.com/v1/messages", {
+    r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST", signal, body: JSON.stringify(body),
-      headers: { "content-type": "application/json", "x-api-key": kiKey,
-                 "anthropic-version": "2023-06-01",
-                 "anthropic-beta": "server-side-fallback-2026-07-01",
-                 "anthropic-dangerous-direct-browser-access": "true" } });
+      headers: { "content-type": "application/json", authorization: "Bearer " + kiKey } });
   } catch (f) {
     if (signal.aborted) throw f;
-    throw new Error("Keine Verbindung zu Claude.");
+    throw new Error("Keine Verbindung zu ChatGPT.");
   }
   const j = await r.json().catch(() => null);
   if (!r.ok) throw new Error(scanKiFehlertext(r.status, j));
   return j;
 }
 
-// pause_turn: ganze Antwort anhaengen und weiter, hoechstens runden-1 mal (Fund 9).
-// usages wird vom Aufrufer gehalten - auch ein Abbruch zaehlt, was schon kam.
-// v211: nimmt den fertigen Body (Scanner UND Kontakt-KI). Die Kontakt-KI
-// gibt 2 Runden vor - jede Fortsetzung zaehlt den ganzen Verlauf erneut
-// als Eingabe (Codex 27.10., Fund 8).
-async function scanKiLaufen(body, signal, usages, runden = 4) {
-  const kiKey = einst.kiSchluessel;   // EINMAL je Lauf (Entfernen mittendrin)
-  for (let i = 0; i < runden; i++) {
-    const j = await scanKiRufen(body, signal, kiKey);
-    usages.push(j.usage);
-    if (j.stop_reason !== "pause_turn") return j;
-    body.messages.push({ role: "assistant", content: j.content });
-  }
-  return null;
+// Ein Aufruf (OpenAI kennt kein pause_turn). Antwort in die alte Form
+// { stop_reason, content:[{type:"text",text}] } uebersetzt - so bleiben
+// scanKiFirmen/kontaktKiErgebnis und beide Aufrufer unveraendert.
+// usages haelt der Aufrufer; Verbrauch wird VOR jeder Entscheidung verbucht.
+// Nur status "completed" darf uebernommen werden (Codex 13.11., Fund 2):
+// incomplete -> null ("nicht fertig"), failed u. a. -> Fehler.
+async function scanKiLaufen(body, signal, usages) {
+  const j = await scanKiRufen(body, signal, einst.kiSchluessel);
+  const u = (j && j.usage) || {};
+  const cached = (u.input_tokens_details && u.input_tokens_details.cached_tokens) || 0;
+  const ausgabe = (j && Array.isArray(j.output)) ? j.output : [];
+  usages.push({ input_tokens: (u.input_tokens || 0) - cached, cache_read_input_tokens: cached,
+                output_tokens: u.output_tokens || 0,
+                server_tool_use: { web_search_requests: ausgabe.filter((o) => o && o.type === "web_search_call").length } });
+  if (j && j.status === "incomplete") return null;
+  if (!j || j.status !== "completed") throw new Error("ChatGPT konnte die Suche nicht abschließen.");
+  const teile = ausgabe.filter((o) => o && o.type === "message").flatMap((m) => m.content || []);
+  return {
+    stop_reason: teile.some((t) => t && t.type === "refusal") ? "refusal" : "end_turn",
+    content: teile.filter((t) => t && t.type === "output_text" && typeof t.text === "string")
+      .map((t) => ({ type: "text", text: t.text })),
+  };
 }
 
 function scanKiDollar(d) {
@@ -7727,7 +7752,7 @@ function scanKiDollar(d) {
 }
 
 // Monatssumme DIESES Geraets (localStorage). Die echte Abrechnung beider
-// Handys steht in der Console.
+// Handys steht bei OpenAI (platform.openai.com -> Usage).
 function scanKiMonat() {
   return lokalIso().slice(0, 7);   // Ortszeit: 1. des Monats 00-02 Uhr zaehlt zum neuen
 }
@@ -7803,7 +7828,7 @@ function scanKiSheetStand(text) {
   const an = !!scanKiLauf;
   document.getElementById("ki-start").disabled = an;
   document.getElementById("ki-stopp").hidden = !an;
-  if (an) status.textContent = "Claude sucht … das dauert 1–2 Minuten. " +
+  if (an) status.textContent = "ChatGPT sucht … das dauert 2–5 Minuten. " +
     "Du kannst das Fenster schließen, aber bitte in der App bleiben.";
   else if (text) {
     status.textContent = text;
@@ -7844,7 +7869,7 @@ function sheetScanKi() {
   wrap.append(einstZeile("Wie viele?", SCAN_KI_ANZAHL.map((n) => [n, `${n} Firmen`]), "kiAnzahl"),
     startZ, status,
     erklaerung("KI-Suche",
-      "Claude sucht im Netz nach Marken, die zu deiner Beschreibung und deinen " +
+      "ChatGPT sucht im Netz nach Marken, die zu deiner Beschreibung und deinen " +
       "A- und B-Marken passen" +
       (sd.suche.length ? ` (Schwerpunkt: ${sd.suche.join(", ")})` : "") +
       ". Firmen, die schon in der App oder im Scanner stehen, werden übersprungen. " +
@@ -7878,12 +7903,10 @@ function sheetScanPause(name) {
 // Kontakt suchen.md. Fuellt NUR leere Eingabefelder vor, Abweichungen
 // stehen als Hinweis darunter (Tobias 27.10.). Gespeichert wird erst ueber
 // "✓ Speichern" - nichts hier schreibt in m. Raus geht nur Name + Domain.
-// Haiku statt Sonnet: Abschreiben aus dem Impressum braucht kein Urteil,
-// Ziel 3-5 Cent je Marke.
-// ponytail: Preisstufe ueber 100k Prompt-Token nicht gerechnet - 2 Runden
-// und max_content_tokens halten darunter. Massgeblich ist die Console.
-const KONTAKT_KI_MODELL = "claude-haiku-5-5";
-const KONTAKT_KI_PREIS = { ein: 0.10, aus: 0.50, suche: 0.01 };   // $ je Mio. Token / je Suche
+// Kleines Modell: Abschreiben aus dem Impressum braucht kein Urteil,
+// Ziel 3-5 Cent je Marke (Probe 13.11.: 10 s, alle Felder).
+const KONTAKT_KI_MODELL = "gpt-6-luna";
+const KONTAKT_KI_PREIS = { ein: 0.10, aus: 0.50, suche: 0.01 };   // gpt-6-luna, OpenAI 13.11.
 const KONTAKT_KI_TECHNIK =
   "Du suchst Kontaktdaten einer Marke für eine UGC-Creatorin. Nutze Websuche " +
   "und Seitenabruf, bevorzuge Impressum, Kontakt-, Kooperations- und " +
@@ -7907,8 +7930,8 @@ const KONTAKT_KI_TECHNIK =
 // ":" vor dem @ verboten: sonst geht "mailto:info@…" durch (Code-Review 28.10.)
 const KONTAKT_KI_MAIL = /^[^\s@<>":]+@[^\s@<>"]+\.[a-z]{2,}$/i;
 
-// web_fetch holt nur Adressen, die vorher im Gespraech standen - die
-// Unterseiten gehoeren deshalb in die USER-Nachricht, nicht ins System.
+// Die Unterseiten stehen in der Nutzer-Nachricht (input) - dort darf die
+// Websuche sie direkt oeffnen.
 function kontaktKiAnfrage(name, website) {
   const d = domainVon(website);   // Freitext im Feld -> keine Website
   const zeilen = [`Marke: „${String(name || "").trim().slice(0, 120)}“`];
@@ -7917,14 +7940,13 @@ function kontaktKiAnfrage(name, website) {
   else zeilen.push("Website unbekannt – zuerst suchen.");
   return {
     model: KONTAKT_KI_MODELL,
-    max_tokens: 6000,
-    system: KONTAKT_KI_TECHNIK,
-    output_config: { effort: "low" },
-    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3,
-              user_location: { type: "approximate", country: "DE" } },
-            { type: "web_fetch_20250910", name: "web_fetch", max_uses: 4,
-              max_content_tokens: 6000 }],
-    messages: [{ role: "user", content: zeilen.join("\n\n") }],
+    instructions: KONTAKT_KI_TECHNIK,
+    input: zeilen.join("\n\n"),
+    reasoning: { effort: "low" },
+    tools: [{ type: "web_search", user_location: { type: "approximate", country: "DE" } }],
+    max_tool_calls: 7,   // Suchen + Seitenabrufe zusammen (frueher 3 + 4)
+    max_output_tokens: 6000,
+    store: false,
   };
 }
 
@@ -8034,8 +8056,8 @@ function kontaktKiKnopf(m, felder) {
   const status = el("div", "stand");
   const quellen = el("div", "chips");
   b.onclick = async () => {
-    if (!einst.kiSchluessel) {
-      status.textContent = "Erst unter Einstellungen → KI-Suche einen Claude-Schlüssel eintragen.";
+    if (!kiSchluesselOk(einst.kiSchluessel)) {
+      status.textContent = "Erst unter Einstellungen → KI-Suche einen OpenAI-Schlüssel eintragen.";
       return;
     }
     b.disabled = true;   // Sperre VOR dem ersten await (Doppeltipp)
@@ -8044,12 +8066,12 @@ function kontaktKiKnopf(m, felder) {
     const uhr = setTimeout(() => { zuLang = true; ctrl.abort(); }, 90000);
     const wache = setInterval(() => { if (!b.isConnected) ctrl.abort(); }, 1000);
     const usages = [];
-    status.textContent = "✨ Claude sucht … (etwa 20–40 Sekunden)";
+    status.textContent = "✨ ChatGPT sucht … (etwa 10–40 Sekunden)";
     quellen.textContent = "";
     let text = "";
     try {
       const j = await scanKiLaufen(kontaktKiAnfrage(m.name, felder.Website.input.value),
-                                   ctrl.signal, usages, 2);
+                                   ctrl.signal, usages);
       // Ab hier kein await mehr - und direkt davor geprueft.
       if (!b.isConnected) return;   // Formular weg: verwerfen (finally verbucht)
       const erg = !j || j.stop_reason === "refusal" ? null : kontaktKiErgebnis(j.content);
@@ -8185,7 +8207,7 @@ function renderScanner() {
   // KI-Suche (v210) - braucht keine Suchbegriffe, die A/B-Marken reichen.
   if (scanKiLauf) c.append(el("div", "stand", "✨ KI-Suche läuft … das Ergebnis erscheint hier."));
   const [kiText, kiKlasse, kiTat] = scanKiLauf ? ["Abbrechen", "chip", scanKiAbbrechen]
-    : einst.kiSchluessel ? ["✨ KI-Suche", "chip haupt", sheetScanKi]
+    : kiSchluesselOk(einst.kiSchluessel) ? ["✨ KI-Suche", "chip haupt", sheetScanKi]
     : ["✨ KI-Suche einrichten", "chip", () => sheetEinstellungen("KI-Suche")];
   const ki = el("button", kiKlasse, kiText);
   ki.onclick = kiTat;
