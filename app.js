@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v226"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v227"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -7253,9 +7253,9 @@ function renderBrandrating() {
 }
 
 // ---------------------------------------------------------------- Scanner
-// Firmen finden, bevor sie Marken sind (v209, Tobias 25.10.). Stufe 1: die
-// App baut Google-Links. Stufe 2 (KI-Suche, v210) fuellt die Liste ueber
-// scanAufnehmen(). Den Handeintrag gibt es seit v211 nicht mehr: Handfunde
+// Firmen finden, bevor sie Marken sind (v209, Tobias 25.10.). Die KI-Suche
+// (v210) fuellt die Liste ueber scanAufnehmen(); die Google-Links der
+// Stufe 1 sind seit v227 weg (Tobias 14.11.). Den Handeintrag gibt es seit v211 nicht mehr: Handfunde
 // gehen direkt ins Brand Rating.
 // Eigener Top-Level-Schluessel, NICHT in marken: Kandidaten sind noch keine
 // Marken und haben in Kennzahlen, Pitchliste und Import nichts verloren.
@@ -7263,7 +7263,6 @@ function renderBrandrating() {
 // Mutierende scan*-Funktionen speichern NICHT selbst - das macht der
 // Klick-Handler (bei "Ins Brand Rating" speichert brandAnlegen beides in
 // einem Lauf). Kandidaten heissen nie `m` (test_invarianten 7a).
-const SCAN_LAND = "&cr=" + encodeURIComponent("countryDE|countryAT|countryCH");
 const SCAN_PAUSE = [["1 Monat", 30], ["3 Monate", 91], ["6 Monate", 182]];
 const SCAN_KACHEL = true;    // an seit v210 (KI-Suche), siehe renderUgc
 
@@ -7285,21 +7284,6 @@ function scanWoerter(text) {
     gesehen.add(s);
     return true;
   });
-}
-
-// Google kann ODER und Minus, Maps nicht - Maps bekommt EINEN Begriff.
-// Instagram ohne Laenderfilter: Profile haben kein Land, cr= liesse fast
-// nichts uebrig. Stattdessen deutschsprachige Seiten.
-function scanLink(art, suche, niemals) {
-  const q = (w) => (/\s/.test(w) ? `"${w}"` : w);
-  if (art === "maps") return "https://www.google.com/maps/search/" + encodeURIComponent(suche[0] || "");
-  const oder = suche.length > 1 ? "(" + suche.map(q).join(" OR ") + ")" : q(suche[0] || "");
-  const zusatz = { web: "", instagram: " site:instagram.com",
-    startup: ' (startup OR gründer OR neugründung OR "neu gegründet")' }[art] || "";
-  const ohne = (niemals || []).map((w) => " -" + q(w)).join("");
-  const url = SUCHE + encodeURIComponent(oder + zusatz + ohne);
-  if (art === "instagram") return url + "&lr=lang_de";
-  return url + SCAN_LAND + (art === "startup" ? "&tbs=qdr:y" : "");
 }
 
 // Erstes Niemals-Wort, das im Text steckt. Ueber schluessel(): Umlaute und
@@ -7606,12 +7590,48 @@ function scanFertig(gefunden) {
 // Eingaben IMMER im Sheet (Codex 25.10., Fund 4): bei offenem Sheet zeichnet
 // kein Abgleich neu und tauscht keinen Stand - ein Feld direkt in der Ansicht
 // verloere das Getippte, sobald Andrea von Google zurueckkommt.
+// v227 (Tobias 14.11.): Stichworte zum Antippen statt Freitext - "man kommt
+// nicht immer auf die Woerter". Angetippt = scanner.suche (Schwerpunkt der
+// KI-Suche wie bisher). Eigene Woerter bleiben als Vorschlag in
+// scanner.eigene, auch wenn sie abgewaehlt sind.
+// ponytail: eigene Vorschlaege lassen sich nicht loeschen - ein Knopf, wenn die
+// Liste Andrea zu lang wird.
+const SCAN_STICHWORTE = ["Neugründung", "Start-up", "Crowdfunding", "Eigener Online-Shop",
+  "Nachhaltig", "Vegan", "Bio", "Familienunternehmen", "Handgemacht", "Kosmetik & Pflege",
+  "Food & Snacks", "Getränke", "Gesundheit & Supplements", "Fitness & Sport", "Haustier",
+  "Kinder & Familie", "Home & Living", "Mode & Accessoires", "Tech & Gadgets"];
+
 function sheetScanBegriffe() {
   const sd = scanDaten();
   const wrap = el("div");
-  const suche = el("input", "suche");
-  suche.placeholder = "z.B. Getränke, Anwalt, Fitness";
-  suche.value = sd.suche.join(", ");
+  const gewaehlt = new Set(sd.suche.map((w) => w.toLowerCase()));
+  const eigene = [...(sd.eigene || [])];
+  // Feste Liste, dann eigene, dann alte Freitext-Woerter (werden beim Speichern eigene).
+  const alle = () => scanWoerter([...SCAN_STICHWORTE, ...eigene, ...sd.suche].join(","));
+  const chips = el("div", "chips");
+  const zeichne = () => {
+    chips.innerHTML = "";
+    for (const w of alle()) {
+      const c = el("button", "chip" + (gewaehlt.has(w.toLowerCase()) ? " aktiv" : ""), w);
+      c.onclick = () => {
+        const k = w.toLowerCase();
+        if (!gewaehlt.delete(k)) gewaehlt.add(k);
+        c.classList.toggle("aktiv", gewaehlt.has(k));
+      };
+      chips.append(c);
+    }
+  };
+  zeichne();
+  const neu = el("input", "suche");
+  neu.placeholder = "Eigenes Stichwort, z. B. Kaffee";
+  const dazu = () => {
+    for (const w of scanWoerter(neu.value)) { eigene.push(w); gewaehlt.add(w.toLowerCase()); }
+    neu.value = "";
+  };
+  const plus = el("button", "chip", "＋ Dazu");
+  plus.onclick = () => { dazu(); zeichne(); };
+  const plusZ = el("div", "chips");
+  plusZ.append(plus);
   const nie = el("input", "suche");
   nie.placeholder = "z.B. Baby, Kinder";
   nie.value = sd.niemals.join(", ");
@@ -7626,8 +7646,14 @@ function sheetScanBegriffe() {
   const okZ = el("div", "chips");
   const ok = el("button", "chip haupt", "✓ Speichern");
   ok.onclick = () => {
+    dazu();   // getippt, aber nicht "＋" gedrueckt - zaehlt trotzdem
     const sc = scanner();
-    sc.suche = scanWoerter(suche.value);
+    const liste = alle();
+    sc.suche = liste.filter((w) => gewaehlt.has(w.toLowerCase()));
+    const fest = new Set(SCAN_STICHWORTE.map((w) => w.toLowerCase()));
+    const eig = liste.filter((w) => !fest.has(w.toLowerCase()));
+    if (eig.length) sc.eigene = eig;
+    else delete sc.eigene;
     sc.niemals = scanWoerter(nie.value);
     const z = ziel.value.trim().slice(0, SCAN_KI_ZIEL_MAX);
     if (z && z !== SCAN_KI_ZIEL) sc.zielbild = z;
@@ -7637,12 +7663,17 @@ function sheetScanBegriffe() {
     history.back();
   };
   okZ.append(ok);
-  wrap.append(el("div", "stand", "Suche nach — eins davon reicht"), suche,
+  wrap.append(el("div", "stand", "Schwerpunkt — antippen, was diesmal gesucht werden soll"), chips,
+    neu, plusZ,
     el("div", "stand", "Niemals"), nie,
     el("div", "stand", "Wen suche ich? (für die KI-Suche)"), ziel, stdZ, okZ,
-    erklaerung("Suchbegriffe", "Mit Komma trennen. „Niemals“-Wörter schließt " +
-      "die Google-Suche aus; beim Eintragen warnt die App zusätzlich, wenn " +
-      "Name, Website oder Instagram eins davon enthält."),
+    erklaerung("Schwerpunkt", "Angetippte Stichworte schickt die App der KI-Suche " +
+      "als Schwerpunkt mit, z. B. „Neugründung“ für junge Marken. Nichts " +
+      "angetippt = die KI sucht nur nach deiner Beschreibung und deinen " +
+      "A- und B-Marken. Eigene Stichworte bleiben als Vorschlag stehen."),
+    erklaerung("Niemals", "Mit Komma trennen. Die KI-Suche nennt solche Firmen " +
+      "nicht, und die App nimmt keinen Treffer auf, dessen Name, Website oder " +
+      "Instagram eins davon enthält."),
     erklaerung("Wen suche ich?", "So beschreibst du der KI-Suche, welche " +
       "Marken zu dir passen — in deinen eigenen Worten, jederzeit änderbar. " +
       "Deine A- und B-Marken schickt die App zusätzlich als Beispiele mit. " +
@@ -8192,46 +8223,34 @@ function renderScanner() {
       "Braucht den Datenstand — App einmal mit Internet öffnen."));
     return;
   }
+  // v227 (Tobias 14.11.): EINE Karte - was gesucht wird + Start-Knopf.
+  // Die KI-Suche braucht keine Stichworte, die A/B-Marken reichen.
   const sd = scanDaten();
-  const begriffe = el("div", "karte block");
-  begriffe.append(el("div", "stand", "Suche nach: " + (sd.suche.join(", ") || "–")),
+  const karte = el("div", "karte block");
+  karte.append(el("div", "titel", "✨ KI-Suche"),
+    el("div", "stand", "Schwerpunkt: " + (sd.suche.join(", ") || "–")),
     el("div", "stand", "Niemals: " + (sd.niemals.join(", ") || "–")),
-    el("div", "stand", "Zielbild: " + (sd.zielbild ? "eigene Beschreibung" : "Standard")));
-  const bearb = el("button", "chip", "✎ Suche einstellen");
-  bearb.onclick = sheetScanBegriffe;
-  const bz = el("div", "chips");
-  bz.append(bearb);
-  begriffe.append(bz);
-  c.append(begriffe);
-
-  // KI-Suche (v210) - braucht keine Suchbegriffe, die A/B-Marken reichen.
-  if (scanKiLauf) c.append(el("div", "stand", "✨ KI-Suche läuft … das Ergebnis erscheint hier."));
+    el("div", "stand", "Wen suche ich: " + (sd.zielbild ? "eigene Beschreibung" : "Standard")));
+  if (scanKiLauf) karte.append(el("div", "stand", "✨ läuft … das Ergebnis erscheint hier."));
   const [kiText, kiKlasse, kiTat] = scanKiLauf ? ["Abbrechen", "chip", scanKiAbbrechen]
-    : kiSchluesselOk(einst.kiSchluessel) ? ["✨ KI-Suche", "chip haupt", sheetScanKi]
+    : kiSchluesselOk(einst.kiSchluessel) ? ["✨ Suche starten", "chip haupt", sheetScanKi]
     : ["✨ KI-Suche einrichten", "chip", () => sheetEinstellungen("KI-Suche")];
   const ki = el("button", kiKlasse, kiText);
   ki.onclick = kiTat;
-  const kiZ = el("div", "chips");
-  kiZ.append(ki);
-  c.append(kiZ);
-
-  if (sd.suche.length) {
-    const links = el("div", "chips");
-    for (const [art, text] of [["web", "🔎 Web"], ["instagram", "📷 Instagram"],
-                               ["startup", "🌱 Neugründungen"]])
-      links.append(scanKnopf(text, scanLink(art, sd.suche, sd.niemals)));
-    for (const w of sd.suche) links.append(scanKnopf("📍 Maps: " + w, scanLink("maps", [w], [])));
-    c.append(links);
-  } else {
-    c.append(el("div", "leerzustand", "Erst Suchbegriffe eintragen."));
-  }
+  const bearb = el("button", "chip", "✎ Einstellen");
+  bearb.onclick = sheetScanBegriffe;
+  const kz = el("div", "chips");
+  kz.append(ki, bearb);
+  karte.append(kz);
+  c.append(karte);
 
   const offen = scanListe("offen");
   c.append(el("div", "stand", `Offen (${offen.length})`));
   // v220 (Tobias 01.11.): alle Offenen weg, ohne sie zu ignorieren (dann
   // waeren sie "So NICHT"-Beispiele) - Pausierte und Ignorierte bleiben.
+  // v227: heisst "Liste löschen" (Tobias 14.11.).
   if (offen.length) {
-    const leeren = el("button", "chip", "🗑 Offene leeren");
+    const leeren = el("button", "chip", "🗑 Liste löschen");
     leeren.onclick = () => {
       if (confirm(`Alle ${offen.length} offenen Treffer löschen? Pausierte und ignorierte ` +
                   "bleiben. Gelöschte Firmen kann die KI-Suche später wieder vorschlagen."))
