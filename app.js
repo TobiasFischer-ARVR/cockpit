@@ -8454,6 +8454,19 @@ function wpFinde(wp, montag, id) {
   return null;
 }
 
+// Wie viele Aufgaben einer Woche sind offen? Fuer die Kachel im Cockpit:
+// alle Abschnitte (Ziele, Top 3, Liegen geblieben, Tage), nur oberste Ebene.
+function wpOffenZahl(woche) {
+  if (!woche || typeof woche !== "object") return 0;
+  const listen = [woche.ziele, woche.prio, woche.liegen].concat(
+    (Array.isArray(woche.tage) ? woche.tage : []).map((t) => t && t.aufgaben));
+  let n = 0;
+  for (const l of listen) {
+    for (const a of (Array.isArray(l) ? l : [])) if (a && (!a.zustand || a.zustand === "offen")) n++;
+  }
+  return n;
+}
+
 // Antippen des Hakens: erledigt -> offen, alles andere -> erledigt.
 function wpUmschalten(z) {
   return z === "erledigt" ? "offen" : "erledigt";
@@ -9016,11 +9029,13 @@ function renderHauptmenu() {
              ? "Angemeldet, aber keine snapshot.json im Datenbank-Ordner"
              : "Keine Daten — erst bei OneDrive anmelden"));
   ugc.onclick = () => { location.hash = "#/ugc"; };
+  ugc.dataset.kachel = "ugc";
 
   const buecher = el("div", "karte menue-karte leer");
   buecher.append(el("div", "titel", "Bücher"),
                  el("div", "kontext", "Platzhalter — Inhalt folgt"));
   buecher.onclick = () => { location.hash = "#/buecher"; };
+  buecher.dataset.kachel = "buecher";
 
   // OneDrive (Phase 3): anmelden bzw. Verbindungs-Beweis anzeigen
   const odDa = typeof OD !== "undefined";
@@ -9035,10 +9050,118 @@ function renderHauptmenu() {
     if (!odDa) return;
     if (konto) sheetOneDrive(); else OD.anmelden();
   };
+  od.dataset.kachel = "onedrive";
 
+  // Wochenplan (v228, Punkt 76): unter OneDrive. Liest nur (wpDaten).
+  const heute = wpHeuteMontag();
+  const kw = wpKw(heute);
+  const woche = datenstand ? wpDaten(datenstand).wochen[heute] : null;
+  const wpk = el("div", "karte menue-karte" + (datenstand ? "" : " leer"));
+  wpk.append(el("div", "titel", "Wochenplan"),
+    el("div", "kontext", "KW " + kw.kw + " · " + (!datenstand ? "braucht den Datenstand"
+      : woche ? wpOffenZahl(woche) + " offen" : "noch nicht angelegt")));
+  wpk.onclick = () => { wpAnsicht = null; location.hash = "#/wochenplan"; };
+  wpk.dataset.kachel = "wochenplan";
+
+  // Reihenfolge: pro Geraet (einst.kachelFolge), langes Druecken zieht.
+  const kacheln = { ugc: ugc, buecher: buecher, onedrive: od, wochenplan: wpk };
   const liste = el("div", "karten");
-  liste.append(ugc, buecher, od);
+  for (const id of kachelFolge(einst.kachelFolge, KACHEL_IDS)) liste.append(kacheln[id]);
   c.append(liste);
+  kachelnZiehbar(liste);
+}
+
+// Die vier Cockpit-Kacheln in Standard-Reihenfolge (Tobias 17.11.: der
+// Wochenplan steht unter OneDrive). Nur diese vier sind ziehbar.
+const KACHEL_IDS = ["ugc", "buecher", "onedrive", "wochenplan"];
+
+// Klicksperre nach dem Ziehen - am MODUL, nicht am DOM (Codex R1, Fund 9):
+// zeichnet ein Abgleich das Hauptmenue mitten in der Geste neu, haengt der
+// Klick an einer neuen Kachel, und ohne Sperre startete z. B. der
+// OneDrive-Klick ungewollt die Anmeldung. Die Wache sitzt einmal am
+// document, in der Capture-Phase - vor jedem onclick einer Kachel.
+let kachelKlickSperre = false;
+let kachelKlickWache = false;
+
+// Langes Druecken (450 ms) hebt eine Kachel an, dann ziehen; loslassen
+// speichert die Reihenfolge. Bewegt sich der Finger vorher > 10 px, ist es
+// Scrollen; loslassen vorher ist ein normaler Tipp. pointercancel bricht
+// IMMER ganz ab - auch im Ziehmodus: alte Reihenfolge, nichts gespeichert.
+// Plan B, falls Android die Geste trotzdem abbricht: Sheet mit ▲▼.
+function kachelnZiehbar(liste) {
+  const LANG = 450, WEG = 10;
+  if (!kachelKlickWache && typeof document !== "undefined") {
+    kachelKlickWache = true;
+    document.addEventListener("click", (e) => {
+      if (!kachelKlickSperre) return;
+      e.stopPropagation();
+      e.preventDefault();
+    }, true);
+  }
+  let g = null;   // laufende Geste: { karte, x, y, timer, zieht, vorher }
+  const sperreLoesen = () => { setTimeout(() => { kachelKlickSperre = false; }, 400); };
+  const ende = (speichern) => {
+    if (!g) return;
+    const geste = g;
+    g = null;
+    clearTimeout(geste.timer);
+    document.removeEventListener("pointermove", bewegt, true);
+    document.removeEventListener("pointerup", hoch, true);
+    document.removeEventListener("pointercancel", abbruch, true);
+    geste.karte.classList.remove("zieht");
+    if (!geste.zieht) return;
+    if (liste.isConnected) {
+      if (speichern) {
+        const folge = Array.prototype.map.call(liste.children, (k) => k.dataset.kachel)
+          .filter(Boolean);
+        if (!einstSpeichern({ kachelFolge: folge })) {
+          banner("Reihenfolge konnte auf diesem Gerät nicht gespeichert werden.");
+        }
+      } else {
+        for (const k of geste.vorher) liste.append(k);   // alte Reihenfolge zurueck
+      }
+    }
+    sperreLoesen();   // erst NACH dem Klick, der auf pointerup folgt
+  };
+  const bewegt = (e) => {
+    if (!g) return;
+    if (!liste.isConnected || !g.karte.isConnected) { ende(false); return; }
+    if (!g.zieht) {
+      if (Math.abs(e.clientX - g.x) > WEG || Math.abs(e.clientY - g.y) > WEG) ende(false);
+      return;
+    }
+    const unter = document.elementFromPoint(e.clientX, e.clientY);
+    const ziel = unter && unter.closest ? unter.closest(".menue-karte") : null;
+    if (!ziel || ziel === g.karte || ziel.parentNode !== liste) return;
+    const kinder = Array.prototype.slice.call(liste.children);
+    if (kinder.indexOf(ziel) < kinder.indexOf(g.karte)) liste.insertBefore(g.karte, ziel);
+    else liste.insertBefore(g.karte, ziel.nextSibling);
+  };
+  const hoch = () => ende(true);
+  const abbruch = () => ende(false);
+  liste.addEventListener("pointerdown", (e) => {
+    if (g) { ende(false); return; }              // zweiter Finger: abbrechen
+    if (e.button !== undefined && e.button !== 0) return;
+    const karte = e.target && e.target.closest ? e.target.closest(".menue-karte") : null;
+    if (!karte || karte.parentNode !== liste) return;
+    g = { karte: karte, x: e.clientX, y: e.clientY, zieht: false,
+          vorher: Array.prototype.slice.call(liste.children) };
+    g.timer = setTimeout(() => {
+      if (!g || !liste.isConnected || !g.karte.isConnected) { ende(false); return; }
+      g.zieht = true;
+      kachelKlickSperre = true;
+      g.karte.classList.add("zieht");
+      if (navigator.vibrate) navigator.vibrate(20);
+    }, LANG);
+    document.addEventListener("pointermove", bewegt, true);
+    document.addEventListener("pointerup", hoch, true);
+    document.addEventListener("pointercancel", abbruch, true);
+  });
+  // Nur im Ziehmodus das Scrollen unterbinden - sonst scrollt die Seite
+  // unter dem Finger weg und Android schickt pointercancel.
+  liste.addEventListener("touchmove", (e) => { if (g && g.zieht) e.preventDefault(); },
+    { passive: false });
+  liste.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
 // Beweis-Sheet fuer den OneDrive-Zugang: listet die oberste Ordner-Ebene.
