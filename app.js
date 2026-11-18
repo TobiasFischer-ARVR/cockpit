@@ -8360,40 +8360,51 @@ function wpId() {
 }
 
 // Eine Aufgabe auffuellen, IN PLACE. Ergaenzt nur Fehlendes, entfernt nie
-// etwas - auch keine Felder, die eine spaetere Fassung dazuschreibt.
-function wpAufgabeAuffuellen(a) {
+// Felder, die eine spaetere Fassung dazuschreibt.
+// `idFn` gesetzt = SCHREIBWEG (wochenplan()): fehlende IDs werden vergeben
+// (sonst waere die Aufgabe nie antippbar), ein unbekannter Zustand bleibt
+// stehen (eine spaetere Fassung kennt vielleicht "verschoben" - v228 darf
+// ihn beim naechsten Haken nicht still auf "offen" setzen; Code-Pruefung
+// 18.11.). Ohne idFn = Anzeige-KOPIE (wpDaten): unbekannt zeigt als offen.
+function wpAufgabeAuffuellen(a, idFn) {
   if (!a || typeof a !== "object") return null;
+  if (idFn && !a.id) a.id = idFn();
   if (typeof a.text !== "string") a.text = String(a.text || "");
-  if (a.zustand !== "erledigt" && a.zustand !== "verworfen") a.zustand = "offen";
+  const zustand = (z) => (z === "erledigt" || z === "verworfen" ? z
+    : idFn && typeof z === "string" && z ? z : "offen");
+  a.zustand = zustand(a.zustand);
   if (!Array.isArray(a.unter)) a.unter = [];
   a.unter = a.unter.filter((u) => u && typeof u === "object");
   for (const u of a.unter) {
+    if (idFn && !u.id) u.id = idFn();
     if (typeof u.text !== "string") u.text = String(u.text || "");
-    if (u.zustand !== "erledigt" && u.zustand !== "verworfen") u.zustand = "offen";
+    u.zustand = zustand(u.zustand);
   }
   return a;
 }
 
-function wpWocheAuffuellen(w) {
+function wpWocheAuffuellen(w, idFn) {
   for (const k of ["ziele", "prio", "liegen"]) {
     if (!Array.isArray(w[k])) w[k] = [];
-    w[k] = w[k].filter((a) => wpAufgabeAuffuellen(a));
+    w[k] = w[k].filter((a) => wpAufgabeAuffuellen(a, idFn));
   }
   if (!Array.isArray(w.tage)) w.tage = [];
   for (let i = 0; i < 7; i++) {
     const t = w.tage[i] && typeof w.tage[i] === "object" ? w.tage[i] : {};
     t.frei = Boolean(t.frei);
     if (!Array.isArray(t.aufgaben)) t.aufgaben = [];
-    t.aufgaben = t.aufgaben.filter((a) => wpAufgabeAuffuellen(a));
+    t.aufgaben = t.aufgaben.filter((a) => wpAufgabeAuffuellen(a, idFn));
     w.tage[i] = t;
   }
   if (typeof w.notizen !== "string") w.notizen = String(w.notizen || "");
   return w;
 }
 
-// Den ganzen Teil auffuellen, IN PLACE. Kaputte Vorlage -> Startvorlage,
-// kaputte Woche (kein Objekt) -> faellt weg.
-function wpAuffuellen(wp) {
+// Den ganzen Teil auffuellen, IN PLACE. Kaputte Vorlage -> Startvorlage.
+// Kaputte Woche (kein Objekt): in der Anzeige-Kopie weg, im Schreibweg
+// (idFn) BLEIBT der Schluessel stehen - sonst meldete wochenFehlen beim
+// naechsten Laden einen Verlust, den es nicht gibt (Code-Pruefung 18.11.).
+function wpAuffuellen(wp, idFn) {
   if (!wp || typeof wp !== "object" || Array.isArray(wp)) wp = {};
   if (!wp.format) wp.format = 1;
   const v = wp.vorlage;
@@ -8404,15 +8415,15 @@ function wpAuffuellen(wp) {
       const t = v.tage[i] && typeof v.tage[i] === "object" ? v.tage[i] : {};
       t.frei = Boolean(t.frei);
       t.aufgaben = (Array.isArray(t.aufgaben) ? t.aufgaben : [])
-        .map((x) => String(x || "").trim()).filter(Boolean);
+        .filter((x) => typeof x === "string").map((x) => x.trim()).filter(Boolean);
       v.tage[i] = t;
     }
   }
   if (!wp.wochen || typeof wp.wochen !== "object" || Array.isArray(wp.wochen)) wp.wochen = {};
   for (const k of Object.keys(wp.wochen)) {
     const w = wp.wochen[k];
-    if (!w || typeof w !== "object" || Array.isArray(w)) delete wp.wochen[k];
-    else wpWocheAuffuellen(w);
+    if (!w || typeof w !== "object" || Array.isArray(w)) { if (!idFn) delete wp.wochen[k]; }
+    else wpWocheAuffuellen(w, idFn);
   }
   return wp;
 }
@@ -8614,7 +8625,7 @@ function wpSchreibSperre() {
 // Schreibzugriff: legt den Teil an bzw. fuellt ihn auf (Muster scanner()).
 // Nur aus Schreibwegen rufen - nie aus einer Ansicht (test_invarianten).
 function wochenplan() {
-  datenstand.wochenplan = wpAuffuellen(datenstand.wochenplan);
+  datenstand.wochenplan = wpAuffuellen(datenstand.wochenplan, wpId);
   return datenstand.wochenplan;
 }
 
@@ -8677,7 +8688,10 @@ function wpSheetSpeichern(vorher, aenderung, nichtDa) {
 
 function wpOrtListe(woche, ort) {
   if (!woche) return null;
-  if (ort.art === "tag") return woche.tage[ort.tag] ? woche.tage[ort.tag].aufgaben : null;
+  if (ort.art === "tag") {
+    const t = Array.isArray(woche.tage) ? woche.tage[ort.tag] : null;
+    return t && Array.isArray(t.aufgaben) ? t.aufgaben : null;
+  }
   return Array.isArray(woche[ort.art]) ? woche[ort.art] : null;
 }
 
@@ -8686,8 +8700,8 @@ const WP_ZEICHEN = { offen: "☐", erledigt: "☑", verworfen: "⊘" };
 // Eine Zeile: Haken (antippen = umschalten) + Text (antippen = Sheet).
 // Ein Unterpunkt oeffnet das Sheet seiner Aufgabe - dort werden
 // Unterpunkte bearbeitet.
-function wpZeile(montag, a, elternId, ort) {
-  const z = el("div", "wp-zeile" + (elternId ? " wp-unter" : "") +
+function wpZeile(montag, a, elternId, ort, istUnter) {
+  const z = el("div", "wp-zeile" + (istUnter ? " wp-unter" : "") +
     (a.zustand === "erledigt" ? " wp-erledigt" : a.zustand === "verworfen" ? " wp-verworfen" : ""));
   const id = a.id;
   const h = el("button", "wp-haken", WP_ZEICHEN[a.zustand] || WP_ZEICHEN.offen);
@@ -8696,7 +8710,7 @@ function wpZeile(montag, a, elternId, ort) {
   if (id) h.onclick = () => wpAendern(montag, id, (f) => { f.aufgabe.zustand = wpUmschalten(f.aufgabe.zustand); });
   else h.disabled = true;
   const t = el("button", "wp-text", a.text || "(ohne Text)");
-  const sheetId = elternId || id;
+  const sheetId = istUnter ? elternId : id;
   if (sheetId) t.onclick = () => sheetWpAufgabe(montag, ort, sheetId);
   z.append(h, t);
   return z;
@@ -8710,7 +8724,7 @@ function wpBlock(titel, montag, liste, ort, extra) {
   k.append(kopf);
   for (const a of liste) {
     k.append(wpZeile(montag, a, null, ort));
-    for (const u of a.unter) k.append(wpZeile(montag, u, a.id, ort));
+    for (const u of a.unter) k.append(wpZeile(montag, u, a.id, ort, true));
   }
   const max = WP_MAX[ort.art];
   const chips = el("div", "chips");
@@ -8813,8 +8827,10 @@ function wpZustandWahl(start) {
 
 function sheetWpAufgabe(montag, ort, id) {
   const wp = wpDaten(datenstand);
-  const f = id ? wpFinde(wp, montag, id) : null;
+  let f = id ? wpFinde(wp, montag, id) : null;
   if (id && !f) { banner("Nicht mehr im Wochenplan — Ansicht neu geladen."); render(); return; }
+  if (f && f.eltern) { id = f.eltern.id; f = wpFinde(wp, montag, id); }   // Unterpunkt -> seine Aufgabe
+  if (id && !f) { render(); return; }
   const a = f ? f.aufgabe : { text: "", zustand: "offen", unter: [] };
   const wrap = el("div");
   const text = el("textarea", "suche");
@@ -8823,7 +8839,7 @@ function sheetWpAufgabe(montag, ort, id) {
   text.placeholder = "z. B. Pitches verfassen";
   const zustand = wpZustandWahl(a.zustand);
   // Unterpunkte: Zeilen mit Text, Zustand (antippen schaltet weiter) und ✕.
-  const unter = a.unter.map((u) => ({ id: u.id, text: u.text, zustand: u.zustand }));
+  const unter = (a.unter || []).map((u) => ({ id: u.id, text: u.text, zustand: u.zustand }));
   const ul = el("div");
   const folge = { offen: "erledigt", erledigt: "verworfen", verworfen: "offen" };
   const zeichneUnter = () => {
@@ -8986,21 +9002,23 @@ function sheetWpAnlegen(montag) {
   // Was die Vorlage ohnehin wieder bringt, und Doppelte, gar nicht erst
   // anbieten - wpNeueWoche liesse es sonst still fallen (Handytest-Vorlauf).
   const offene = wpUebernehmbar(wp.vorlage, wpOffene(wp.wochen[vorMontag]));
-  const gewaehlt = new Set(offene.map((a) => a.id));
+  // Auswahl ueber die POSITION, nicht die ID: Altdaten ohne ID haetten
+  // sonst alle denselben Schluessel (Code-Pruefung 18.11.).
+  const gewaehlt = new Set(offene.map((_, i) => i));
   const wrap = el("div");
   wrap.append(el("div", "stand", wpKopf(montag) + " — aus der Vorlage."));
   if (offene.length) {
     wrap.append(el("div", "abschnitt", "Liegen geblieben von letzter Woche"));
-    for (const a of offene) {
+    offene.forEach((a, i) => {
       const z = el("label", "wp-zeile");
       const h = el("input");
       h.type = "checkbox";
       h.checked = true;
-      h.onchange = () => { if (h.checked) gewaehlt.add(a.id); else gewaehlt.delete(a.id); };
+      h.onchange = () => { if (h.checked) gewaehlt.add(i); else gewaehlt.delete(i); };
       z.append(h, el("span", "", " " + a.text +
         (a.unter.length ? " (" + a.unter.map((u) => u.text).join(", ") + ")" : "")));
       wrap.append(z);
-    }
+    });
   } else {
     wrap.append(el("div", "stand", wp.wochen[vorMontag]
       ? "Aus der Vorwoche ist nichts offen." : "Die Vorwoche ist nicht angelegt."));
@@ -9011,8 +9029,10 @@ function sheetWpAnlegen(montag) {
     (roh) => !(roh && roh.wochen && typeof roh.wochen === "object" && roh.wochen[montag]),
     (x) => {
       // frisch aus dem lebenden Stand, nur die angehakten
+      // frisch aus dem lebenden Stand; das Sheet sperrt den Standtausch,
+      // die Liste ist also dieselbe wie beim Oeffnen
       const mit = wpUebernehmbar(x.vorlage, wpOffene(x.wochen[vorMontag]))
-        .filter((a) => gewaehlt.has(a.id));
+        .filter((_, i) => gewaehlt.has(i));
       x.wochen[montag] = Object.assign({ angelegt: stempelJetzt() }, wpNeueWoche(x.vorlage, mit));
     }, "Diese Woche ist schon angelegt — nichts geändert.");
   okZ.append(ok);
@@ -9117,6 +9137,10 @@ function kachelnZiehbar(liste) {
       e.stopPropagation();
       e.preventDefault();
     }, true);
+    // Notbremse (Code-Pruefung 18.11.): kommt im Ziehmodus weder pointerup
+    // noch pointercancel (App in den Hintergrund, Systemgeste), darf die
+    // Sperre nicht die ganze App lahmlegen.
+    document.addEventListener("visibilitychange", () => { kachelKlickSperre = false; });
   }
   let g = null;   // laufende Geste: { karte, x, y, timer, zieht, vorher }
   const sperreLoesen = () => { setTimeout(() => { kachelKlickSperre = false; }, 400); };
@@ -9170,6 +9194,8 @@ function kachelnZiehbar(liste) {
       if (!g || !liste.isConnected || !g.karte.isConnected) { ende(false); return; }
       g.zieht = true;
       kachelKlickSperre = true;
+      const diese = g;
+      setTimeout(() => { if (g === diese) ende(false); else if (!g) kachelKlickSperre = false; }, 15000);
       g.karte.classList.add("zieht");
       if (navigator.vibrate) navigator.vibrate(20);
     }, LANG);
