@@ -912,7 +912,7 @@ body.ohne-begruendung .stand.begruendung { display: none; }
    Andreas Word-Vorlage (☒ bzw. ~~Text~~). */
 .wp-kopf { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .wp-kw { flex: 1; text-align: center; font-weight: 600; font-size: 14px; }
-.karte.wp-karte { min-height: 0; gap: 2px; }
+.karte.wp-karte { min-height: 0; gap: 2px; scroll-margin-top: 76px; } /* Sprung aus dem Kalender: nicht unter die klebende Kopfzeile */
 .wp-titel { display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 4px; }
 .wp-zeile { display: flex; align-items: flex-start; gap: 2px; }

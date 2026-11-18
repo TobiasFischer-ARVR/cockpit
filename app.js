@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v229"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v230"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -8668,6 +8668,7 @@ function kachelFolge(gespeichert, alle) {
 let wpAnsicht = null;        // gewaehlter Montag, null = diese Woche (nicht im Hash)
 let wpModus = "plan";        // "plan" | "woche" | "monat" - App startet immer im Plan
 let wpMonat = null;          // gewaehlter Monat "YYYY-MM", null = dieser Monat
+let wpSprung = null;         // Tag, den der Plan nach Antippen im Kalender zeigt (einmalig)
 let wpLaufWartet = null;     // wartender Speicherlauf (fasst schnelle Haken zusammen)
 
 function wpHeuteMontag() {
@@ -8842,6 +8843,8 @@ function renderWochenplan() {
     return;
   }
   if (wpModus === "woche") { wpWocheZeichnen(c, montag); return; }
+  const sprung = wpSprung;
+  wpSprung = null;
   const wp = wpDaten(datenstand);
   const w = wp.wochen[montag];
   const vorlageZ = el("div", "chips");
@@ -8868,8 +8871,10 @@ function renderWochenplan() {
   for (let i = 0; i < 7; i++) {
     const d = wpTag(montag, i);
     const frei = w.tage[i].frei ? el("span", "pill wp-frei", "FREI") : null;
-    oben.append(wpBlock(WP_TAGE[i] + " · " + d.slice(8, 10) + "." + d.slice(5, 7) + ".",
-      montag, w.tage[i].aufgaben, { art: "tag", tag: i }, frei));
+    const karte = wpBlock(WP_TAGE[i] + " · " + d.slice(8, 10) + "." + d.slice(5, 7) + ".",
+      montag, w.tage[i].aufgaben, { art: "tag", tag: i }, frei);
+    karte.dataset.datum = d;
+    oben.append(karte);
   }
   const n = el("div", "karte wp-karte tippbar");
   n.append(el("div", "titel", "Notizen"),
@@ -8877,6 +8882,9 @@ function renderWochenplan() {
   n.onclick = () => sheetWpNotizen(montag);
   oben.append(n);
   c.append(oben, vorlageZ);
+  // Aus dem Kalender kommend: direkt zum angetippten Tag (Tobias 18.11.)
+  const ziel = sprung && oben.querySelector('[data-datum="' + sprung + '"]');
+  if (ziel) requestAnimationFrame(() => ziel.scrollIntoView({ block: "start" }));
 }
 
 // Kalender (v229, Punkt 79). Alles hier liest nur (wpDaten) - geschrieben
@@ -8933,6 +8941,7 @@ function wpKalTag(d, text, zahl, farben, frei, fremd) {
     const mo = wpMontag(d, 0);
     wpAnsicht = mo === wpHeuteMontag() ? null : mo;
     wpModus = "plan";
+    wpSprung = d;
     renderWochenplan();
   };
   return b;
