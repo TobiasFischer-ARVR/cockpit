@@ -8493,6 +8493,23 @@ function wpOffene(woche) {
   return aus;
 }
 
+// Offene Punkte, die als "Liegen geblieben" ANGEBOTEN werden: ohne Texte,
+// die in der Vorlage stehen (kommen ohnehin wieder), ohne Doppelte.
+// Dieselbe Regel wie in wpNeueWoche, damit das Sheet nur zeigt, was auch ankommt.
+function wpUebernehmbar(vorlage, offene) {
+  const norm = (t) => String(t || "").trim().toLowerCase();
+  const schon = new Set();
+  for (const t of (vorlage && Array.isArray(vorlage.tage) ? vorlage.tage : [])) {
+    for (const x of (t && Array.isArray(t.aufgaben) ? t.aufgaben : [])) schon.add(norm(x));
+  }
+  return (Array.isArray(offene) ? offene : []).filter((a) => {
+    const n = norm(a && a.text);
+    if (!n || schon.has(n)) return false;
+    schon.add(n);
+    return true;
+  });
+}
+
 // Neue Woche aus der Vorlage. Alles offen, alles mit NEUER ID; die
 // uebernommenen Punkte der Vorwoche landen in `liegen`. Was als Text schon
 // in der Vorlage steht ("Wochenplanung" vom letzten Sonntag), kommt nicht
@@ -8966,7 +8983,9 @@ function sheetWpAnlegen(montag) {
   const wp = wpDaten(datenstand);
   if (wp.wochen[montag]) { render(); return; }
   const vorMontag = wpMontag(montag, -1);
-  const offene = wpOffene(wp.wochen[vorMontag]);
+  // Was die Vorlage ohnehin wieder bringt, und Doppelte, gar nicht erst
+  // anbieten - wpNeueWoche liesse es sonst still fallen (Handytest-Vorlauf).
+  const offene = wpUebernehmbar(wp.vorlage, wpOffene(wp.wochen[vorMontag]));
   const gewaehlt = new Set(offene.map((a) => a.id));
   const wrap = el("div");
   wrap.append(el("div", "stand", wpKopf(montag) + " — aus der Vorlage."));
@@ -8992,7 +9011,8 @@ function sheetWpAnlegen(montag) {
     (roh) => !(roh && roh.wochen && typeof roh.wochen === "object" && roh.wochen[montag]),
     (x) => {
       // frisch aus dem lebenden Stand, nur die angehakten
-      const mit = wpOffene(x.wochen[vorMontag]).filter((a) => gewaehlt.has(a.id));
+      const mit = wpUebernehmbar(x.vorlage, wpOffene(x.wochen[vorMontag]))
+        .filter((a) => gewaehlt.has(a.id));
       x.wochen[montag] = Object.assign({ angelegt: stempelJetzt() }, wpNeueWoche(x.vorlage, mit));
     }, "Diese Woche ist schon angelegt — nichts geändert.");
   okZ.append(ok);
