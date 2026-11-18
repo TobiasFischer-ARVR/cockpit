@@ -911,8 +911,14 @@ body.ohne-begruendung .stand.begruendung { display: none; }
    Text (Sheet). Erledigt = leise, verworfen = durchgestrichen - wie in
    Andreas Word-Vorlage (☒ bzw. ~~Text~~). */
 .wp-kopf { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+/* Umschalter Plan/Woche/Monat bleibt beim Scrollen stehen (v231, Tobias 18.11.,
+   anders als die Reiter im Detail-Sheet). top setzt wpUmschalter aus der
+   echten Kopfhoehe; die Schatten decken links/rechts den Seitenrand ab. */
+.chips.reiter.wp-modus { position: sticky; top: 64px; z-index: 4;
+  background: var(--bg); padding: 8px 0; margin-bottom: 4px;
+  box-shadow: -16px 0 0 var(--bg), 16px 0 0 var(--bg); }
 .wp-kw { flex: 1; text-align: center; font-weight: 600; font-size: 14px; }
-.karte.wp-karte { min-height: 0; gap: 2px; scroll-margin-top: 76px; } /* Sprung aus dem Kalender: nicht unter die klebende Kopfzeile */
+.karte.wp-karte { min-height: 0; gap: 2px; scroll-margin-top: 130px; } /* Sprung aus dem Kalender: nicht unter die klebende Kopfzeile */
 .wp-titel { display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 4px; }
 .wp-zeile { display: flex; align-items: flex-start; gap: 2px; }

@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v230"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v231"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -8884,13 +8884,22 @@ function renderWochenplan() {
   c.append(oben, vorlageZ);
   // Aus dem Kalender kommend: direkt zum angetippten Tag (Tobias 18.11.)
   const ziel = sprung && oben.querySelector('[data-datum="' + sprung + '"]');
-  if (ziel) requestAnimationFrame(() => ziel.scrollIntoView({ block: "start" }));
+  if (ziel) requestAnimationFrame(() => {
+    // Abstand = Kopfzeile + klebende Leiste, sonst liegt der Tag darunter
+    const kopf = document.querySelector("header"), leiste = c.querySelector(".wp-modus");
+    const ab = (kopf ? kopf.offsetHeight : 0) + (leiste ? leiste.offsetHeight : 0);
+    if (ab) ziel.style.scrollMarginTop = ab + 8 + "px";
+    ziel.scrollIntoView({ block: "start" });
+  });
 }
 
 // Kalender (v229, Punkt 79). Alles hier liest nur (wpDaten) - geschrieben
 // wird allein im Farben-Sheet. Gezaehlt: offene Aufgaben der Tage Mo-So.
 function wpUmschalter() {
   const z = el("div", "chips reiter wp-modus");
+  // klebt unter der Kopfzeile (v231); deren echte Hoehe inkl. Notch
+  const kopf = document.querySelector("header");
+  if (kopf && kopf.offsetHeight) z.style.top = kopf.offsetHeight + "px";
   for (const [m, t] of [["plan", "Plan"], ["woche", "Woche"], ["monat", "Monat"]]) {
     const b = el("button", "chip" + (wpModus === m ? " aktiv" : ""), t);
     b.onclick = () => {
