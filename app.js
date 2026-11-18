@@ -8496,7 +8496,8 @@ function wpFarben(wp) {
   const f = wp && wp.farben && typeof wp.farben === "object" ? wp.farben : {};
   const r = {};
   for (const [k] of WP_ARTEN) {
-    r[k] = /^#[0-9a-f]{6}$/i.test(f[k]) ? f[k].toLowerCase() : WP_FARBEN_STD[k];
+    r[k] = typeof f[k] === "string" && /^#[0-9a-f]{6}$/i.test(f[k]) ? f[k].toLowerCase()
+      : WP_FARBEN_STD[k];
   }
   return r;
 }
@@ -8890,6 +8891,16 @@ function wpUmschalter() {
         const mo = (wpAnsicht || wpHeuteMontag()).slice(0, 7);
         wpMonat = mo === lokalIso().slice(0, 7) ? null : mo;
       }
+      // Monat -> Woche/Plan: eine Woche des gezeigten Monats (Pruefung 18.11.:
+      // sonst kam nach dem Monatsblaettern die alte Woche zurueck)
+      if (m !== "monat" && wpModus === "monat") {
+        const ym = wpMonat || lokalIso().slice(0, 7);
+        const mo = wpAnsicht || wpHeuteMontag();
+        if (mo.slice(0, 7) !== ym && wpTag(mo, 6).slice(0, 7) !== ym) {
+          const neu = ym === lokalIso().slice(0, 7) ? wpHeuteMontag() : wpMontag(ym + "-07", 0);
+          wpAnsicht = neu === wpHeuteMontag() ? null : neu;
+        }
+      }
       wpModus = m;
       renderWochenplan();
     };
@@ -8916,7 +8927,8 @@ function wpKalTag(d, text, zahl, farben, frei, fremd) {
   b.append(p);
   if (n) b.append(el("span", "wp-kal-zahl", String(n)));
   b.setAttribute("aria-label", d.slice(8, 10) + "." + d.slice(5, 7) + ".: " +
-    (n ? n + " offen" : "nichts offen") + (frei ? ", frei" : ""));
+    (n ? n + " offen (" + WP_ARTEN.filter(([k]) => zahl[k]).map(([k, t]) => t + " " + zahl[k])
+      .join(", ") + ")" : "nichts offen") + (frei ? ", frei" : ""));
   b.onclick = () => {
     const mo = wpMontag(d, 0);
     wpAnsicht = mo === wpHeuteMontag() ? null : mo;

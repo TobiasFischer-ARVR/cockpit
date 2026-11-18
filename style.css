@@ -953,7 +953,8 @@ label.wp-zeile { align-items: center; min-height: 40px; font-size: 13px; }
   color: var(--text-leise); }
 .wp-kal-zahl { font-size: 11px; color: var(--text-leise); }
 .wp-punkte { display: flex; gap: 3px; min-height: 8px; }
-.wp-punkt { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.wp-punkt { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); }   /* Kontrast im hellen Design */
 .wp-legende { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 12px; margin-bottom: 8px; }
 .wp-legende .wp-punkt { margin-left: 6px; }
