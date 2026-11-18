@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v228"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v229"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -8305,6 +8305,12 @@ const WP_VORLAGE_STD = { tage: [
 const WP_TAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
                  "Samstag", "Sonntag"];
 const WP_MAX = { ziele: 2, prio: 3 };
+// Kalender (v229, Punkt 79): Farbe je Art, Art aus dem Textanfang.
+// Bewusst keine Ampelfarben (rot/gelb/gruen tragen in der App Bedeutung).
+const WP_ARTEN = [["ugc", "UGC"], ["ark", "ARK"], ["sonst", "Sonstiges"]];
+const WP_FARBEN_STD = { ugc: "#2bb3a3", ark: "#b48cf2", sonst: "#8fa3bf" };
+const WP_MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+                   "August", "September", "Oktober", "November", "Dezember"];
 
 // Montag der Woche, in der `iso` liegt, plus n Wochen. Gelesen wird nur das
 // Kalenderdatum (Ortszeit kommt vom Aufrufer, lokalIso()); gerechnet wird mit
@@ -8478,6 +8484,62 @@ function wpOffenZahl(woche) {
   return n;
 }
 
+// Art einer Aufgabe fuer die Kalenderfarbe: "UGC Call", "UGC: ...", "ark - ..."
+// -> ugc/ark. "Arkade" ist kein ARK (danach darf kein Buchstabe folgen).
+function wpArt(text) {
+  const m = /^\s*(UGC|ARK)(?![A-Za-zÄÖÜäöüß])/i.exec(String(text || ""));
+  return m ? m[1].toLowerCase() : "sonst";
+}
+
+// Farben aus wochenplan.farben; fehlend oder kaputt -> Standard je Art.
+function wpFarben(wp) {
+  const f = wp && wp.farben && typeof wp.farben === "object" ? wp.farben : {};
+  const r = {};
+  for (const [k] of WP_ARTEN) {
+    r[k] = /^#[0-9a-f]{6}$/i.test(f[k]) ? f[k].toLowerCase() : WP_FARBEN_STD[k];
+  }
+  return r;
+}
+
+// Offene Aufgaben je Tag zwischen von und bis (ISO, beide inklusive), nach Art
+// gezaehlt: { "2026-11-18": { ugc: 2, ark: 0, sonst: 1 } }, nur Tage mit
+// Offenem. Nur Mo-So, oberste Ebene - Ziele, Top 3 und Liegen geblieben
+// haben keinen Tag. Nicht angelegte Wochen bleiben leer (Tobias 18.11.).
+function wpOffenJeTag(wp, von, bis) {
+  const r = {};
+  const wochen = wp && wp.wochen && typeof wp.wochen === "object" ? wp.wochen : {};
+  for (let mo = wpMontag(von, 0); mo && mo <= bis; mo = wpMontag(mo, 1)) {
+    const w = wochen[mo];
+    if (!w || !Array.isArray(w.tage)) continue;
+    for (let i = 0; i < 7; i++) {
+      const d = wpTag(mo, i);
+      const tag = w.tage[i];
+      if (d < von || d > bis || !tag || !Array.isArray(tag.aufgaben)) continue;
+      for (const a of tag.aufgaben) {
+        if (!a || (a.zustand && a.zustand !== "offen")) continue;
+        const z = r[d] || (r[d] = { ugc: 0, ark: 0, sonst: 0 });
+        z[wpArt(a.text)]++;
+      }
+    }
+  }
+  return r;
+}
+
+// "2026-11" plus n Monate -> "YYYY-MM".
+function wpMonatPlus(ym, n) {
+  return new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)) - 1 + n, 1))
+    .toISOString().slice(0, 7);
+}
+
+// Montage aller Wochen, die den Monat "YYYY-MM" beruehren (4-6 Stueck).
+function wpMonatsWochen(ym) {
+  const letzter = new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0))
+    .toISOString().slice(0, 10);
+  const r = [];
+  for (let mo = wpMontag(ym + "-01", 0); mo && mo <= letzter; mo = wpMontag(mo, 1)) r.push(mo);
+  return r;
+}
+
 // Antippen des Hakens: erledigt -> offen, alles andere -> erledigt.
 function wpUmschalten(z) {
   return z === "erledigt" ? "offen" : "erledigt";
@@ -8603,6 +8665,8 @@ function kachelFolge(gespeichert, alle) {
 // Ziel synchron im AKTUELLEN Datenstand, direkt vor der Aenderung.
 
 let wpAnsicht = null;        // gewaehlter Montag, null = diese Woche (nicht im Hash)
+let wpModus = "plan";        // "plan" | "woche" | "monat" - App startet immer im Plan
+let wpMonat = null;          // gewaehlter Monat "YYYY-MM", null = dieser Monat
 let wpLaufWartet = null;     // wartender Speicherlauf (fasst schnelle Haken zusammen)
 
 function wpHeuteMontag() {
@@ -8750,6 +8814,8 @@ function renderWochenplan() {
   if (wolke) c.append(wolke);
   const wahl = standWahlWarnung();
   if (wahl) c.append(wahl);
+  c.append(wpUmschalter());
+  if (wpModus === "monat") { wpMonatZeichnen(c); return; }
   const heute = wpHeuteMontag();
   const montag = wpAnsicht || heute;
   // Kopf: ◀ KW 47 · 16.–22.11.2026 ▶ - Blaettern aendert nur wpAnsicht.
@@ -8774,6 +8840,7 @@ function renderWochenplan() {
       "Braucht den Datenstand — App einmal mit Internet öffnen."));
     return;
   }
+  if (wpModus === "woche") { wpWocheZeichnen(c, montag); return; }
   const wp = wpDaten(datenstand);
   const w = wp.wochen[montag];
   const vorlageZ = el("div", "chips");
@@ -8809,6 +8876,128 @@ function renderWochenplan() {
   n.onclick = () => sheetWpNotizen(montag);
   oben.append(n);
   c.append(oben, vorlageZ);
+}
+
+// Kalender (v229, Punkt 79). Alles hier liest nur (wpDaten) - geschrieben
+// wird allein im Farben-Sheet. Gezaehlt: offene Aufgaben der Tage Mo-So.
+function wpUmschalter() {
+  const z = el("div", "chips reiter wp-modus");
+  for (const [m, t] of [["plan", "Plan"], ["woche", "Woche"], ["monat", "Monat"]]) {
+    const b = el("button", "chip" + (wpModus === m ? " aktiv" : ""), t);
+    b.onclick = () => {
+      // Monat startet bei der gerade gezeigten Woche
+      if (m === "monat" && wpModus !== "monat") {
+        const mo = (wpAnsicht || wpHeuteMontag()).slice(0, 7);
+        wpMonat = mo === lokalIso().slice(0, 7) ? null : mo;
+      }
+      wpModus = m;
+      renderWochenplan();
+    };
+    z.append(b);
+  }
+  return z;
+}
+
+// Ein Kalendertag: Datum, FREI/Zahl offener Aufgaben, ein Farbpunkt je Art.
+// Antippen oeffnet den Plan seiner Woche.
+function wpKalTag(d, text, zahl, farben, frei, fremd) {
+  const b = el("button", "wp-kal-tag" + (d === lokalIso().slice(0, 10) ? " heute" : "") +
+    (fremd ? " fremd" : ""));
+  b.append(el("span", "wp-kal-datum", text));
+  const n = zahl ? zahl.ugc + zahl.ark + zahl.sonst : 0;
+  if (frei) b.append(el("span", "wp-kal-frei", "FREI"));
+  const p = el("span", "wp-punkte");
+  for (const [k] of WP_ARTEN) {
+    if (!zahl || !zahl[k]) continue;
+    const pt = el("span", "wp-punkt");
+    pt.style.background = farben[k];
+    p.append(pt);
+  }
+  b.append(p);
+  if (n) b.append(el("span", "wp-kal-zahl", String(n)));
+  b.setAttribute("aria-label", d.slice(8, 10) + "." + d.slice(5, 7) + ".: " +
+    (n ? n + " offen" : "nichts offen") + (frei ? ", frei" : ""));
+  b.onclick = () => {
+    const mo = wpMontag(d, 0);
+    wpAnsicht = mo === wpHeuteMontag() ? null : mo;
+    wpModus = "plan";
+    renderWochenplan();
+  };
+  return b;
+}
+
+function wpLegende(c, farben) {
+  const l = el("div", "wp-legende");
+  for (const [k, t] of WP_ARTEN) {
+    const pt = el("span", "wp-punkt");
+    pt.style.background = farben[k];
+    l.append(pt, el("span", "", t));
+  }
+  const z = el("div", "chips");
+  const f = el("button", "chip", "🎨 Farben");
+  f.onclick = sheetWpFarben;
+  z.append(f);
+  c.append(l, z);
+}
+
+function wpWocheZeichnen(c, montag) {
+  const wp = wpDaten(datenstand);
+  const farben = wpFarben(wp);
+  const offen = wpOffenJeTag(wp, montag, wpTag(montag, 6));
+  const w = wp.wochen[montag];
+  const g = el("div", "wp-kal wp-kal-woche");
+  for (let i = 0; i < 7; i++) {
+    const d = wpTag(montag, i);
+    g.append(wpKalTag(d, WP_TAGE[i].slice(0, 2) + " " + d.slice(8, 10) + ".",
+      offen[d], farben, w && w.tage[i].frei, false));
+  }
+  c.append(g);
+  if (!w) c.append(el("div", "leerzustand", "Diese Woche ist noch nicht angelegt."));
+  wpLegende(c, farben);
+}
+
+function wpMonatZeichnen(c) {
+  const ym = wpMonat || lokalIso().slice(0, 7);
+  const kopf = el("div", "wp-kopf");
+  const zur = el("button", "chip", "◀");
+  zur.setAttribute("aria-label", "Monat davor");
+  zur.onclick = () => { wpMonat = wpMonatPlus(ym, -1); renderWochenplan(); };
+  const vor = el("button", "chip", "▶");
+  vor.setAttribute("aria-label", "Monat danach");
+  vor.onclick = () => { wpMonat = wpMonatPlus(ym, 1); renderWochenplan(); };
+  kopf.append(zur, el("div", "wp-kw", WP_MONATE[Number(ym.slice(5, 7)) - 1] + " " +
+    ym.slice(0, 4)), vor);
+  c.append(kopf);
+  if (ym !== lokalIso().slice(0, 7)) {
+    const hz = el("div", "chips");
+    const zu = el("button", "chip", "↺ Dieser Monat");
+    zu.onclick = () => { wpMonat = null; renderWochenplan(); };
+    hz.append(zu);
+    c.append(hz);
+  }
+  if (!datenstand) {
+    c.append(el("div", "leerzustand",
+      "Braucht den Datenstand — App einmal mit Internet öffnen."));
+    return;
+  }
+  const wp = wpDaten(datenstand);
+  const farben = wpFarben(wp);
+  const wochen = wpMonatsWochen(ym);
+  const offen = wpOffenJeTag(wp, wochen[0], wpTag(wochen[wochen.length - 1], 6));
+  const g = el("div", "wp-kal wp-kal-monat");
+  g.append(el("div", "wp-kal-kw", "KW"));
+  for (const t of WP_TAGE) g.append(el("div", "wp-kal-wt", t.slice(0, 2)));
+  for (const mo of wochen) {
+    const w = wp.wochen[mo];
+    g.append(el("div", "wp-kal-kw", String(wpKw(mo).kw)));
+    for (let i = 0; i < 7; i++) {
+      const d = wpTag(mo, i);
+      g.append(wpKalTag(d, String(Number(d.slice(8, 10))), offen[d], farben,
+        w && w.tage[i].frei, d.slice(0, 7) !== ym));
+    }
+  }
+  c.append(g);
+  wpLegende(c, farben);
 }
 
 // Zustand-Auswahl als drei Chips; liefert { knoten, wert() }.
@@ -8993,6 +9182,40 @@ function sheetWpVorlage() {
   sheetOeffnen("Vorlage", erklaerungenAnsEnde(wrap));
 }
 
+// Farben der Kalenderpunkte (v229). Liegen in wochenplan.farben, gelten
+// damit auf allen Geraeten und laufen durch Backup + Abgleich mit.
+function sheetWpFarben() {
+  if (!datenstand) { banner("Kein Datenstand geladen — App einmal mit Internet öffnen."); return; }
+  const f = wpFarben(wpDaten(datenstand));
+  const wrap = el("div");
+  const felder = {};
+  for (const [k, t] of WP_ARTEN) {
+    const zeile = el("label", "wp-zeile");
+    const i = el("input", "wp-farbwahl");
+    i.type = "color";
+    i.value = f[k];
+    felder[k] = i;
+    zeile.append(i, el("span", "", t));
+    wrap.append(zeile);
+  }
+  const stdZ = el("div", "chips");
+  const std = el("button", "chip", "↺ Standard");
+  std.onclick = () => { for (const [k] of WP_ARTEN) felder[k].value = WP_FARBEN_STD[k]; };
+  stdZ.append(std);
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Speichern");
+  ok.onclick = () => {
+    const neu = {};
+    for (const [k] of WP_ARTEN) neu[k] = String(felder[k].value).toLowerCase();
+    wpSheetSpeichern(() => true, (x) => { x.farben = wpFarben({ farben: neu }); });
+  };
+  okZ.append(ok);
+  wrap.append(stdZ, okZ, erklaerung("Farben", "Die Farbe richtet sich nach dem Anfang " +
+    "der Aufgabe: „UGC …“, „ARK …“, alles andere ist Sonstiges. Markiert werden nur " +
+    "offene Aufgaben an den Tagen Mo–So."));
+  sheetOeffnen("Farben", erklaerungenAnsEnde(wrap));
+}
+
 // Woche anlegen: Vorlage + offene Punkte der Vorwoche (vorangehakt).
 function sheetWpAnlegen(montag) {
   if (!datenstand) { banner("Kein Datenstand geladen — App einmal mit Internet öffnen."); return; }
@@ -9100,7 +9323,7 @@ function renderHauptmenu() {
   wpk.append(el("div", "titel", "Wochenplan"),
     el("div", "kontext", "KW " + kw.kw + " · " + (!datenstand ? "braucht den Datenstand"
       : woche ? wpOffenZahl(woche) + " offen" : "noch nicht angelegt")));
-  wpk.onclick = () => { wpAnsicht = null; location.hash = "#/wochenplan"; };
+  wpk.onclick = () => { wpAnsicht = null; wpModus = "plan"; location.hash = "#/wochenplan"; };
   wpk.dataset.kachel = "wochenplan";
 
   // Reihenfolge: pro Geraet (einst.kachelFolge), langes Druecken zieht.

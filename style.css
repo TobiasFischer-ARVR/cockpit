@@ -932,6 +932,34 @@ body.ohne-begruendung .stand.begruendung { display: none; }
 label.wp-zeile { align-items: center; min-height: 40px; font-size: 13px; }
 .wp-vtag { min-width: 96px; font-weight: 600; }
 
+/* Kalender (v229): Woche = 7 Spalten, Monat = KW-Spalte + 7. Punkte tragen
+   die Farbe der Art (Inline aus wochenplan.farben), keine Ampelfarben. */
+.wp-kal { display: grid; gap: 4px; margin-bottom: 12px; }
+.wp-kal-woche { grid-template-columns: repeat(7, 1fr); }
+.wp-kal-monat { grid-template-columns: 2.2em repeat(7, 1fr); }
+.wp-kal-kw, .wp-kal-wt { font-size: 11px; color: var(--text-leise);
+  text-align: center; align-self: center; }
+.wp-kal-tag {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  min-height: 56px; padding: 6px 2px; cursor: pointer; font: inherit;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--rand); border-radius: var(--radius-s);
+}
+.wp-kal-woche .wp-kal-tag { min-height: 84px; }
+.wp-kal-tag.heute { border: 2px solid var(--text); }
+.wp-kal-tag.fremd { opacity: .4; }
+.wp-kal-datum { font-size: 13px; font-weight: 600; }
+.wp-kal-frei { font-size: 9px; letter-spacing: .5px; font-weight: 600;
+  color: var(--text-leise); }
+.wp-kal-zahl { font-size: 11px; color: var(--text-leise); }
+.wp-punkte { display: flex; gap: 3px; min-height: 8px; }
+.wp-punkt { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.wp-legende { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; margin-bottom: 8px; }
+.wp-legende .wp-punkt { margin-left: 6px; }
+.wp-farbwahl { width: 48px; height: 36px; padding: 0; border: 0;
+  background: none; margin-right: 10px; }
+
 /* Kacheln ziehen (v228): langes Druecken hebt an. Kein Markieren und kein
    Kontextmenue auf den Kacheln, sonst greift Android vor uns zu. */
 .menue-karte { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
