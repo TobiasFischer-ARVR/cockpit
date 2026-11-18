@@ -8269,6 +8269,284 @@ function renderScanner() {
   if (ignoriert.length) c.append(scanGruppe("Ignoriert", ignoriert, true));
 }
 
+// ------------------------------------------------------------- Wochenplan
+// Andreas Wochenplanung (v228, Offen-Punkt 76, Bauplan 17.11.). Vorbild ist
+// ihre Word-Vorlage: Wochenziel, Top 3, Mo-So mit Haken, Liegen geblieben,
+// Notizen. Eigener Top-Level-Teil `wochenplan` im Datenstand - damit gelten
+// Speicherkette, Backups, Rueckspielen und Export ohne Zusatzweg.
+// datenstand.py fuehrt "wochenplan" in APP_TOP (wie "scanner").
+//
+// Wochen-Schluessel ist das MONTAGS-Datum ("2026-11-16"): sortiert als
+// Text, Blaettern = +-7 Tage, KW 53 ist kein Sonderfall. Die KW gibt es
+// nur fuer die Anzeige.
+//
+// Alles in diesem Block bis zur Oberflaeche ist DOM-frei und wird per
+// teil() geprueft (tests/test_wochenplan.js).
+// ponytail: Wochen werden nie geloescht (~1-2 KB je Woche). Archivieren
+// erst, wenn der Datenstand spuerbar waechst.
+const WP_VORLAGE_STD = { tage: [
+  { frei: false, aufgaben: [] },
+  { frei: false, aufgaben: [] },
+  { frei: false, aufgaben: ["UGC Call (Scale)", "UGC: Follow Ups versenden"] },
+  { frei: false, aufgaben: ["UGC Call (Premium)"] },
+  { frei: false, aufgaben: [] },
+  { frei: true, aufgaben: [] },
+  { frei: false, aufgaben: ["UGC Call (Premium)", "UGC: Follow Ups versenden",
+    "ARK: Kennzahlen erfassen",
+    "ARK: Social Media Beiträge auf Instagram für die nächste Woche planen",
+    "Wochenplanung"] },
+] };
+const WP_TAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
+                 "Samstag", "Sonntag"];
+const WP_MAX = { ziele: 2, prio: 3 };
+
+// Montag der Woche, in der `iso` liegt, plus n Wochen. Gelesen wird nur das
+// Kalenderdatum (Ortszeit kommt vom Aufrufer, lokalIso()); gerechnet wird mit
+// UTC-Tagen - so gibt es an den Umstellungstagen keine 23- oder 25-Stunden-Tage.
+// Kaputtes Datum -> "".
+function wpMontag(iso, plusWochen) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  if (!m) return "";
+  const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (isNaN(t)) return "";
+  const wt = (new Date(t).getUTCDay() + 6) % 7;          // 0 = Montag
+  return new Date(t + ((Number(plusWochen) || 0) * 7 - wt) * 86400000)
+    .toISOString().slice(0, 10);
+}
+
+// Tag `n` der Woche (0 = Montag) als "YYYY-MM-DD".
+function wpTag(montag, n) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(montag || ""));
+  if (!m) return "";
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) +
+    n * 86400000).toISOString().slice(0, 10);
+}
+
+// Kalenderwoche nach ISO 8601: die Woche gehoert zu dem Jahr, in dem ihr
+// Donnerstag liegt. 28.12.2026 -> KW 53/2026, 04.01.2027 -> KW 1/2027.
+function wpKw(montag) {
+  const mo = wpMontag(montag, 0);
+  if (!mo) return { kw: 0, jahr: 0 };
+  const d = wpTag(mo, 3);
+  const jahr = Number(d.slice(0, 4));
+  const tagImJahr = (Date.UTC(jahr, Number(d.slice(5, 7)) - 1, Number(d.slice(8, 10))) -
+    Date.UTC(jahr, 0, 1)) / 86400000;                      // 0-basiert
+  return { kw: Math.floor(tagImJahr / 7) + 1, jahr: jahr };
+}
+
+// "KW 47 · 16.–22.11.2026", ueber den Monat "KW 44 · 26.10.–01.11.2026",
+// ueber das Jahr "KW 53 · 28.12.2026–03.01.2027".
+function wpKopf(montag) {
+  const mo = wpMontag(montag, 0);
+  if (!mo) return "";
+  const so = wpTag(mo, 6);
+  const tt = (d) => d.slice(8, 10) + ".", mm = (d) => d.slice(5, 7) + ".";
+  const von = mo.slice(0, 4) !== so.slice(0, 4) ? tt(mo) + mm(mo) + mo.slice(0, 4)
+    : mo.slice(5, 7) !== so.slice(5, 7) ? tt(mo) + mm(mo) : tt(mo);
+  return "KW " + wpKw(mo).kw + " · " + von + "–" + tt(so) + mm(so) + so.slice(0, 4);
+}
+
+// Feste ID je Aufgabe/Unterpunkt (Muster Geraetename: Zeit + Zufall).
+// Klicks suchen ihr Ziel ueber die ID im AKTUELLEN Datenstand - nie ueber
+// ein festgehaltenes Objekt (Fehler v95/v108: verwaister Haken nach Tausch).
+function wpId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Eine Aufgabe auffuellen, IN PLACE. Ergaenzt nur Fehlendes, entfernt nie
+// etwas - auch keine Felder, die eine spaetere Fassung dazuschreibt.
+function wpAufgabeAuffuellen(a) {
+  if (!a || typeof a !== "object") return null;
+  if (typeof a.text !== "string") a.text = String(a.text || "");
+  if (a.zustand !== "erledigt" && a.zustand !== "verworfen") a.zustand = "offen";
+  if (!Array.isArray(a.unter)) a.unter = [];
+  a.unter = a.unter.filter((u) => u && typeof u === "object");
+  for (const u of a.unter) {
+    if (typeof u.text !== "string") u.text = String(u.text || "");
+    if (u.zustand !== "erledigt" && u.zustand !== "verworfen") u.zustand = "offen";
+  }
+  return a;
+}
+
+function wpWocheAuffuellen(w) {
+  for (const k of ["ziele", "prio", "liegen"]) {
+    if (!Array.isArray(w[k])) w[k] = [];
+    w[k] = w[k].filter((a) => wpAufgabeAuffuellen(a));
+  }
+  if (!Array.isArray(w.tage)) w.tage = [];
+  for (let i = 0; i < 7; i++) {
+    const t = w.tage[i] && typeof w.tage[i] === "object" ? w.tage[i] : {};
+    t.frei = Boolean(t.frei);
+    if (!Array.isArray(t.aufgaben)) t.aufgaben = [];
+    t.aufgaben = t.aufgaben.filter((a) => wpAufgabeAuffuellen(a));
+    w.tage[i] = t;
+  }
+  if (typeof w.notizen !== "string") w.notizen = String(w.notizen || "");
+  return w;
+}
+
+// Den ganzen Teil auffuellen, IN PLACE. Kaputte Vorlage -> Startvorlage,
+// kaputte Woche (kein Objekt) -> faellt weg.
+function wpAuffuellen(wp) {
+  if (!wp || typeof wp !== "object" || Array.isArray(wp)) wp = {};
+  if (!wp.format) wp.format = 1;
+  const v = wp.vorlage;
+  if (!v || !Array.isArray(v.tage) || v.tage.length !== 7) {
+    wp.vorlage = JSON.parse(JSON.stringify(WP_VORLAGE_STD));
+  } else {
+    for (let i = 0; i < 7; i++) {
+      const t = v.tage[i] && typeof v.tage[i] === "object" ? v.tage[i] : {};
+      t.frei = Boolean(t.frei);
+      t.aufgaben = (Array.isArray(t.aufgaben) ? t.aufgaben : [])
+        .map((x) => String(x || "").trim()).filter(Boolean);
+      v.tage[i] = t;
+    }
+  }
+  if (!wp.wochen || typeof wp.wochen !== "object" || Array.isArray(wp.wochen)) wp.wochen = {};
+  for (const k of Object.keys(wp.wochen)) {
+    const w = wp.wochen[k];
+    if (!w || typeof w !== "object" || Array.isArray(w)) delete wp.wochen[k];
+    else wpWocheAuffuellen(w);
+  }
+  return wp;
+}
+
+// LESEN ohne Anlegen und ohne Rueckschreiben: eine aufgefuellte KOPIE.
+// Fehlt das Feld, ist es null, [] oder kaputt, kommt eine leere Struktur
+// mit Startvorlage. Der Datenstand bleibt Byte fuer Byte, wie er war -
+// Anschauen und Blaettern duerfen keinen neuen Stempel erzeugen.
+function wpDaten(ds) {
+  let roh = null;
+  try { roh = JSON.parse(JSON.stringify((ds && ds.wochenplan) || null)); } catch (_) {}
+  return wpAuffuellen(roh);
+}
+
+// Wie viele Wochen hat ein Stand? Fuer Rueckfragen (Backup laden).
+function wpWochenZahl(ds) {
+  const w = ds && ds.wochenplan && ds.wochenplan.wochen;
+  return w && typeof w === "object" && !Array.isArray(w) ? Object.keys(w).length : 0;
+}
+
+// Aufgabe per ID suchen - in allen Abschnitten, Unterpunkte eingeschlossen.
+// { liste, aufgabe, eltern } oder null. `eltern` ist bei Unterpunkten die
+// Aufgabe darueber, sonst null.
+function wpFinde(wp, montag, id) {
+  const w = wp && wp.wochen && wp.wochen[montag];
+  if (!w || !id) return null;
+  const listen = [w.ziele, w.prio, w.liegen]
+    .concat((Array.isArray(w.tage) ? w.tage : []).map((t) => t && t.aufgaben));
+  for (const liste of listen) {
+    if (!Array.isArray(liste)) continue;
+    for (const a of liste) {
+      if (!a) continue;
+      if (a.id === id) return { liste: liste, aufgabe: a, eltern: null };
+      for (const u of (Array.isArray(a.unter) ? a.unter : [])) {
+        if (u && u.id === id) return { liste: a.unter, aufgabe: u, eltern: a };
+      }
+    }
+  }
+  return null;
+}
+
+// Antippen des Hakens: erledigt -> offen, alles andere -> erledigt.
+function wpUmschalten(z) {
+  return z === "erledigt" ? "offen" : "erledigt";
+}
+
+// Offene Aufgaben einer Woche (Tage + Liegen geblieben) mit ihren offenen
+// Unterpunkten - fuer "Liegen geblieben" der naechsten Woche. Eine
+// erledigte Aufgabe mit offenen Unterpunkten zaehlt NICHT: Andrea hat sie
+// selbst abgeschlossen. Ziele und Top 3 gelten fuer ihre Woche.
+function wpOffene(woche) {
+  if (!woche || typeof woche !== "object") return [];
+  const listen = [woche.liegen].concat((Array.isArray(woche.tage) ? woche.tage : [])
+    .map((t) => t && t.aufgaben));
+  const aus = [];
+  for (const liste of listen) {
+    for (const a of (Array.isArray(liste) ? liste : [])) {
+      if (!a || (a.zustand && a.zustand !== "offen")) continue;
+      aus.push({ id: a.id, text: String(a.text || ""),
+        unter: (Array.isArray(a.unter) ? a.unter : [])
+          .filter((u) => u && (!u.zustand || u.zustand === "offen"))
+          .map((u) => ({ id: u.id, text: String(u.text || "") })) });
+    }
+  }
+  return aus;
+}
+
+// Neue Woche aus der Vorlage. Alles offen, alles mit NEUER ID; die
+// uebernommenen Punkte der Vorwoche landen in `liegen`. Was als Text schon
+// in der Vorlage steht ("Wochenplanung" vom letzten Sonntag), kommt nicht
+// ein zweites Mal - es steht ja ohnehin wieder im Tag. Vorlage und Vorwoche
+// werden nicht angefasst (nur gelesen).
+function wpNeueWoche(vorlage, offeneUebernehmen, idFn) {
+  const neuId = idFn || wpId;
+  const tage = (vorlage && Array.isArray(vorlage.tage) ? vorlage.tage : []);
+  const norm = (t) => String(t || "").trim().toLowerCase();
+  const schon = new Set();
+  const woche = { ziele: [], prio: [], liegen: [], tage: [], notizen: "" };
+  for (let i = 0; i < 7; i++) {
+    const t = tage[i] || {};
+    const texte = (Array.isArray(t.aufgaben) ? t.aufgaben : [])
+      .map((x) => String(x || "").trim()).filter(Boolean);
+    for (const x of texte) schon.add(norm(x));
+    woche.tage.push({ frei: Boolean(t.frei), aufgaben: texte.map((x) =>
+      ({ id: neuId(), text: x, zustand: "offen", unter: [] })) });
+  }
+  for (const a of (Array.isArray(offeneUebernehmen) ? offeneUebernehmen : [])) {
+    const text = String((a && a.text) || "").trim();
+    if (!text || schon.has(norm(text))) continue;
+    schon.add(norm(text));
+    woche.liegen.push({ id: neuId(), text: text, zustand: "offen",
+      unter: (Array.isArray(a.unter) ? a.unter : [])
+        .map((u) => String((u && u.text) || "").trim()).filter(Boolean)
+        .map((u) => ({ id: neuId(), text: u, zustand: "offen" })) });
+  }
+  return woche;
+}
+
+// Welche WOCHEN hat `b`, die `a` nicht hat? Lesbare Texte fuer die
+// Verlust-Frage ("Wochenplan KW 46"). Bewusst nur ganze Wochen, nicht
+// Aufgaben-IDs (Codex R1, Fund 6): sonst meldete jedes absichtliche
+// Loeschen offline einen Verlust und boete den aelteren Stand an.
+function wochenFehlen(a, b) {
+  const wa = (a && a.wochenplan && a.wochenplan.wochen) || {};
+  const wb = (b && b.wochenplan && b.wochenplan.wochen) || {};
+  if (typeof wb !== "object" || Array.isArray(wb)) return [];
+  const hat = typeof wa === "object" && !Array.isArray(wa) ? wa : {};
+  return Object.keys(wb).filter((k) => !Object.prototype.hasOwnProperty.call(hat, k))
+    .sort().map((k) => {
+      const kw = wpKw(k);
+      return kw.kw ? "Wochenplan KW " + kw.kw + "/" + kw.jahr : "Wochenplan " + k;
+    });
+}
+
+// Was fehlt `a` gegenueber `b`? Marken UND ganze Wochen - die eine Stelle,
+// an der die Verlust-Erkennung vom Wochenplan weiss.
+function standFehlt(a, b) {
+  return markenFehlen(a, b).concat(wochenFehlen(a, b));
+}
+
+// Unterscheidet sich der Wochenplan zweier Staende? Fuer den Fragetext im
+// Gleichstand-Pfad (Codex R1, Fund 7).
+function wochenplanAnders(a, b) {
+  return JSON.stringify((a && a.wochenplan) || null) !==
+    JSON.stringify((b && b.wochenplan) || null);
+}
+
+// Reihenfolge der Cockpit-Kacheln (einst.kachelFolge, nur Geraet).
+// Unbekannte und doppelte IDs raus, fehlende hinten an; kein Array ->
+// Standard. So uebersteht die Einstellung eine neue oder entfernte Kachel.
+function kachelFolge(gespeichert, alle) {
+  if (!Array.isArray(gespeichert)) return alle.slice();
+  const aus = [];
+  for (const id of gespeichert) {
+    if (alle.indexOf(id) >= 0 && aus.indexOf(id) < 0) aus.push(id);
+  }
+  for (const id of alle) if (aus.indexOf(id) < 0) aus.push(id);
+  return aus;
+}
+
 // ---------------------------------------------------------------- Ansichten
 
 function renderHauptmenu() {
