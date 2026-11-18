@@ -906,3 +906,37 @@ body.ohne-begruendung .stand.begruendung { display: none; }
   .buehne.wechsel { animation: none; }
   * { transition: none !important; }
 }
+
+/* Wochenplan (v228). Zeilen sind zwei Knoepfe: Haken (umschalten) und
+   Text (Sheet). Erledigt = leise, verworfen = durchgestrichen - wie in
+   Andreas Word-Vorlage (☒ bzw. ~~Text~~). */
+.wp-kopf { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.wp-kw { flex: 1; text-align: center; font-weight: 600; font-size: 14px; }
+.karte.wp-karte { min-height: 0; gap: 2px; }
+.wp-titel { display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 4px; }
+.wp-zeile { display: flex; align-items: flex-start; gap: 2px; }
+.wp-zeile .feld { margin: 2px 0; flex: 1; }
+.wp-unter { padding-left: 30px; }
+.wp-haken, .wp-text {
+  background: none; border: 0; color: inherit; font: inherit;
+  text-align: left; cursor: pointer; padding: 8px 4px; min-height: 44px;
+}
+.wp-haken { font-size: 20px; line-height: 1; min-width: 40px; flex: 0 0 auto; }
+.wp-haken:disabled { opacity: .45; cursor: default; }
+.wp-text { flex: 1; font-size: 13px; line-height: 1.35; padding-top: 12px; }
+.wp-erledigt .wp-text, .wp-erledigt .wp-haken { color: var(--text-leise); }
+.wp-verworfen .wp-text { text-decoration: line-through; color: var(--text-leise); }
+.wp-frei { font-size: 10px; letter-spacing: .7px; font-weight: 600; }
+.wp-notiz { white-space: pre-wrap; }
+label.wp-zeile { align-items: center; min-height: 40px; font-size: 13px; }
+.wp-vtag { min-width: 96px; font-weight: 600; }
+
+/* Kacheln ziehen (v228): langes Druecken hebt an. Kein Markieren und kein
+   Kontextmenue auf den Kacheln, sonst greift Android vor uns zu. */
+.menue-karte { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.menue-karte.zieht {
+  opacity: .85; transform: scale(1.03);
+  box-shadow: 0 0 0 2px var(--akzent-rand), 12px 14px 26px rgba(0,0,0,.55);
+  position: relative; z-index: 2;
+}

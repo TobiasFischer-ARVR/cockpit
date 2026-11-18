@@ -8553,6 +8553,440 @@ function kachelFolge(gespeichert, alle) {
   return aus;
 }
 
+// ------------------------------------------------ Wochenplan: Oberflaeche
+// Regeln (Bauplan): Anschauen und Blaettern schreiben NIE (wpDaten liefert
+// eine Kopie). In der Ansicht wird nur der Haken angetippt; Texte,
+// "verworfen", Unterpunkte, Loeschen, Notizen, FREI und Vorlage gehen ueber
+// ein Sheet mit "✓ Speichern" - ein offenes Sheet sperrt den Standtausch.
+// Klick-Handler halten nur Montag + ID fest, nie ein Objekt: sie suchen ihr
+// Ziel synchron im AKTUELLEN Datenstand, direkt vor der Aenderung.
+
+let wpAnsicht = null;        // gewaehlter Montag, null = diese Woche (nicht im Hash)
+let wpLaufWartet = null;     // wartender Speicherlauf (fasst schnelle Haken zusammen)
+
+function wpHeuteMontag() {
+  return wpMontag(lokalIso(), 0);
+}
+
+// Darf der Wochenplan JETZT schreiben? "" = ja, sonst der Grund fuers Banner.
+// Offene Standwahl (Codex R1, Fund 2): ein neuer Haken bekaeme den neuesten
+// Stempel und ueberschriebe die Cloud, obwohl die Frage noch offen ist.
+// Gilt nur fuer den Wochenplan - die app-weite Sperre ist Punkt 77 (offen).
+function wpSchreibSperre() {
+  if (!datenstand) return "Kein Datenstand geladen — App einmal mit Internet öffnen.";
+  if (standWahlOffen) return "Erst den Datenstand entscheiden (Karte oben) — im " +
+    "Wochenplan wurde nichts gespeichert.";
+  if (geraetStandGesperrt()) return "⚠ NICHT gespeichert — auf diesem Gerät liegt " +
+    "ein älterer Stand als in OneDrive. Bitte mit Internet die App neu öffnen.";
+  return "";
+}
+
+// Schreibzugriff: legt den Teil an bzw. fuellt ihn auf (Muster scanner()).
+// Nur aus Schreibwegen rufen - nie aus einer Ansicht (test_invarianten).
+function wochenplan() {
+  datenstand.wochenplan = wpAuffuellen(datenstand.wochenplan);
+  return datenstand.wochenplan;
+}
+
+// Hoechstens ein laufender und ein wartender Lauf: fuenf schnelle Haken
+// werden zu zwei Speichervorgaengen, nicht zu fuenf. Der wartende Lauf
+// nimmt beim Start den dann aktuellen Stand mit.
+function wpSpeichern() {
+  if (wpLaufWartet) return wpLaufWartet;
+  const lauf = persistKettenLauf(() => {
+    wpLaufWartet = null;
+    return datenstandSchreibenEinmal(false);
+  });
+  wpLaufWartet = lauf;
+  return lauf;
+}
+
+// Der Stempel wird SOFORT gesetzt, nicht erst, wenn der Speicherlauf dran
+// ist (Codex R1, Fund 1): ein Laden dazwischen wuerde sonst einen Stand
+// ohne den Haken einsetzen.
+function wpGeaendert() {
+  datenstand.geaendert = stempelJetzt();
+  wpSpeichern();
+}
+
+// Haken in der Ansicht. Sucht frisch per ID; nicht gefunden (Stand wurde
+// inzwischen getauscht) -> Banner + neu zeichnen, NICHTS schreiben.
+function wpAendern(montag, id, fn) {
+  const sperre = wpSchreibSperre();
+  if (sperre) { banner(sperre); render(); return false; }
+  if (!wpFinde(datenstand.wochenplan, montag, id)) {
+    banner("Nicht mehr im Wochenplan — Ansicht neu geladen.");
+    render();
+    return false;
+  }
+  const f = wpFinde(wochenplan(), montag, id);
+  fn(f);
+  wpGeaendert();
+  render();
+  return true;
+}
+
+// "✓ Speichern" eines Wochenplan-Sheets. `vorher(roh)` prueft auf dem
+// UNVERAENDERTEN Datenstand, ob das Ziel noch da ist - erst danach wird
+// angelegt/aufgefuellt, sonst stuende ein ungestempelter Unterschied im
+// Speicher. `aenderung(wp)` aendert den lebenden Teil.
+function wpSheetSpeichern(vorher, aenderung, nichtDa) {
+  const sperre = wpSchreibSperre();
+  if (sperre) { banner(sperre); return; }
+  if (!vorher(datenstand.wochenplan)) {
+    banner(nichtDa || "Nicht mehr im Wochenplan — nichts geändert.");
+    listeVeraltet = true;
+    history.back();
+    return;
+  }
+  aenderung(wochenplan());
+  wpGeaendert();
+  listeVeraltet = true;
+  history.back();
+}
+
+function wpOrtListe(woche, ort) {
+  if (!woche) return null;
+  if (ort.art === "tag") return woche.tage[ort.tag] ? woche.tage[ort.tag].aufgaben : null;
+  return Array.isArray(woche[ort.art]) ? woche[ort.art] : null;
+}
+
+const WP_ZEICHEN = { offen: "☐", erledigt: "☑", verworfen: "⊘" };
+
+// Eine Zeile: Haken (antippen = umschalten) + Text (antippen = Sheet).
+// Ein Unterpunkt oeffnet das Sheet seiner Aufgabe - dort werden
+// Unterpunkte bearbeitet.
+function wpZeile(montag, a, elternId, ort) {
+  const z = el("div", "wp-zeile" + (elternId ? " wp-unter" : "") +
+    (a.zustand === "erledigt" ? " wp-erledigt" : a.zustand === "verworfen" ? " wp-verworfen" : ""));
+  const id = a.id;
+  const h = el("button", "wp-haken", WP_ZEICHEN[a.zustand] || WP_ZEICHEN.offen);
+  h.setAttribute("aria-label", a.zustand === "erledigt" ? "erledigt — antippen für offen"
+    : "antippen für erledigt");
+  if (id) h.onclick = () => wpAendern(montag, id, (f) => { f.aufgabe.zustand = wpUmschalten(f.aufgabe.zustand); });
+  else h.disabled = true;
+  const t = el("button", "wp-text", a.text || "(ohne Text)");
+  const sheetId = elternId || id;
+  if (sheetId) t.onclick = () => sheetWpAufgabe(montag, ort, sheetId);
+  z.append(h, t);
+  return z;
+}
+
+function wpBlock(titel, montag, liste, ort, extra) {
+  const k = el("div", "karte wp-karte");
+  const kopf = el("div", "titel wp-titel");
+  kopf.append(el("span", "", titel));
+  if (extra) kopf.append(extra);
+  k.append(kopf);
+  for (const a of liste) {
+    k.append(wpZeile(montag, a, null, ort));
+    for (const u of a.unter) k.append(wpZeile(montag, u, a.id, ort));
+  }
+  const max = WP_MAX[ort.art];
+  const chips = el("div", "chips");
+  if (!max || liste.length < max) {
+    const plus = el("button", "chip", "＋ Aufgabe");
+    plus.onclick = () => sheetWpAufgabe(montag, ort, null);
+    chips.append(plus);
+  }
+  if (ort.art === "tag") {
+    const tag = el("button", "chip", "✎ Tag");
+    tag.onclick = () => sheetWpTag(montag, ort.tag);
+    chips.append(tag);
+  }
+  if (chips.childNodes.length) k.append(chips);
+  return k;
+}
+
+function renderWochenplan() {
+  kopfzeile("Wochenplan", true);
+  const c = document.getElementById("inhalt");
+  c.innerHTML = "";
+  const wolke = wolkenWarnung();
+  if (wolke) c.append(wolke);
+  const wahl = standWahlWarnung();
+  if (wahl) c.append(wahl);
+  const heute = wpHeuteMontag();
+  const montag = wpAnsicht || heute;
+  // Kopf: ◀ KW 47 · 16.–22.11.2026 ▶ - Blaettern aendert nur wpAnsicht.
+  const kopf = el("div", "wp-kopf");
+  const zur = el("button", "chip", "◀");
+  zur.setAttribute("aria-label", "Woche davor");
+  zur.onclick = () => { wpAnsicht = wpMontag(montag, -1); renderWochenplan(); };
+  const vor = el("button", "chip", "▶");
+  vor.setAttribute("aria-label", "Woche danach");
+  vor.onclick = () => { wpAnsicht = wpMontag(montag, 1); renderWochenplan(); };
+  kopf.append(zur, el("div", "wp-kw", wpKopf(montag)), vor);
+  c.append(kopf);
+  if (montag !== heute) {
+    const hz = el("div", "chips");
+    const zu = el("button", "chip", "↺ Diese Woche");
+    zu.onclick = () => { wpAnsicht = null; renderWochenplan(); };
+    hz.append(zu);
+    c.append(hz);
+  }
+  if (!datenstand) {
+    c.append(el("div", "leerzustand",
+      "Braucht den Datenstand — App einmal mit Internet öffnen."));
+    return;
+  }
+  const wp = wpDaten(datenstand);
+  const w = wp.wochen[montag];
+  const vorlageZ = el("div", "chips");
+  const vorlage = el("button", "chip", "✎ Vorlage");
+  vorlage.onclick = sheetWpVorlage;
+  vorlageZ.append(vorlage);
+  if (!w) {
+    const k = el("div", "karte wp-karte");
+    k.append(el("div", "titel", "Diese Woche ist noch nicht angelegt."),
+      el("div", "kontext", "Angelegt wird sie aus der Vorlage; offene Punkte der " +
+        "Vorwoche lassen sich als „Liegen geblieben“ übernehmen."));
+    const az = el("div", "chips");
+    const an = el("button", "chip haupt", "＋ Woche anlegen");
+    an.onclick = () => sheetWpAnlegen(montag);
+    az.append(an);
+    k.append(az);
+    c.append(k, vorlageZ);
+    return;
+  }
+  const oben = el("div", "karten wp-liste");
+  oben.append(wpBlock("Wochenziel", montag, w.ziele, { art: "ziele" }),
+    wpBlock("Top 3 Prioritäten", montag, w.prio, { art: "prio" }),
+    wpBlock("Liegen geblieben", montag, w.liegen, { art: "liegen" }));
+  for (let i = 0; i < 7; i++) {
+    const d = wpTag(montag, i);
+    const frei = w.tage[i].frei ? el("span", "pill wp-frei", "FREI") : null;
+    oben.append(wpBlock(WP_TAGE[i] + " · " + d.slice(8, 10) + "." + d.slice(5, 7) + ".",
+      montag, w.tage[i].aufgaben, { art: "tag", tag: i }, frei));
+  }
+  const n = el("div", "karte wp-karte tippbar");
+  n.append(el("div", "titel", "Notizen"),
+    el("div", "kontext wp-notiz", w.notizen || "Antippen zum Eintragen"));
+  n.onclick = () => sheetWpNotizen(montag);
+  oben.append(n);
+  c.append(oben, vorlageZ);
+}
+
+// Zustand-Auswahl als drei Chips; liefert { knoten, wert() }.
+function wpZustandWahl(start) {
+  let wert = start || "offen";
+  const z = el("div", "chips");
+  const knoepfe = [["offen", "☐ offen"], ["erledigt", "☑ erledigt"], ["verworfen", "⊘ verworfen"]]
+    .map(([w, t]) => {
+      const b = el("button", "chip" + (w === wert ? " aktiv" : ""), t);
+      b.onclick = () => { wert = w; for (const x of knoepfe) x.classList.toggle("aktiv", x === b); };
+      return b;
+    });
+  z.append(...knoepfe);
+  return { knoten: z, wert: () => wert };
+}
+
+function sheetWpAufgabe(montag, ort, id) {
+  const wp = wpDaten(datenstand);
+  const f = id ? wpFinde(wp, montag, id) : null;
+  if (id && !f) { banner("Nicht mehr im Wochenplan — Ansicht neu geladen."); render(); return; }
+  const a = f ? f.aufgabe : { text: "", zustand: "offen", unter: [] };
+  const wrap = el("div");
+  const text = el("textarea", "suche");
+  text.rows = 2;
+  text.value = a.text;
+  text.placeholder = "z. B. Pitches verfassen";
+  const zustand = wpZustandWahl(a.zustand);
+  // Unterpunkte: Zeilen mit Text, Zustand (antippen schaltet weiter) und ✕.
+  const unter = a.unter.map((u) => ({ id: u.id, text: u.text, zustand: u.zustand }));
+  const ul = el("div");
+  const folge = { offen: "erledigt", erledigt: "verworfen", verworfen: "offen" };
+  const zeichneUnter = () => {
+    ul.innerHTML = "";
+    unter.forEach((u, i) => {
+      const z = el("div", "wp-zeile");
+      const h = el("button", "wp-haken", WP_ZEICHEN[u.zustand]);
+      h.onclick = () => { u.zustand = folge[u.zustand]; h.textContent = WP_ZEICHEN[u.zustand]; };
+      const t = el("input", "feld");
+      t.type = "text";
+      t.value = u.text;
+      t.placeholder = "Unterpunkt";
+      t.oninput = () => { u.text = t.value; };
+      const weg = el("button", "wp-haken", "✕");
+      weg.setAttribute("aria-label", "Unterpunkt entfernen");
+      weg.onclick = () => { unter.splice(i, 1); zeichneUnter(); };
+      z.append(h, t, weg);
+      ul.append(z);
+    });
+  };
+  zeichneUnter();
+  const plusZ = el("div", "chips");
+  const plus = el("button", "chip", "＋ Unterpunkt");
+  plus.onclick = () => { unter.push({ id: "", text: "", zustand: "offen" }); zeichneUnter(); };
+  plusZ.append(plus);
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Speichern");
+  ok.onclick = () => {
+    const t = text.value.trim();
+    if (!t) { banner("Bitte einen Text eintragen."); return; }
+    const neuUnter = unter.map((u) => ({ id: u.id || wpId(), text: String(u.text || "").trim(),
+      zustand: u.zustand })).filter((u) => u.text);
+    const z = zustand.wert();
+    if (id) {
+      wpSheetSpeichern((roh) => Boolean(wpFinde(roh, montag, id)), (w) => {
+        const g = wpFinde(w, montag, id).aufgabe;
+        // Felder, die eine spaetere Fassung an Unterpunkte haengt, bleiben.
+        const alt = new Map(g.unter.map((u) => [u.id, u]));
+        g.text = t;
+        g.zustand = z;
+        g.unter = neuUnter.map((u) => Object.assign(alt.get(u.id) || {}, u));
+      });
+    } else {
+      const max = WP_MAX[ort.art];
+      wpSheetSpeichern((roh) => {
+        const liste = wpOrtListe(roh && roh.wochen && roh.wochen[montag], ort);
+        return Boolean(liste) && (!max || liste.length < max);
+      }, (w) => {
+        wpOrtListe(w.wochen[montag], ort).push({ id: wpId(), text: t, zustand: z, unter: neuUnter });
+      }, max ? "Hier ist kein Platz mehr (höchstens " + max + ") — nichts angelegt."
+             : "Diese Woche gibt es nicht mehr — nichts angelegt.");
+    }
+  };
+  okZ.append(ok);
+  if (id) {
+    const loe = el("button", "chip", "🗑 Löschen");
+    loe.onclick = () => {
+      if (!confirm("Aufgabe „" + a.text + "“ mit ihren Unterpunkten löschen?")) return;
+      wpSheetSpeichern((roh) => Boolean(wpFinde(roh, montag, id)), (w) => {
+        const g = wpFinde(w, montag, id);
+        g.liste.splice(g.liste.indexOf(g.aufgabe), 1);
+      });
+    };
+    okZ.append(loe);
+  }
+  wrap.append(el("div", "stand", "Aufgabe"), text,
+    el("div", "stand", "Zustand"), zustand.knoten,
+    el("div", "stand", "Unterpunkte"), ul, plusZ, okZ);
+  sheetOeffnen(id ? "Aufgabe bearbeiten" : "Neue Aufgabe", wrap);
+}
+
+function sheetWpTag(montag, i) {
+  const wp = wpDaten(datenstand);
+  const w = wp.wochen[montag];
+  if (!w) { render(); return; }
+  const wrap = el("div");
+  const zeile = el("label", "wp-zeile");
+  const frei = el("input");
+  frei.type = "checkbox";
+  frei.checked = w.tage[i].frei;
+  zeile.append(frei, el("span", "", " Tag ist FREI"));
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Speichern");
+  ok.onclick = () => wpSheetSpeichern((roh) => Boolean(roh && roh.wochen && roh.wochen[montag]),
+    (x) => { x.wochen[montag].tage[i].frei = frei.checked; });
+  okZ.append(ok);
+  wrap.append(zeile, okZ,
+    el("div", "stand", "Aufgaben an einem freien Tag bleiben stehen."));
+  sheetOeffnen(WP_TAGE[i] + " " + wpTag(montag, i).slice(8, 10) + "." +
+    wpTag(montag, i).slice(5, 7) + ".", wrap);
+}
+
+function sheetWpNotizen(montag) {
+  const wp = wpDaten(datenstand);
+  const w = wp.wochen[montag];
+  if (!w) { render(); return; }
+  const wrap = el("div");
+  const t = el("textarea", "suche");
+  t.rows = 10;
+  t.value = w.notizen;
+  t.placeholder = "Notiz eintragen";
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Speichern");
+  ok.onclick = () => wpSheetSpeichern((roh) => Boolean(roh && roh.wochen && roh.wochen[montag]),
+    (x) => { x.wochen[montag].notizen = t.value; });
+  okZ.append(ok);
+  wrap.append(t, okZ);
+  sheetOeffnen("Notizen · " + wpKopf(montag), wrap);
+}
+
+// Vorlage fuer Wiederkehrendes (Tobias 17.11.: aendert sich, wenn das
+// UGC-Training auslaeuft). Gilt nur fuer NEUE Wochen - angelegte bleiben.
+function sheetWpVorlage() {
+  if (!datenstand) { banner("Kein Datenstand geladen — App einmal mit Internet öffnen."); return; }
+  const v = wpDaten(datenstand).vorlage;
+  const wrap = el("div");
+  const felder = [];
+  for (let i = 0; i < 7; i++) {
+    const zeile = el("label", "wp-zeile");
+    const frei = el("input");
+    frei.type = "checkbox";
+    frei.checked = v.tage[i].frei;
+    zeile.append(el("span", "wp-vtag", WP_TAGE[i]), frei, el("span", "", " FREI"));
+    const t = el("textarea", "suche");
+    t.rows = Math.max(2, v.tage[i].aufgaben.length + 1);
+    t.value = v.tage[i].aufgaben.join("\n");
+    t.placeholder = "Eine Aufgabe je Zeile";
+    felder.push({ frei: frei, text: t });
+    wrap.append(zeile, t);
+  }
+  const stdZ = el("div", "chips");
+  const std = el("button", "chip", "↺ Startvorlage");
+  std.onclick = () => {
+    WP_VORLAGE_STD.tage.forEach((tg, i) => {
+      felder[i].frei.checked = tg.frei;
+      felder[i].text.value = tg.aufgaben.join("\n");
+    });
+  };
+  stdZ.append(std);
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Speichern");
+  ok.onclick = () => {
+    const tage = felder.map((f) => ({ frei: f.frei.checked,
+      aufgaben: f.text.value.split("\n").map((x) => x.trim()).filter(Boolean) }));
+    wpSheetSpeichern(() => true, (x) => { x.vorlage = { tage: tage }; });
+  };
+  okZ.append(ok);
+  wrap.append(stdZ, okZ, erklaerung("Vorlage", "Eine Aufgabe je Zeile. Die Vorlage " +
+    "gilt nur für Wochen, die neu angelegt werden — schon angelegte Wochen bleiben, " +
+    "wie sie sind."));
+  sheetOeffnen("Vorlage", erklaerungenAnsEnde(wrap));
+}
+
+// Woche anlegen: Vorlage + offene Punkte der Vorwoche (vorangehakt).
+function sheetWpAnlegen(montag) {
+  if (!datenstand) { banner("Kein Datenstand geladen — App einmal mit Internet öffnen."); return; }
+  const wp = wpDaten(datenstand);
+  if (wp.wochen[montag]) { render(); return; }
+  const vorMontag = wpMontag(montag, -1);
+  const offene = wpOffene(wp.wochen[vorMontag]);
+  const gewaehlt = new Set(offene.map((a) => a.id));
+  const wrap = el("div");
+  wrap.append(el("div", "stand", wpKopf(montag) + " — aus der Vorlage."));
+  if (offene.length) {
+    wrap.append(el("div", "abschnitt", "Liegen geblieben von letzter Woche"));
+    for (const a of offene) {
+      const z = el("label", "wp-zeile");
+      const h = el("input");
+      h.type = "checkbox";
+      h.checked = true;
+      h.onchange = () => { if (h.checked) gewaehlt.add(a.id); else gewaehlt.delete(a.id); };
+      z.append(h, el("span", "", " " + a.text +
+        (a.unter.length ? " (" + a.unter.map((u) => u.text).join(", ") + ")" : "")));
+      wrap.append(z);
+    }
+  } else {
+    wrap.append(el("div", "stand", wp.wochen[vorMontag]
+      ? "Aus der Vorwoche ist nichts offen." : "Die Vorwoche ist nicht angelegt."));
+  }
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Woche anlegen");
+  ok.onclick = () => wpSheetSpeichern(
+    (roh) => !(roh && roh.wochen && typeof roh.wochen === "object" && roh.wochen[montag]),
+    (x) => {
+      // frisch aus dem lebenden Stand, nur die angehakten
+      const mit = wpOffene(x.wochen[vorMontag]).filter((a) => gewaehlt.has(a.id));
+      x.wochen[montag] = Object.assign({ angelegt: stempelJetzt() }, wpNeueWoche(x.vorlage, mit));
+    }, "Diese Woche ist schon angelegt — nichts geändert.");
+  okZ.append(ok);
+  wrap.append(okZ);
+  sheetOeffnen("Woche anlegen", wrap);
+}
+
 // ---------------------------------------------------------------- Ansichten
 
 function renderHauptmenu() {
@@ -8994,6 +9428,9 @@ function render() {
   // Datenquellen, weil render() nach JEDER Änderung läuft - auch nach
   // "✓ erledigt" (listeVeraltet) und nach dem OneDrive-Abgleich.
   kpiNachrechnen();
+  // v228: der Wochenplan braucht nur den Datenstand, nicht den Snapshot -
+  // deshalb VOR der !snap-Sperre (sonst Fehlerbild auf frischem Geraet).
+  if (location.hash === "#/wochenplan") { renderWochenplan(); return; }
   if (!snap) {
     // Ohne Daten muss das Hauptmenue erreichbar bleiben, sonst kommt man
     // nie an die OneDrive-Anmeldung (Henne-Ei auf frischem Geraet).
