@@ -2124,10 +2124,16 @@ function backupLaden() {
     if (!d || !Array.isArray(d.marken)) {
       banner("Das ist kein Datenstand-Backup (marken fehlt)."); return;
     }
+    // v228: Wochenplan mit nennen - ein Backup von vor v228 hat keinen,
+    // das Laden ersetzt den Stand KOMPLETT und naehme ihn mit weg.
+    const wpBackup = wpWochenZahl(d), wpJetzt = wpWochenZahl(datenstand);
     if (!confirm(`Backup „${datei.name}“ laden?\n` +
         `Stand: ${String(d.geaendert || "?").slice(0, 19).replace("T", " ")} · ` +
         `${d.marken.length} Marken.\n` +
         `Aktuell: ${((datenstand && datenstand.marken) || []).length} Marken.\n` +
+        `Wochenplan: ${wpBackup} Wochen (aktuell ${wpJetzt}).\n` +
+        (wpJetzt && !wpBackup ? "⚠ Das Backup hat KEINEN Wochenplan — der " +
+          "jetzige wäre danach weg (er steckt in der Sicherheitskopie).\n" : "") +
         "Ersetzt den aktuellen Datenstand auf Gerät + OneDrive.\n" +
         "Der jetzige Stand wird vorher gesichert — nach OneDrive und in " +
         "den Download-Ordner.")) return;
@@ -15216,7 +15222,8 @@ function verlustKandidat(kandidaten, verworfen) {
   const alle = [];
   for (const paar of kandidaten.slice(1)) {
     if (weg.has(String(paar[0].geaendert || ""))) continue;
-    const fehlt = markenFehlen(gewinner[0], paar[0]);
+    // v228: Marken UND ganze Wochen des Wochenplans (Bauplan Wochenplan).
+    const fehlt = standFehlt(gewinner[0], paar[0]);
     if (fehlt.length) alle.push({ verlierer: paar, fehlt: fehlt });
     else if (gleichstandAnders(gewinner[0], paar[0]))   // v180, Backlog 52
       alle.push({ verlierer: paar, fehlt: [], gleichstand: true });
@@ -15284,7 +15291,7 @@ async function standWahlKlaeren(kandidaten) {
   // versprach "den AELTEREN mit allen Marken" - das stimmt nur, wenn der
   // Unterschied einseitig ist. Hat der neuere Stand eigene Marken, nimmt
   // die Wahl sie mit weg, und der Text haette das Gegenteil behauptet.
-  const fehltImAelteren = markenFehlen(aelter[0], gewinner[0]);
+  const fehltImAelteren = standFehlt(aelter[0], gewinner[0]);
   // Ein dritter Stand mit eigenen Marken wird nicht zur Wahl gestellt -
   // aber er wird GENA"\n\n"T und gesichert, damit er nicht stillschweigend
   // verschwindet.
@@ -15299,6 +15306,10 @@ async function standWahlKlaeren(kandidaten) {
   // Verlierer der Sortierung - bei Gleichstand ist das das Geraet, und das
   // ist auf einem einzelnen Handy fast immer der richtige.
   const anders = fall.gleichstand ? markenAnders(gewinner[0], aelter[0]) : [];
+  // v228 (Codex R1, Fund 7): unterscheidet sich der Wochenplan, sagt die
+  // Frage das - sonst stuende bei reinen Wochenplan-Unterschieden
+  // "keine Marke (Warteliste o. Ä.)" da, und Andrea saehe keinen Grund.
+  if (fall.gleichstand && wochenplanAnders(gewinner[0], aelter[0])) anders.push("Wochenplan");
   const nimmAelteren = confirm(fall.gleichstand
     ? "Zwei Datenstände tragen dieselbe Uhrzeit, unterscheiden sich aber." +
       "\n\n" +
@@ -15311,7 +15322,7 @@ async function standWahlKlaeren(kandidaten) {
          " — wird gesichert, aber nicht übernommen." + "\n\n" : "") +
       "OK = Stand „" + aelter[1] + "“ nehmen" + "\n" +
       "Abbrechen = jetzt nicht entscheiden"
-    : "Die Datenstände unterscheiden sich in den Marken." + "\n\n" +
+    : "Die Datenstände unterscheiden sich im Inhalt." + "\n\n" +
     "NEUER — " + zeile(gewinner) + "\n" +
     "   hier fehlen: " + fall.fehlt.join(", ") + "\n\n" +
     "ÄLTER — " + zeile(aelter) + "\n" +
