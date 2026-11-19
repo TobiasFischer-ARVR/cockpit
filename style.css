@@ -937,6 +937,11 @@ body.ohne-begruendung .stand.begruendung { display: none; }
 .wp-notiz { white-space: pre-wrap; }
 label.wp-zeile { align-items: center; min-height: 40px; font-size: 13px; }
 .wp-vtag { min-width: 96px; font-weight: 600; }
+/* Bearbeiten-Sheet (v232): Name | Hoechstzahl | ▲ ▼ ✕ in einer Zeile */
+.wp-ab-zeile { align-items: center; }
+.wp-ab-zeile .wp-ab-name { flex: 1; min-width: 0; font-size: 13px; }
+span.wp-ab-name { padding: 8px 4px; font-weight: 600; }
+.wp-zeile .feld.wp-ab-max { flex: 0 0 52px; width: 52px; text-align: center; }
 
 /* Kalender (v229): Woche = 7 Spalten, Monat = KW-Spalte + 7. Punkte tragen
    die Farbe der Art (Inline aus wochenplan.farben), keine Ampelfarben. */

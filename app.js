@@ -736,7 +736,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v231"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v232"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -8304,7 +8304,21 @@ const WP_VORLAGE_STD = { tage: [
 ] };
 const WP_TAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
                  "Samstag", "Sonntag"];
-const WP_MAX = { ziele: 2, prio: 3 };
+// Abschnitte (v232, Tobias 19.11.): ein Aufbau fuer ALLE Wochen, in
+// wochenplan.abschnitte. Fehlt er, gilt genau der Aufbau von v228-v231.
+// Eingebaute bleiben an ihrem alten Platz in der Woche (w.ziele, w.prio,
+// w.liegen, w.notizen - kein Umzug, v231 liest weiter), eigene liegen in
+// w.extra[id]. "tage" ist der Block Mo-So: verschiebbar, sonst fest.
+// max 0 = unbegrenzt. Ausblenden setzt nur `aus`, Inhalte bleiben.
+// ponytail: ausgeblendete Abschnitte werden nie geloescht - Loeschen
+// erst, wenn die Liste im Bearbeiten-Sheet unuebersichtlich wird.
+const WP_ABSCHNITTE_STD = [
+  { id: "ziele", name: "Wochenziel", art: "liste", max: 2 },
+  { id: "prio", name: "Top 3 Prioritäten", art: "liste", max: 3 },
+  { id: "liegen", name: "Liegen geblieben", art: "liste", max: 0 },
+  { id: "tage", name: "Tage Mo–So", art: "tage", max: 0 },
+  { id: "notizen", name: "Notizen", art: "text", max: 0 },
+];
 // Kalender (v229, Punkt 79): Farbe je Art, Art aus dem Textanfang.
 // Bewusst keine Ampelfarben (rot/gelb/gruen tragen in der App Bedeutung).
 const WP_ARTEN = [["ugc", "UGC"], ["ark", "ARK"], ["sonst", "Sonstiges"]];
@@ -8403,7 +8417,37 @@ function wpWocheAuffuellen(w, idFn) {
     w.tage[i] = t;
   }
   if (typeof w.notizen !== "string") w.notizen = String(w.notizen || "");
+  // Eigene Abschnitte (v232): Listen auffuellen, Texte stehen lassen.
+  // Nur wenn da - sonst bekaeme jede Woche ein leeres extra.
+  const ex = w.extra;
+  if (ex && typeof ex === "object" && !Array.isArray(ex)) {
+    for (const k of Object.keys(ex)) {
+      if (Array.isArray(ex[k])) ex[k] = ex[k].filter((a) => wpAufgabeAuffuellen(a, idFn));
+      else if (typeof ex[k] !== "string" && !idFn) delete ex[k];
+    }
+  } else if (ex !== undefined && !idFn) delete w.extra;
   return w;
+}
+
+// Abschnitte auffuellen, IN PLACE je Eintrag (unbekannte Felder bleiben).
+// Kaputte und doppelte Eintraege raus, fehlende Eingebaute hinten an.
+// Eingebaute behalten ihre Art, "tage" seinen Namen und ist nie aus.
+function wpAbschnitte(roh) {
+  const aus = [], ids = new Set();
+  for (const a of (Array.isArray(roh) ? roh : [])) {
+    if (!a || typeof a !== "object" || typeof a.id !== "string" || !a.id || ids.has(a.id)) continue;
+    const std = WP_ABSCHNITTE_STD.find((s) => s.id === a.id);
+    ids.add(a.id);
+    a.art = std ? std.art : a.art === "text" ? "text" : "liste";
+    a.name = std && std.art === "tage" ? std.name
+      : typeof a.name === "string" && a.name.trim() ? a.name.trim() : std ? std.name : "Abschnitt";
+    const max = a.max == null && std ? std.max : Math.floor(Number(a.max));
+    a.max = a.art === "liste" && max > 0 ? max : 0;
+    a.aus = a.art !== "tage" && Boolean(a.aus);
+    aus.push(a);
+  }
+  for (const s of WP_ABSCHNITTE_STD) if (!ids.has(s.id)) aus.push(Object.assign({}, s, { aus: false }));
+  return aus;
 }
 
 // Den ganzen Teil auffuellen, IN PLACE. Kaputte Vorlage -> Startvorlage.
@@ -8425,6 +8469,7 @@ function wpAuffuellen(wp, idFn) {
       v.tage[i] = t;
     }
   }
+  wp.abschnitte = wpAbschnitte(wp.abschnitte);
   if (!wp.wochen || typeof wp.wochen !== "object" || Array.isArray(wp.wochen)) wp.wochen = {};
   for (const k of Object.keys(wp.wochen)) {
     const w = wp.wochen[k];
@@ -8456,8 +8501,9 @@ function wpWochenZahl(ds) {
 function wpFinde(wp, montag, id) {
   const w = wp && wp.wochen && wp.wochen[montag];
   if (!w || !id) return null;
+  const ex = w.extra && typeof w.extra === "object" ? Object.values(w.extra) : [];
   const listen = [w.ziele, w.prio, w.liegen]
-    .concat((Array.isArray(w.tage) ? w.tage : []).map((t) => t && t.aufgaben));
+    .concat((Array.isArray(w.tage) ? w.tage : []).map((t) => t && t.aufgaben), ex);
   for (const liste of listen) {
     if (!Array.isArray(liste)) continue;
     for (const a of liste) {
@@ -8471,12 +8517,50 @@ function wpFinde(wp, montag, id) {
   return null;
 }
 
+// Liste eines Orts in einer Woche: { art: "tag", tag: 0-6 } oder
+// { art: <Abschnitt-ID> }. Eingebaute an ihrem alten Platz, eigene in
+// w.extra. `anlegen` (nur Schreibweg): fehlende eigene Liste anlegen.
+const WP_ALTER_PLATZ = ["ziele", "prio", "liegen"];
+function wpOrtListe(woche, ort, anlegen) {
+  if (!woche || typeof woche !== "object") return null;
+  if (ort.art === "tag") {
+    const t = Array.isArray(woche.tage) ? woche.tage[ort.tag] : null;
+    return t && Array.isArray(t.aufgaben) ? t.aufgaben : null;
+  }
+  if (WP_ALTER_PLATZ.indexOf(ort.art) >= 0) {
+    if (anlegen && !Array.isArray(woche[ort.art])) woche[ort.art] = [];
+    return Array.isArray(woche[ort.art]) ? woche[ort.art] : null;
+  }
+  let ex = woche.extra;
+  if (ex && typeof ex === "object" && !Array.isArray(ex) && Array.isArray(ex[ort.art])) return ex[ort.art];
+  // Steht an der Stelle schon etwas anderes (Text, fremdes Format), wird es
+  // nie ueberschrieben (Codex v232, Fund 4).
+  // Gilt auch fuer ein kaputtes extra selbst (Codex v232 R2, Fund 1).
+  if (!anlegen || (ex !== undefined && (!ex || typeof ex !== "object" || Array.isArray(ex) ||
+      ex[ort.art] !== undefined))) return null;
+  if (ex === undefined) ex = woche.extra = {};
+  return (ex[ort.art] = []);
+}
+
+// Text eines Text-Abschnitts: Notizen am alten Platz, eigene in w.extra.
+function wpText(woche, id) {
+  if (!woche) return "";
+  const v = id === "notizen" ? woche.notizen : woche.extra && woche.extra[id];
+  return typeof v === "string" ? v : "";
+}
+
 // Wie viele Aufgaben einer Woche sind offen? Fuer die Kachel im Cockpit:
-// alle Abschnitte (Ziele, Top 3, Liegen geblieben, Tage), nur oberste Ebene.
-function wpOffenZahl(woche) {
+// alle SICHTBAREN Listen-Abschnitte und die Tage, nur oberste Ebene.
+// Ausgeblendetes zaehlt nicht - sonst stuende eine Zahl ohne sichtbaren Grund.
+function wpOffenZahl(woche, abschnitte) {
   if (!woche || typeof woche !== "object") return 0;
-  const listen = [woche.ziele, woche.prio, woche.liegen].concat(
-    (Array.isArray(woche.tage) ? woche.tage : []).map((t) => t && t.aufgaben));
+  let listen = [];
+  for (const a of (abschnitte || WP_ABSCHNITTE_STD)) {
+    if (a.aus) continue;
+    if (a.art === "tage") {
+      listen = listen.concat((Array.isArray(woche.tage) ? woche.tage : []).map((t) => t && t.aufgaben));
+    } else if (a.art === "liste") listen.push(wpOrtListe(woche, { art: a.id }));
+  }
   let n = 0;
   for (const l of listen) {
     for (const a of (Array.isArray(l) ? l : [])) if (a && (!a.zustand || a.zustand === "offen")) n++;
@@ -8741,7 +8825,9 @@ function wpSheetSpeichern(vorher, aenderung, nichtDa) {
   const sperre = wpSchreibSperre();
   if (sperre) { banner(sperre); return; }
   if (!vorher(datenstand.wochenplan)) {
-    banner(nichtDa || "Nicht mehr im Wochenplan — nichts geändert.");
+    // nichtDa darf eine Funktion sein: Text erst nach der Pruefung (v232)
+    banner((typeof nichtDa === "function" ? nichtDa() : nichtDa) ||
+      "Nicht mehr im Wochenplan — nichts geändert.");
     listeVeraltet = true;
     history.back();
     return;
@@ -8750,15 +8836,6 @@ function wpSheetSpeichern(vorher, aenderung, nichtDa) {
   wpGeaendert();
   listeVeraltet = true;
   history.back();
-}
-
-function wpOrtListe(woche, ort) {
-  if (!woche) return null;
-  if (ort.art === "tag") {
-    const t = Array.isArray(woche.tage) ? woche.tage[ort.tag] : null;
-    return t && Array.isArray(t.aufgaben) ? t.aufgaben : null;
-  }
-  return Array.isArray(woche[ort.art]) ? woche[ort.art] : null;
 }
 
 const WP_ZEICHEN = { offen: "☐", erledigt: "☑", verworfen: "⊘" };
@@ -8782,7 +8859,7 @@ function wpZeile(montag, a, elternId, ort, istUnter) {
   return z;
 }
 
-function wpBlock(titel, montag, liste, ort, extra) {
+function wpBlock(titel, montag, liste, ort, extra, max) {
   const k = el("div", "karte wp-karte");
   const kopf = el("div", "titel wp-titel");
   kopf.append(el("span", "", titel));
@@ -8792,7 +8869,6 @@ function wpBlock(titel, montag, liste, ort, extra) {
     k.append(wpZeile(montag, a, null, ort));
     for (const u of a.unter) k.append(wpZeile(montag, u, a.id, ort, true));
   }
-  const max = WP_MAX[ort.art];
   const chips = el("div", "chips");
   if (!max || liste.length < max) {
     const plus = el("button", "chip", "＋ Aufgabe");
@@ -8847,9 +8923,9 @@ function renderWochenplan() {
   wpSprung = null;
   const wp = wpDaten(datenstand);
   const w = wp.wochen[montag];
-  const vorlageZ = el("div", "chips");
-  const vorlage = el("button", "chip", "✎ Vorlage");
-  vorlage.onclick = sheetWpVorlage;
+  const vorlageZ = el("div", "chips");   // v232: Bearbeiten = Abschnitte + Vorlage + Farben
+  const vorlage = el("button", "chip", "✎ Bearbeiten");
+  vorlage.onclick = sheetWpBearbeiten;
   vorlageZ.append(vorlage);
   if (!w) {
     const k = el("div", "karte wp-karte");
@@ -8864,23 +8940,30 @@ function renderWochenplan() {
     c.append(k, vorlageZ);
     return;
   }
+  // Reihenfolge und Namen aus wp.abschnitte (v232)
   const oben = el("div", "karten wp-liste");
-  oben.append(wpBlock("Wochenziel", montag, w.ziele, { art: "ziele" }),
-    wpBlock("Top 3 Prioritäten", montag, w.prio, { art: "prio" }),
-    wpBlock("Liegen geblieben", montag, w.liegen, { art: "liegen" }));
-  for (let i = 0; i < 7; i++) {
-    const d = wpTag(montag, i);
-    const frei = w.tage[i].frei ? el("span", "pill wp-frei", "FREI") : null;
-    const karte = wpBlock(WP_TAGE[i] + " · " + d.slice(8, 10) + "." + d.slice(5, 7) + ".",
-      montag, w.tage[i].aufgaben, { art: "tag", tag: i }, frei);
-    karte.dataset.datum = d;
-    oben.append(karte);
+  for (const ab of wp.abschnitte) {
+    if (ab.aus) continue;
+    if (ab.art === "tage") {
+      for (let i = 0; i < 7; i++) {
+        const d = wpTag(montag, i);
+        const frei = w.tage[i].frei ? el("span", "pill wp-frei", "FREI") : null;
+        const karte = wpBlock(WP_TAGE[i] + " · " + d.slice(8, 10) + "." + d.slice(5, 7) + ".",
+          montag, w.tage[i].aufgaben, { art: "tag", tag: i }, frei, 0);
+        karte.dataset.datum = d;
+        oben.append(karte);
+      }
+    } else if (ab.art === "liste") {
+      oben.append(wpBlock(ab.name, montag, wpOrtListe(w, { art: ab.id }) || [],
+        { art: ab.id }, null, ab.max));
+    } else {
+      const n = el("div", "karte wp-karte tippbar");
+      n.append(el("div", "titel", ab.name),
+        el("div", "kontext wp-notiz", wpText(w, ab.id) || "Antippen zum Eintragen"));
+      n.onclick = () => sheetWpText(montag, ab.id);
+      oben.append(n);
+    }
   }
-  const n = el("div", "karte wp-karte tippbar");
-  n.append(el("div", "titel", "Notizen"),
-    el("div", "kontext wp-notiz", w.notizen || "Antippen zum Eintragen"));
-  n.onclick = () => sheetWpNotizen(montag);
-  oben.append(n);
   c.append(oben, vorlageZ);
   // Aus dem Kalender kommend: direkt zum angetippten Tag (Tobias 18.11.)
   const ziel = sprung && oben.querySelector('[data-datum="' + sprung + '"]');
@@ -9102,14 +9185,25 @@ function sheetWpAufgabe(montag, ort, id) {
         g.unter = neuUnter.map((u) => Object.assign(alt.get(u.id) || {}, u));
       });
     } else {
-      const max = WP_MAX[ort.art];
+      // Hoechstzahl erst beim Speichern aus dem AKTUELLEN Stand (Codex v232,
+      // Fund 1: ein Knopf aus einem getauschten Stand kennt die alte).
+      let grund = "";
       wpSheetSpeichern((roh) => {
-        const liste = wpOrtListe(roh && roh.wochen && roh.wochen[montag], ort);
+        // Genau der Schreibweg (wochenplan() + anlegen), nur auf einer KOPIE:
+        // gleiche Entscheidung, Roh bleibt unberuehrt (Codex v232 R1 5, R2 2+3).
+        const k = wpAuffuellen(JSON.parse(JSON.stringify(roh || null)), () => "probe");
+        const woche = k.wochen[montag];
+        grund = "Diese Woche gibt es nicht mehr — nichts angelegt.";
+        if (!woche || typeof woche !== "object" || Array.isArray(woche)) return false;
+        const ab = k.abschnitte.find((a) => a.id === ort.art);
+        const max = ort.art === "tag" || !ab ? 0 : ab.max;
+        const liste = wpOrtListe(woche, ort, true);
+        grund = !liste ? "Hier liegt etwas Unbekanntes — nichts angelegt."
+          : "Hier ist kein Platz mehr (höchstens " + max + ") — nichts angelegt.";
         return Boolean(liste) && (!max || liste.length < max);
       }, (w) => {
-        wpOrtListe(w.wochen[montag], ort).push({ id: wpId(), text: t, zustand: z, unter: neuUnter });
-      }, max ? "Hier ist kein Platz mehr (höchstens " + max + ") — nichts angelegt."
-             : "Diese Woche gibt es nicht mehr — nichts angelegt.");
+        wpOrtListe(w.wochen[montag], ort, true).push({ id: wpId(), text: t, zustand: z, unter: neuUnter });
+      }, () => grund);
     }
   };
   okZ.append(ok);
@@ -9151,22 +9245,156 @@ function sheetWpTag(montag, i) {
     wpTag(montag, i).slice(5, 7) + ".", wrap);
 }
 
-function sheetWpNotizen(montag) {
+// Text-Abschnitt (Notizen oder eigener, v232) einer Woche bearbeiten.
+function sheetWpText(montag, id) {
   const wp = wpDaten(datenstand);
   const w = wp.wochen[montag];
-  if (!w) { render(); return; }
+  const ab = wp.abschnitte.find((a) => a.id === id);
+  if (!w || !ab) { render(); return; }
   const wrap = el("div");
   const t = el("textarea", "suche");
   t.rows = 10;
-  t.value = w.notizen;
-  t.placeholder = "Notiz eintragen";
+  t.value = wpText(w, id);
+  t.placeholder = "Text eintragen";
   const okZ = el("div", "chips");
   const ok = el("button", "chip haupt", "✓ Speichern");
   ok.onclick = () => wpSheetSpeichern((roh) => Boolean(roh && roh.wochen && roh.wochen[montag]),
-    (x) => { x.wochen[montag].notizen = t.value; });
+    (x) => {
+      const woche = x.wochen[montag];
+      if (id === "notizen") { woche.notizen = t.value; return; }
+      if (!woche.extra || typeof woche.extra !== "object" || Array.isArray(woche.extra)) woche.extra = {};
+      woche.extra[id] = t.value;
+    });
   okZ.append(ok);
   wrap.append(t, okZ);
-  sheetOeffnen("Notizen · " + wpKopf(montag), wrap);
+  sheetOeffnen(ab.name + " · " + wpKopf(montag), wrap);
+}
+
+// Bearbeiten (v232, Tobias 19.11.): Abschnitte umbenennen, verschieben,
+// Hoechstzahl, ausblenden/einblenden, eigene anlegen (Liste oder Text).
+// Gilt fuer ALLE Wochen. Dazu die Wege zu Vorlage und Farben.
+// Gearbeitet wird an einer Kopie; erst "✓ Speichern" schreibt.
+function sheetWpBearbeiten() {
+  if (!datenstand) { banner("Kein Datenstand geladen — App einmal mit Internet öffnen."); return; }
+  const liste = wpDaten(datenstand).abschnitte;
+  const start = JSON.stringify(liste);
+  const wrap = el("div");
+  const feld = el("div");
+  // Verschieben unter den SICHTBAREN: Tausch mit dem naechsten sichtbaren
+  // Nachbarn, ausgeblendete bleiben dazwischen liegen.
+  const schiebe = (ab, r) => {
+    const sicht = liste.filter((a) => !a.aus);
+    const j = sicht.indexOf(ab) + r;
+    if (j < 0 || j >= sicht.length) return;
+    const i1 = liste.indexOf(ab), i2 = liste.indexOf(sicht[j]);
+    liste[i1] = sicht[j];
+    liste[i2] = ab;
+    zeichne();
+  };
+  const zeichne = () => {
+    feld.innerHTML = "";
+    const sicht = liste.filter((a) => !a.aus);
+    sicht.forEach((ab, i) => {
+      const z = el("div", "wp-zeile wp-ab-zeile");
+      if (ab.art === "tage") z.append(el("span", "wp-ab-name", ab.name));
+      else {
+        const n = el("input", "feld wp-ab-name");
+        n.type = "text";
+        n.value = ab.name;
+        n.placeholder = ab.art === "text" ? "Name (Textfeld)" : "Name (Liste)";
+        n.setAttribute("aria-label", "Name des Abschnitts");
+        n.oninput = () => { ab.name = n.value; };
+        z.append(n);
+      }
+      if (ab.art === "liste") {
+        const hz = el("input", "feld wp-ab-max");
+        hz.type = "number";
+        hz.min = "1";
+        hz.inputMode = "numeric";
+        hz.value = ab.max ? String(ab.max) : "";
+        hz.placeholder = "∞";
+        hz.setAttribute("aria-label", "Höchstzahl Aufgaben, leer = unbegrenzt");
+        hz.oninput = () => { ab.max = Math.max(0, Math.floor(Number(hz.value)) || 0); };
+        z.append(hz);
+      }
+      const hoch = el("button", "wp-haken", "▲");
+      hoch.setAttribute("aria-label", "nach oben");
+      hoch.disabled = i === 0;
+      hoch.onclick = () => schiebe(ab, -1);
+      const runter = el("button", "wp-haken", "▼");
+      runter.setAttribute("aria-label", "nach unten");
+      runter.disabled = i === sicht.length - 1;
+      runter.onclick = () => schiebe(ab, 1);
+      z.append(hoch, runter);
+      if (ab.art !== "tage") {
+        const weg = el("button", "wp-haken", "✕");
+        weg.setAttribute("aria-label", "ausblenden");
+        weg.onclick = () => { ab.aus = true; zeichne(); };
+        z.append(weg);
+      }
+      feld.append(z);
+    });
+    const versteckt = liste.filter((a) => a.aus);
+    if (versteckt.length) {
+      feld.append(el("div", "abschnitt", "Ausgeblendet"));
+      for (const ab of versteckt) {
+        const z = el("div", "wp-zeile wp-ab-zeile");
+        const ein = el("button", "chip", "↺ einblenden");
+        ein.onclick = () => { ab.aus = false; zeichne(); };
+        z.append(el("span", "wp-ab-name", ab.name || "(ohne Namen)"), ein);
+        feld.append(z);
+      }
+    }
+  };
+  zeichne();
+  const neuZ = el("div", "chips");
+  for (const [art, t] of [["liste", "＋ Liste"], ["text", "＋ Textfeld"]]) {
+    const b = el("button", "chip", t);
+    b.onclick = () => {
+      liste.push({ id: "x" + wpId(), name: "", art: art, max: 0, aus: false });
+      zeichne();
+      const felder = feld.querySelectorAll("input.wp-ab-name");
+      if (felder.length) felder[felder.length - 1].focus();
+    };
+    neuZ.append(b);
+  }
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Speichern");
+  ok.onclick = () => {
+    if (liste.some((a) => a.art !== "tage" && !String(a.name || "").trim())) {
+      banner("Bitte jedem Abschnitt einen Namen geben.");
+      return;
+    }
+    wpSheetSpeichern(() => true, (x) => {
+      // Felder, die eine spaetere Fassung an Abschnitte haengt, bleiben.
+      const alt = new Map(x.abschnitte.map((a) => [a.id, a]));
+      x.abschnitte = wpAbschnitte(liste.map((a) => Object.assign(alt.get(a.id) || {}, a)));
+    });
+  };
+  okZ.append(ok);
+  // Vorlage/Farben ersetzen dieses Sheet (sheetEbene, wie "＋ Kunde"):
+  // eine Zurueck-Stufe, nicht zwei. Ungespeicherte Aenderungen hier gehen dabei verloren.
+  const weiterZ = el("div", "chips");
+  for (const [t, fn] of [["✎ Vorlage", sheetWpVorlage], ["🎨 Farben", sheetWpFarben]]) {
+    const b = el("button", "chip", t);
+    b.onclick = () => {
+      // Codex v232, Fund 3: Entwurf nicht still verwerfen
+      if (JSON.stringify(liste) !== start &&
+          !confirm("Änderungen an den Abschnitten sind nicht gespeichert und gehen verloren. Trotzdem weiter?")) return;
+      sheetEbene = fn;
+      history.back();
+    };
+    weiterZ.append(b);
+  }
+  wrap.append(el("div", "stand", "Abschnitte — gelten für alle Wochen"), feld, neuZ, okZ,
+    el("div", "abschnitt", "Außerdem"), weiterZ,
+    erklaerung("Abschnitte", "Name antippen zum Umbenennen, ▲▼ zum Verschieben, " +
+      "Zahl = höchstens so viele Aufgaben über „＋ Aufgabe“ (leer = unbegrenzt; " +
+      "vorhandene und übernommene bleiben immer stehen). ✕ blendet aus — " +
+      "die Einträge bleiben gespeichert und kommen mit „↺ einblenden“ zurück. " +
+      "Ist „Liegen geblieben“ ausgeblendet, bietet „Woche anlegen“ nichts zur " +
+      "Übernahme an."));
+  sheetOeffnen("Bearbeiten", erklaerungenAnsEnde(wrap));
 }
 
 // Vorlage fuer Wiederkehrendes (Tobias 17.11.: aendert sich, wenn das
@@ -9254,7 +9482,10 @@ function sheetWpAnlegen(montag) {
   const vorMontag = wpMontag(montag, -1);
   // Was die Vorlage ohnehin wieder bringt, und Doppelte, gar nicht erst
   // anbieten - wpNeueWoche liesse es sonst still fallen (Handytest-Vorlauf).
-  const offene = wpUebernehmbar(wp.vorlage, wpOffene(wp.wochen[vorMontag]));
+  // Liegen geblieben ausgeblendet (v232): nichts anbieten - es laege
+  // sonst unsichtbar in der neuen Woche.
+  const liegenAn = (x) => !x.abschnitte.some((a) => a.id === "liegen" && a.aus);
+  const offene = liegenAn(wp) ? wpUebernehmbar(wp.vorlage, wpOffene(wp.wochen[vorMontag])) : [];
   // Auswahl ueber die POSITION, nicht die ID: Altdaten ohne ID haetten
   // sonst alle denselben Schluessel (Code-Pruefung 18.11.).
   const gewaehlt = new Set(offene.map((_, i) => i));
@@ -9273,7 +9504,8 @@ function sheetWpAnlegen(montag) {
       wrap.append(z);
     });
   } else {
-    wrap.append(el("div", "stand", wp.wochen[vorMontag]
+    wrap.append(el("div", "stand", !liegenAn(wp) ? "„Liegen geblieben“ ist ausgeblendet — " +
+      "nichts wird übernommen." : wp.wochen[vorMontag]
       ? "Aus der Vorwoche ist nichts offen." : "Die Vorwoche ist nicht angelegt."));
   }
   const okZ = el("div", "chips");
@@ -9281,10 +9513,9 @@ function sheetWpAnlegen(montag) {
   ok.onclick = () => wpSheetSpeichern(
     (roh) => !(roh && roh.wochen && typeof roh.wochen === "object" && roh.wochen[montag]),
     (x) => {
-      // frisch aus dem lebenden Stand, nur die angehakten
-      // frisch aus dem lebenden Stand; das Sheet sperrt den Standtausch,
-      // die Liste ist also dieselbe wie beim Oeffnen
-      const mit = wpUebernehmbar(x.vorlage, wpOffene(x.wochen[vorMontag]))
+      // frisch aus dem lebenden Stand, nur die angehakten; das Sheet
+      // sperrt den Standtausch, die Liste ist also dieselbe wie beim Oeffnen
+      const mit = !liegenAn(x) ? [] : wpUebernehmbar(x.vorlage, wpOffene(x.wochen[vorMontag]))
         .filter((_, i) => gewaehlt.has(i));
       x.wochen[montag] = Object.assign({ angelegt: stempelJetzt() }, wpNeueWoche(x.vorlage, mit));
     }, "Diese Woche ist schon angelegt — nichts geändert.");
@@ -9348,11 +9579,12 @@ function renderHauptmenu() {
   // Wochenplan (v228, Punkt 76): unter OneDrive. Liest nur (wpDaten).
   const heute = wpHeuteMontag();
   const kw = wpKw(heute);
-  const woche = datenstand ? wpDaten(datenstand).wochen[heute] : null;
+  const wpK = datenstand ? wpDaten(datenstand) : null;
+  const woche = wpK ? wpK.wochen[heute] : null;
   const wpk = el("div", "karte menue-karte" + (datenstand ? "" : " leer"));
   wpk.append(el("div", "titel", "Wochenplan"),
     el("div", "kontext", "KW " + kw.kw + " · " + (!datenstand ? "braucht den Datenstand"
-      : woche ? wpOffenZahl(woche) + " offen" : "noch nicht angelegt")));
+      : woche ? wpOffenZahl(woche, wpK.abschnitte) + " offen" : "noch nicht angelegt")));
   wpk.onclick = () => { wpAnsicht = null; wpModus = "plan"; location.hash = "#/wochenplan"; };
   wpk.dataset.kachel = "wochenplan";
 
