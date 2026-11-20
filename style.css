@@ -90,6 +90,7 @@ header button:disabled { opacity: .5; }
   color: var(--text-leise);
   margin-bottom: 14px;
 }
+.stand.warn { color: var(--coral); }   /* v233: "Status fehlt" im Auftrag */
 
 main {
   padding: 16px;

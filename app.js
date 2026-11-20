@@ -49,10 +49,11 @@ function quoteText(k, g) {
 // Netto erst beim Zeichnen: gesamt traegt nur brutto, der Satz steht in den
 // Einstellungen (ustSatz). Leere Liste = keine Zeile.
 const KACHEL_UNTER = {
+  // v233 (F2): netto aus der Summe samt behaltener Betraege, sobald sie > 0 ist
   auftragswert: (g) => {
-    const u = ustSatz();
-    return g.abschluesse && u
-      ? ["netto " + kpiText("umsatz", g.umsatz / (1 + u / 100))] : [];
+    const u = ustSatz(), summe = (g.umsatz || 0) + (g.umsatzBehalten || 0);
+    return summe > 0 && u
+      ? ["netto " + kpiText("umsatz", summe / (1 + u / 100))] : [];
   },
   abschlussquote: (g) => !("abschluesse" in g && "pitchliste" in g) ? [] :
     [g.abschluesse + (g.abschluesse === 1 ? " Abschluss" : " Abschlüsse") +
@@ -92,7 +93,9 @@ const KPI_ABGELEITET = {
   // ÷ angeschriebene Marken des Monats (Tobias 01.11.).
   abschlussquote:  (g) => "abschluesse" in g && "pitchliste" in g
     ? quote(g.abschluesse, g.pitchliste) : null,
-  auftragswert:    (g) => "abschluesse" in g ? g.umsatz : null,
+  // v233 (E6/F2): + behaltene Betraege abgebrochener, bestaetigter Auftraege.
+  // Ø (auftrag_schnitt) bleibt nur aus Abschluessen.
+  auftragswert:    (g) => "abschluesse" in g ? g.umsatz + (g.umsatzBehalten || 0) : null,
   auftrag_schnitt: (g) => g.abschluesse ? g.umsatz / g.abschluesse : null,
 };
 
@@ -254,9 +257,20 @@ function abschluesse(marke) {
     .map((a) => ({ datum: a.ende, umsatz: Number(a.umsatz) }))
     .filter((a) => eventDatum(a) !== null);
 }
+// Behaltene Betraege (v233, E6): abgebrochener Auftrag mit Merker
+// umsatzZaehlt (Status "bestaetigt" + Betrag beim Abbruch). Zaehlt im
+// Auftragswert am Abbruchtag, NIE als Abschluss. Altbestand ohne Merker
+// zaehlt nicht. Form wie abschluesse(), dieselben drei Leser.
+function behalteneBetraege(marke) {
+  return ((marke && marke.auftraege) || [])
+    .filter((a) => a && a.ausgang !== "abgeschlossen" && a.umsatzZaehlt === true &&
+                   Number(a.umsatz) > 0)
+    .map((a) => ({ datum: a.ende, umsatz: Number(a.umsatz) }))
+    .filter((a) => eventDatum(a) !== null);
+}
 
 function kpiZeitraum(historien, von, bis) {
-  const gesamt = { marken: 0, abschluesse: 0, umsatz: 0 };
+  const gesamt = { marken: 0, abschluesse: 0, umsatz: 0, umsatzBehalten: 0 };
   for (const k of KPI_SUMMEN) gesamt[k] = 0;
   const marken = [];
   for (const { marke, ereignisse } of historien) {
@@ -267,6 +281,10 @@ function kpiZeitraum(historien, von, bis) {
       if (d < von || d > bis) continue;
       gesamt.abschluesse++;
       gesamt.umsatz += a.umsatz;
+    }
+    for (const a of behalteneBetraege(marke)) {
+      const d = eventDatum(a);
+      if (d >= von && d <= bis) gesamt.umsatzBehalten += a.umsatz;
     }
     const k = kpiMarke(ereignisse, von, bis);
     if (!k) continue;
@@ -331,7 +349,7 @@ function kpiNachrechnen() {
   // ohne spaeteres Ereignis aus "Gesamt".
   let juengste = 0;
   for (const { marke, ereignisse } of historien)
-    for (const e of [...ereignisse, ...abschluesse(marke)])
+    for (const e of [...ereignisse, ...abschluesse(marke), ...behalteneBetraege(marke)])
       juengste = Math.max(juengste, eventDatum(e) || 0);
 
   // Nenner der Abschlussquote (v215): die Pitchliste von HEUTE, fuer jeden
@@ -382,7 +400,7 @@ function zeitraeumeAusDatenstand(marken) {
   for (const m of marken || []) {
     // C7: ein Monat nur mit Abschluss bekommt seinen Chip. Abweichung vom
     // PC-Spiegel monats_zeitraeume (kennt keine Auftraege) - test_s1 Abschnitt 6.
-    for (const e of [...((m && m.events) || []), ...abschluesse(m)]) {
+    for (const e of [...((m && m.events) || []), ...abschluesse(m), ...behalteneBetraege(m)]) {
       const d = eventDatum(e);
       if (!d) continue;
       if (!min || d < min) min = d;
@@ -679,19 +697,34 @@ function auftraegeOhnePitch() {
     .filter((m) => m.kundenauftrag && m.brandrating && !m.pitchliste);
 }
 function auftragWarnung() {
-  const liste = auftraegeOhnePitch();
+  return auftragKarte(auftraegeOhnePitch(), "Kundenauftrag an einer Brand-Rating-Marke",
+    " \u2014 steht auch im Brand Rating. Zum Abschließen oder Abbrechen des Auftrags hier tippen.");
+}
+// Laufende Auftraege ohne gueltigen Status (v233, E11): Andrea traegt nach,
+// die App raet nichts. Archivierte zaehlen nicht.
+function auftraegeOhneStatus() {
+  return (datenstand ? datenstand.marken || [] : [])
+    .filter((m) => m.kundenauftrag && !statusGueltig(m.kundenauftrag));
+}
+function statusWarnung() {
+  return auftragKarte(auftraegeOhneStatus(), "Kundenauftrag ohne Status",
+    " \u2014 bitte „in Verhandlung“ oder „bestätigt“ wählen. Zum Öffnen hier tippen.",
+    () => { kf.status = "offen"; kf.archiv = false; });   // Filter "ohne Status"
+}
+// Achtung-Karte zu Kundenauftraegen. Mehrere Marken: in die Kundenauftraege
+// statt nur die erste zu oeffnen (Großtest, Qwen Q-D1-F8 - die Karte nannte
+// beide, oeffnete eine); `filter` stellt die Liste vorher passend ein.
+function auftragKarte(liste, titel, text, filter) {
   if (!liste.length) return null;
   const k = el("div", "karte block warnung tippbar");
   const kopf = el("div", "kopf");
   kopf.append(el("span", "pill", "\u26a0 Achtung"));
-  k.append(kopf, el("div", "titel", "Kundenauftrag an einer Brand-Rating-Marke"),
-    el("div", "kontext", liste.map((m) => m.name).join(", ") +
-      " \u2014 steht auch im Brand Rating. Zum Abschließen des Auftrags hier tippen."));
-  // Mehrere Marken: in die Kundenauftraege statt nur die erste zu oeffnen
-  // (Großtest, Qwen Q-D1-F8 - die Karte nannte beide, oeffnete eine).
+  k.append(kopf, el("div", "titel", titel),
+    el("div", "kontext", liste.map((m) => m.name).join(", ") + text));
   k.onclick = () => {
-    if (liste.length === 1) auftragOeffnen(liste[0].name);
-    else location.hash = "#/kundenauftraege";
+    if (liste.length === 1) return auftragOeffnen(liste[0].name);
+    if (filter) filter();
+    location.hash = "#/kundenauftraege";
   };
   return k;
 }
@@ -736,7 +769,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v232"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v233"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -2270,7 +2303,11 @@ function sheetInfo() {
             "Abschlussquote kommen aus dem Umsatz im " +
             "Kundenauftrag: ein abgeschlossener Auftrag mit Umsatz zählt im " +
             "Monat seines Abschlusses. Abschlussquote = Abschlüsse ÷ Marken, " +
-            "die heute in der Pitchliste stehen."),
+            "die heute in der Pitchliste stehen. Geht eine Marke nach einem " +
+            "Abbruch zurück in die Pitchliste oder geht sie in Verhandlung, " +
+            "ändert sich der Nenner um 1, auch für frühere Monate."),
+      zeile("Bricht ein bestätigter Auftrag ab, zählt sein Betrag (z. B. eine " +
+            "Anzahlung) im Auftragswert, aber nicht als Abschluss."),
       zeile("Kennenlerngespräche, Kooperationen und Kooperationsquote stehen " +
             "in keinem Brand-Book — sie zeigen „—“, bis es eine Quelle gibt."),
       titel("Bedienung"),
@@ -3282,7 +3319,8 @@ function sheetPitch(p) {
   // z.nr: offenes Nutzungsrecht-Formular (v199). z.nrMarkiert: aus der
   // Gesamtliste angetipptes Recht (v203) - einmal beim Oeffnen uebernommen,
   // ein Hinweis, kein Datenwert (Invariante: Abschnitte lesen nur p.name).
-  const z = { modus: null, nr: null, nrMarkiert: p.nrMarkiert };
+  // z.status: gewaehlter Status beim Anlegen eines Auftrags (v233, statusChips).
+  const z = { modus: null, nr: null, nrMarkiert: p.nrMarkiert, status: null };
   const stift = mv && mv.brandrating
     ? formularKnopf(z, bau, "rating", "✎ Rating") : null;
   // Kontaktdaten auch hier bearbeitbar (Tobias 01.09.): faellt im Pitch-
@@ -3394,6 +3432,10 @@ function sheetPitch(p) {
       if (block) wrap.append(block);
     }
     wrap.append(bereichAuftragsverlauf());
+    // v233 (E7 Ja): nach einem Abbruch in die Pitchliste laufen die Rechte
+    // weiter - Reiter zum Ansehen/Verlaengern, sonst fuehrte der Tipp in der
+    // Gesamtliste (nutzungsrechtOeffnen) ins Leere.
+    wrap.append(bereichNutzungsrechte(true));
 
     // EIN Bauplan fuer beide Herkuenfte (Tobias 03.09.): ob die Brand aus
     // Andreas Word kam oder in der App entstand, sieht man am Inhalt - das
@@ -3494,6 +3536,18 @@ function sheetPitch(p) {
           const mm = datenstand && markeZuName(p.name);
           return mm && auftragZuEintrag(mm, h);
         }, () => { listeVeraltet = true; datenstandPersistieren(); }));
+      }
+      // v233: abgebrochener Auftrag - Umsatz und Rechte nur als Text, ob sie
+      // zaehlen bzw. weiterlaufen, entschied sich beim Abbruch (E6, E7).
+      // Ohne Merker umsatzZaehlt (Altbestand v193-v196) neutral "zaehlt nicht".
+      if (["zurueck", "abgebrochen"].includes(h.richtung) && a && !h.archiv) {
+        if (Number(a.umsatz) > 0) tab.append(el("div", "leise",
+          `   Umsatz ${kpiText("umsatz", Number(a.umsatz))}: ` + (a.umsatzZaehlt
+            ? "zählt im Auftragswert, kein Abschluss"
+            : a.status === "verhandlung" ? "zählt nicht (in Verhandlung)" : "zählt nicht")));
+        for (const nr of nrListe(a)) tab.append(el("div", "leise",
+          `   Nutzungsrecht ${nutzungsrechtName(m, nr)}: ${deDatum(nr.beginn)} – ` +
+          `${deDatum(nr.ende)}, ` + (a.rechteRuhen ? "ruht (keine Erinnerung)" : "läuft weiter")));
       }
       // Archivierte Checkliste: offene Punkte bleiben offen (Codex, 17.09.).
       // Sie stehen hier, damit nachvollziehbar ist, was beim Rueckweg
@@ -3597,21 +3651,28 @@ function sheetPitch(p) {
   // Fortsetzen entfaellt - ein Auftrag wird nie wieder geoeffnet. Der neue
   // startet leer mit neuer Kennung; nur die Infofelder der Marke (E-Mail,
   // Homepage ...) bleiben, weil sie an m haengen, nicht am Auftrag.
+  // v233 (E10): Status-Chips davor, Knopf gesperrt bis gewaehlt.
   function neuerAuftragKnopf(m) {
+    const f = document.createDocumentFragment();
     const zeile = el("div", "chips");
     const neu = el("button", "chip", "＋ Neuer Auftrag");
+    neu.disabled = !z.status;
     neu.onclick = () => {
       if (!confirm(`Neuen Auftrag für „${m.name}“ anlegen?\n\n` +
           "Er bekommt eine eigene Nummer und startet leer. Nur die Infofelder " +
-          "der Marke (E-Mail, Homepage …) bleiben.")) return;
-      const r = kundeAnlegen(m.name);
+          "der Marke (E-Mail, Homepage …) bleiben.\n\n" +
+          `Status: ${auftragStatusText(z.status)}.`)) return;
+      const r = kundeAnlegen(m.name, lokalIso(), z.status);
       if (typeof r === "string") { banner(r); return; }
+      z.status = null;
       banner("Neuer Auftrag angelegt.");
       bookNachziehen(r);
       bau();
     };
     zeile.append(neu);
-    return zeile;
+    f.append(statusChips(z, bau), zeile);
+    if (!z.status) f.append(el("div", "stand", "Bitte erst den Status wählen."));
+    return f;
   }
   // Marke in der Kundenpflege (v194, R3): dauerhafte Geschaeftsbeziehung.
   // Zeigt das Ende des letzten Auftrags, die Aufgaben (Checkliste mit Ampel
@@ -3633,7 +3694,9 @@ function sheetPitch(p) {
       `In der Kundenpflege seit ${kp.seit || "—"} · Ende letzter Auftrag: ` +
       ((la || {}).ende || "—")));
     // v216: sonst weiss Andrea nicht, dass ein Betrag fehlt und wo er hingehoert
-    if (la) frag.append(el("div", "stand", Number(la.umsatz) > 0
+    // v233: nur fuer einen echten Abschluss (nach Abbruch zeigt kennung ohnehin
+    // auf den letzten Abschluss, F1)
+    if (la && la.ausgang === "abgeschlossen") frag.append(el("div", "stand", Number(la.umsatz) > 0
       ? "Umsatz letzter Auftrag: " + kpiText("umsatz", la.umsatz)
       : "Umsatz letzter Auftrag: fehlt — im Reiter „Historie“ nachtragen."));
     frag.append(checklisteBlock(kp, sichern, true), neuerAuftragKnopf(m));
@@ -3666,9 +3729,11 @@ function sheetPitch(p) {
     const frag = document.createDocumentFragment();
     const m = datenstand ? markeZuName(p.name) : null;
     if (!m || !m.kundenarchiv) return frag;
+    const la = letzterAuftrag(m) || {};
     frag.append(el("div", "stand",
       `Ruht im Archiv seit ${m.kundenarchiv.seit || "—"} · letzter Auftrag: ` +
-      auftragStatusText((letzterAuftrag(m) || {}).status)));
+      (["zurueck", "abgebrochen"].includes(la.ausgang) ? "abgebrochen"
+        : auftragStatusText(la.status))));
     frag.append(neuerAuftragKnopf(m));
     return abschnitt("Archiv", frag);
   }
@@ -3680,7 +3745,10 @@ function sheetPitch(p) {
   // ein Objekt (Codex 03.10.): { n } fuer ein bestehendes Recht (v203,
   // aufgeloest ueber nrZuNummer), { kennung, neu: true } fuer ein neues am
   // Auftrag (aufgeloest ueber nrAuftragZu).
-  function bereichNutzungsrechte() {
+  // v233 (E7): Rechte eines abgebrochenen Auftrags mit "Nein" (rechteRuhen)
+  // stehen nur noch im Verlauf. nurAnsehen = Pitch-Zweig nach einem Abbruch:
+  // kein "＋ Nutzungsrecht erstellen", der Abschnitt nur, wenn es Rechte gibt.
+  function bereichNutzungsrechte(nurAnsehen) {
     const frag = document.createDocumentFragment();
     const m = datenstand ? markeZuName(p.name) : null;
     if (!m) return frag;
@@ -3688,8 +3756,10 @@ function sheetPitch(p) {
     const offenNeu = (k) => z.nr && z.nr.neu && z.nr.kennung === k;
     // Alle Rechte der Marke, nach Nummer (v203). "Auftrag vom ..." nur, wenn
     // sie an mehr als einem Auftrag haengen - sonst ist es Rauschen.
-    const rechte = nrAuftraege(m).flatMap((a) => nrListe(a).map((nr) => ({ a, nr })))
+    const rechte = nrAuftraege(m).filter((a) => !a.rechteRuhen)
+      .flatMap((a) => nrListe(a).map((nr) => ({ a, nr })))
       .sort((x, y) => (Number(x.nr.n) || 0) - (Number(y.nr.n) || 0));
+    if (nurAnsehen && !rechte.length) return frag;
     const mehrere = new Set(rechte.map((x) => x.a)).size > 1;
     const tab = el("div", "tabelle");
     for (const { a, nr } of rechte) {
@@ -3714,7 +3784,7 @@ function sheetPitch(p) {
       if (offenNr(n)) tab.append(nrFormular({ n }, nr));
     }
     frag.append(rechte.length ? tab : el("div", "stand", "Noch kein Nutzungsrecht."));
-    const kandidaten = nutzungsrechtKandidaten(m);
+    const kandidaten = nurAnsehen ? [] : nutzungsrechtKandidaten(m);
     for (const a of kandidaten) {
       const k = a.kennung || 1;
       const zusatz = a !== m.kundenauftrag ? ` (Auftrag vom ${a.ende || "—"})`
@@ -3849,8 +3919,12 @@ function sheetPitch(p) {
 
     frag.append(el("div", "stand", `Im Auftrag seit ${ka.seit || "—"}`));
 
-    // --- Status (v192). chipFilter hebt beim zweiten Tippen auf ("" -> offen).
-    frag.append(el("div", "stand", "Status: " + auftragStatusText(ka.status)),
+    // --- Status (v192). Seit v233 Pflicht (E10): das zweite Tippen gibt ""
+    // -> null, auftragStatusSetzen() lehnt das ab, bau() zeigt den Status
+    // wieder an. Fehlt er (Altauftrag, E11), steht der Hinweis in Warnfarbe.
+    const mitStatus = statusGueltig(ka);
+    frag.append(mitStatus ? el("div", "stand", "Status: " + auftragStatusText(ka.status))
+      : el("div", "stand warn", "Status fehlt, bitte wählen"),
       chipFilter(AUFTRAG_STATUS, ka.status, (w) => {
         if (auftragStatusSetzen(m, w || null, lokalIso())) sichern(false);
       }, bau));
@@ -3879,9 +3953,9 @@ function sheetPitch(p) {
 
     frag.append(checklisteBlock(ka, sichern));
 
-    // --- Einziger Ausgang (v197): Auftrag ins Archiv, Marke gleichzeitig in
-    // die Kundenpflege. Gilt auch fuer geplatzte Auftraege. Kein Rueckweg in
-    // die Pitchliste mehr.
+    // --- Ausgang "✓ Abgeschlossen" (v197): Auftrag ins Archiv, Marke
+    // gleichzeitig in die Kundenpflege. Den Weg zurueck in die Pitchliste
+    // gibt es seit v233 wieder, ueber "✕ Abbrechen" darunter.
     const aKnopf = el("button", "chip", "✓ Abgeschlossen");
     aKnopf.onclick = () => {
       const o = (ka.checkliste || []).filter((z) => z && !z.erledigt);
@@ -3902,9 +3976,16 @@ function sheetPitch(p) {
       bookNachziehen(m);      // bleibt in "Kundenaufträge"; repariert nur Drift
       bau();
     };
+    // --- Zweiter Ausgang (v233, E3/E5): "✕ Abbrechen" oeffnet das Formular,
+    // dort waehlt Andrea das Ziel. Ohne Status gesperrt (E11): davon haengt
+    // ab, ob ein Betrag zaehlt. "✓ Abgeschlossen" geht immer (F8).
+    const xKnopf = formularKnopf(z, bau, "abbrechen", "✕ Abbrechen");
+    xKnopf.disabled = !mitStatus;
     const aZeile = el("div", "chips");
-    aZeile.append(aKnopf);
+    aZeile.append(aKnopf, xKnopf);
     frag.append(aZeile);
+    if (!mitStatus) frag.append(el("div", "stand", "Erst den Status wählen (in " +
+      "Verhandlung / bestätigt), davon hängt ab, ob ein Betrag zählt."));
 
     return abschnitt("Kundenauftrag", frag);
   }
@@ -4010,30 +4091,39 @@ function sheetPitch(p) {
     // Dieselbe Funktion, die auch das Verschieben selbst absichert -
     // nicht eine zweite Abfrage von q.positivBeantwortet (Fall 27/29).
     const erlaubt = verschiebenErlaubt(m);
-    const kaKnopf = el("button", erlaubt ? "chip haupt" : "chip",
+    // v233 (E10): Status vorher waehlen, Knopf bis dahin gesperrt
+    const kaKnopf = el("button", erlaubt && z.status ? "chip haupt" : "chip",
       "→ in Kundenaufträge verschieben");
-    if (!erlaubt) {
+    if (!erlaubt || !z.status) {
       kaKnopf.disabled = true;
     } else {
       kaKnopf.onclick = () => {
         if (!confirm(`„${m.name}“ in die Kundenaufträge verschieben?\n\n` +
             "Die Marke verschwindet aus der Pitchliste. Die Pitchdaten " +
-            "bleiben erhalten — zurückschieben geht jederzeit.")) return;
-        if (!kundenauftragVerschieben(m, lokalIso())) {
+            "bleiben erhalten, „✕ Abbrechen“ im Auftrag holt sie zurück.\n\n" +
+            `Status: ${auftragStatusText(z.status)}.`)) return;
+        if (!kundenauftragVerschieben(m, lokalIso(), z.status)) {
           banner("Das ging nicht — bitte die Liste einmal neu laden.");
           return;
         }
+        z.status = null;
         banner("In die Kundenaufträge verschoben.");
         bookNachziehen(m);      // v193: Book nach "Kundenaufträge"
         bau();
       };
     }
     kaZeile.append(kaKnopf);
+    if (erlaubt) frag.append(statusChips(z, bau));
     frag.append(kaZeile);
+    if (erlaubt && !z.status) frag.append(el("div", "stand", "Bitte erst den Status wählen."));
     if (!erlaubt) {
-      frag.append(erklaerung("In Kundenaufträge verschieben",
-        "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
-        "entsteht aus der Zusage, nicht aus dem Knopf."));
+      const alt = zusageAusEreignissen(m.events) && juengsteAntwort(m.events);
+      frag.append(erklaerung("In Kundenaufträge verschieben", alt
+        ? `Die Zusage vom ${alt.datum} gehörte zu einem Auftrag, der ` +
+          "abgebrochen wurde. Für einen neuen Auftrag bitte erst die neue " +
+          "Antwort hier in der App eintragen."
+        : "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
+          "entsteht aus der Zusage, nicht aus dem Knopf."));
     }
     return abschnitt("In Kundenaufträge", frag);
   }
@@ -4064,7 +4154,7 @@ function sheetPitch(p) {
     // Etappe C (v167): abgeleitet statt am Flag. `termin_hand` bleibt
     // unangetastet - es traegt Andreas selbst gesetzte Wiedervorlage,
     // und die darf aus einer Tatsache nicht verschwinden.
-    const gestoppt = zusageAusEreignissen(m.events) && !q.termin_hand;
+    const gestoppt = !!wirksameZusage(m) && !q.termin_hand;
     const pos = fuSeitPitch(m);
     const s = naechsterSchritt(q.naechste_aktion, pos);
     const standard = (m.intervalle || {})[s.key] || KADENZ_STD[s.key];
@@ -4257,8 +4347,7 @@ function sheetPitch(p) {
       frag.append(el("div", "stand", m.kundenauftrag
         ? "Kadenz gestoppt — die Marke steht im Kundenauftrag."
         : "Kadenz gestoppt — positiv beantwortet. Von allein wird nichts " +
-          "mehr fällig. Zurücknehmen lässt sich das über „Antwort " +
-          "eintragen“ mit „negativ“ für denselben Tag."));
+          "mehr fällig."));
     } else {
       if (eigen) {
         frag.append(el("div", "stand",
@@ -4538,10 +4627,15 @@ function markeExistiert(name, ausser) {
 // ganze Kundenbereich - sonst stuende jede abgeschlossene Marke wieder
 // drin, wichtigster Test in 2b). Gefiltert wird die ANSICHT, die Daten
 // bleiben unangetastet.
-function sichtbarInPitchliste(m) {
+// Darf die Marke ueberhaupt in der Pitchliste stehen (K13)? Eine Stelle fuer
+// die Sicht und fuer die Ziel-Chips beim Abbrechen (Etappe 2).
+function pitchlisteMoeglich(m) {
   const d = (r) => String(r || "").trim().toUpperCase() === "D";
   return Boolean(m && m.pitchliste && !d(m.pitchliste.rating) &&
-    !(m.brandrating && d(m.brandrating.rating)) && !imKundenbereich(m));
+    !(m.brandrating && d(m.brandrating.rating)));
+}
+function sichtbarInPitchliste(m) {
+  return pitchlisteMoeglich(m) && !imKundenbereich(m);
 }
 
 function pitchlisteAktuell() {
@@ -4971,9 +5065,13 @@ function kundenauftraegeAktuell() {
       // halten waere ein Zustand mehr, der auseinanderlaufen kann.
       const cp = naechsterCheckpunkt(m.kundenauftrag);
       // status = Auftragsstatus als Text (v192), nicht der Pitch-Status: der
-      // sagt im Auftrag nichts mehr.
+      // sagt im Auftrag nichts mehr. statusFehlt (v233, E11) ist das Merkmal
+      // fuer den Filter "ohne Status" - "Status fehlt" steht NUR hier, nicht in
+      // auftragStatusText (Archiv und Verlauf bleiben bei "offen", Codex F3 #3).
+      const fehlt = !statusGueltig(m.kundenauftrag);
       return { name: m.name, ...m.pitchliste, ...m.kundenauftrag,
-               status: auftragStatusText(m.kundenauftrag.status),
+               status: fehlt ? "Status fehlt" : auftragStatusText(m.kundenauftrag.status),
+               statusFehlt: fehlt,
                naechsterTermin: cp ? cp.datum : "",
                naechsterCheckText: cp ? cp.text : "" };
     });
@@ -4983,16 +5081,23 @@ function kundenauftraegeAktuell() {
 // steht hier, auch wenn Auftrag 2 gerade laeuft. Quelle ist m.auftraege,
 // unabhaengig vom aktuellen Zweig der Marke. Klick oeffnet die Marke in
 // ihrem heutigen Zustand (sheetPitch liest m frisch).
+// v233: "zurueck" ist wieder in Gebrauch (Abbruch -> Pitchliste); auch die
+// Alteintraege v193-v196 lesen sich so - auch damals ein Ende ohne Abschluss.
 const AUSGANG_TEXT = { abgeschlossen: "abgeschlossen", kundenpflege: "abgeschlossen",
-                       zurueck: "zurück in die Pitchliste" };   // Altwerte bis v196
+                       zurueck: "abgebrochen → Pitchliste" };
+function ausgangText(a) {
+  if (a.ausgang === "abgebrochen") return { kundenpflege: "abgebrochen → Kundenpflege",
+    ruhend: "abgebrochen, Marke ruht" }[a.ziel] || "abgebrochen";
+  return AUSGANG_TEXT[a.ausgang] || "beendet";
+}
 function archivAktuell() {
   if (!archivSichtbar()) return [];        // Einstellung "Archiv aus" (v197)
   return (datenstand ? datenstand.marken || [] : []).flatMap((m) =>
     (m.auftraege || []).filter(Boolean).map((a) => ({
       name: m.name, ...m.pitchliste, prio: a.prio == null ? null : a.prio,
       seit: a.ende, status: auftragStatusText(a.status),
-      naechsterTermin: "", naechsterCheckText: "",
-      fuss: `Auftrag ${a.kennung || 1} · ${AUSGANG_TEXT[a.ausgang] || "beendet"} am ${a.ende || "—"}` })));
+      naechsterTermin: "", naechsterCheckText: "", ausgang: ausgangText(a),
+      fuss: `Auftrag ${a.kennung || 1} · ${ausgangText(a)} am ${a.ende || "—"}` })));
 }
 
 // Kundenpflege (v194, R3). Termin und Text kommen aus ihrer Checkliste wie
@@ -5020,7 +5125,7 @@ function renderKundenpflege() {
   if (!alle.length) {
     c.append(el("div", "leerzustand",
       "Noch niemand in der Kundenpflege. Marken kommen hierher über " +
-      "„✓ Abgeschlossen“ im Kundenauftrag."));
+      "„✓ Abgeschlossen“ im Kundenauftrag oder wenn ein Auftrag abgebrochen wird."));
     return;
   }
   const karten = el("div", "karten");
@@ -5034,6 +5139,7 @@ function renderKundenpflege() {
 // gesetzter Anzeigen-Filter warf hier einen TypeError, ein
 // Faelligkeitsfilter leerte die Liste still.
 const kf = { suche: "", sortierung: "", prio: "", faellig: "", status: "",
+             ausgang: "",       // v233: nur im Archiv
              archiv: false };   // v193: Umschalter Aktiv / Archiv
 
 // EIGENE Suche statt pitchPasst() - gefunden beim Audit 17.09., zweifach
@@ -5059,7 +5165,14 @@ function kundenPasst(p, s) {
     const hat = p.prio == null || p.prio === "" ? "ohne" : String(p.prio);
     if (hat !== kf.prio) return false;
   }
-  if (kf.status && p.status !== auftragStatusText(kf.status)) return false;
+  // v233: "offen" heisst jetzt "ohne Status" - aktive Karten ueber das
+  // Merkmal statusFehlt, Archivkarten wie bisher ueber den Text (Codex F3 R2).
+  if (kf.status && !(kf.status === "offen" ? p.statusFehlt || p.status === "offen"
+                                           : p.status === auftragStatusText(kf.status)))
+    return false;
+  // Ausgang nur im Archiv; ein im Archiv gesetzter Filter leert "Aktiv" nicht
+  if (kf.ausgang && kf.archiv && !String(p.ausgang || "").startsWith(kf.ausgang))
+    return false;
   // Faelligkeit rechnet auf dem CHECKLISTEN-Termin (p.tage kommt aus
   // ampel(naechsterTermin)). Ohne offenen Termin faellt der Auftrag aus
   // jedem Faelligkeitsfilter - dort ist nichts zu tun.
@@ -5070,7 +5183,7 @@ function kundenPasst(p, s) {
     return false;
   }
   if (!s) return true;
-  return [p.name, p.status, p.naechsterCheckText, p.kooperation, p.kategorie]
+  return [p.name, p.status, p.naechsterCheckText, p.kooperation, p.kategorie, p.fuss]
     .join(" ").toLowerCase().includes(s);
 }
 const SORT_KUNDEN = [["", "Nächster Termin"], ["verschoben", "Zuletzt verschoben"],
@@ -5156,8 +5269,11 @@ function renderKundenauftraege() {
     w.append(filterGruppe("Priorität",
       [["1", "Prio 1"], ["2", "Prio 2"], ["3", "Prio 3"], ["ohne", "ohne Prio"]],
       () => kf.prio, (x) => { kf.prio = x; }, zeichnen));
-    w.append(filterGruppe("Status", [["offen", "offen"], ...AUFTRAG_STATUS],
+    w.append(filterGruppe("Status", [["offen", "ohne Status"], ...AUFTRAG_STATUS],
       () => kf.status, (x) => { kf.status = x; }, zeichnen));
+    if (kf.archiv) w.append(filterGruppe("Ausgang",
+      [["abgeschlossen", "abgeschlossen"], ["abgebrochen", "abgebrochen"]],
+      () => kf.ausgang, (x) => { kf.ausgang = x; }, zeichnen));
     if (!kf.archiv) w.append(filterGruppe("Nächster Termin",
       [[0, "fällig"], [7, "≤ 7 Tage"], [14, "≤ 14 Tage"]],
       () => kf.faellig, (x) => { kf.faellig = x; }, zeichnen));
@@ -5173,7 +5289,8 @@ function renderKundenauftraege() {
   zeichnen();
 
   function zeichnen() {
-    const aktiv = [kf.prio, kf.status, kf.archiv ? "" : kf.faellig].filter(gesetzt).length;
+    const aktiv = [kf.prio, kf.status, kf.archiv ? "" : kf.faellig,
+                   kf.archiv ? kf.ausgang : ""].filter(gesetzt).length;
     filterBtn.textContent = "⛭ Filter" + (aktiv ? ` · ${aktiv} aktiv` : "");
     filterBtn.classList.toggle("aktiv", aktiv > 0);
     sortBtn.textContent = sortKnopfText(SORT_KUNDEN, kf.sortierung);
@@ -5292,7 +5409,10 @@ function renderNutzungsrechte() {
 // sich dort die Form, hier mitziehen. Ohne Zusage-Pruefung: genau die soll
 // dieser Weg umgehen.
 // Rueckgabe: die Marke, oder ein Text, warum es nicht ging.
-function kundeAnlegen(name, jetzt) {
+// v233 (E10, Codex F3 #1): Status als ERSTE Pruefung - sonst stuende eine
+// neue Marke schon im Datenstand, bevor auftragBeginnen() ablehnt.
+function kundeAnlegen(name, jetzt, status) {
+  if (!statusGueltig({ status })) return "Bitte erst den Status wählen.";
   const n = String(name == null ? "" : name).trim();
   if (!n) return "Name fehlt.";
   jetzt = jetzt || lokalIso();
@@ -5307,7 +5427,7 @@ function kundeAnlegen(name, jetzt) {
           pitchliste: null, erstellt: jetzt };   // erstellt -> darf geloescht werden
     datenstand.marken.push(m);
   }
-  auftragBeginnen(m, jetzt);
+  auftragBeginnen(m, jetzt, status);
   ruecknahmeEntwerten(m);
   listeVeraltet = true;
   datenstandPersistieren();
@@ -5335,6 +5455,60 @@ function auftragAbschliessen(m, jetzt) {
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
+}
+
+// "✕ Abbrechen" (v233, Bauplan Abbrechen 3.2): der zweite Ausgang neben
+// "✓ Abgeschlossen". Andrea waehlt das Ziel (E5) aus abbruchZiele() - EINE
+// Stelle fuer die Chips im Formular und den Guard hier. Pitchliste nur, wenn
+// die Marke dort stehen darf, sonst "ruht" an ihrer Stelle.
+function abbruchZiele(m) {
+  return [pitchlisteMoeglich(m) ? "pitchliste" : "ruhend", "kundenpflege"];
+}
+// wahl = { ziel, notiz, rechteVerfolgen }. Rueckgabe { ziel } oder false
+// (dann ist nichts veraendert). Der Auftrag kommt immer ins Archiv und zaehlt
+// nie als Abschluss. Umsatz zaehlt nur bei Status "bestaetigt" (E6, keine
+// Rueckfrage) - deshalb geht es ohne gueltigen Status gar nicht (E11).
+// Kein antwortStand mehr am Rueckweg: die Anzahl war die Ursache von R1 #2,
+// antwortWert ist das DATUM der juengsten Antwort (wirksameZusage Schritt 4).
+function auftragAbbrechen(m, wahl, jetzt) {
+  const ka = m && m.kundenauftrag;
+  const ziel = wahl && wahl.ziel;
+  if (!ka || !statusGueltig(ka) || !abbruchZiele(m).includes(ziel)) return false;
+  jetzt = jetzt || lokalIso();
+  ruecknahmeEntwerten(m);
+  const heute = deDatum(isoInTagen(0));
+  const kennung = ka.kennung;
+  const ausgang = ziel === "pitchliste" ? "zurueck" : "abgebrochen";
+  const grund = String(wahl.notiz || "").trim();
+  const hist = (m.kundenauftragHistorie = m.kundenauftragHistorie || []);
+  // F1: der "hinein" dieses Auftrags traegt den Pflege-Stand von davor
+  const hin = hist.filter((h) => h && h.richtung === "hinein" && h.kennung === kennung).pop();
+  auftragAblegen(m, ausgang, heute, { ziel, ...(grund ? { grund } : {}),
+    ...(ka.status === "bestaetigt" && Number(ka.umsatz) > 0 ? { umsatzZaehlt: true } : {}),
+    ...(nrListe(ka).length && wahl.rechteVerfolgen === false ? { rechteRuhen: true } : {}) });
+  const j = juengsteAntwort(m.events);
+  // datum = ende des Archivobjekts, sonst findet auftragZuEintrag() nichts
+  hist.push({ richtung: ausgang, kennung, datum: heute, ziel, ...(grund ? { grund } : {}),
+    ...(ziel === "pitchliste" ? { antwortWert: j ? eventDatum(j) : -1 } : {}),
+    geaendert: jetzt });
+  delete m.kundenauftrag;
+  if (ziel === "pitchliste") ruecksprungAufPitch(m, jetzt);
+  else if (ziel === "ruhend") m.kundenarchiv = { seit: heute, kennung };
+  else {
+    // F1: Pflege-Stand von vor dem Folgeauftrag zurueck; die Kennung zeigt auf
+    // den letzten ECHTEN Abschluss, damit letzterAuftrag() dessen Ende und
+    // Umsatz zeigt, nicht den abgebrochenen.
+    const fertig = (m.auftraege || []).filter((a) => a &&
+      (a.ausgang === "abgeschlossen" || a.ausgang === "kundenpflege")).pop();
+    m.kundenpflege = { seit: hin && hin.archiv ? hin.archiv.seit || heute : heute,
+      kennung: fertig ? fertig.kennung : kennung,
+      checkliste: hin && hin.archiv ? checklisteKopie(hin.archiv.checkliste)
+        : KUNDENPFLEGE_PUNKTE.map((text) => ({ text, datum: "", erledigt: false })),
+      geaendert: jetzt };
+  }
+  listeVeraltet = true;
+  datenstandPersistieren();     // EIN Stand, VOR jedem Book-Zugriff
+  return { ziel };
 }
 
 // Der fertige Auftrag, zu dem Archiv bzw. Kundenpflege gehoert (gleiche
@@ -5440,10 +5614,12 @@ function umsatzLesen(text) {
 // (Tobias, 02.10.: "gilt immer nur fuer den aktuellen Auftrag") - der
 // Verlauf liest sie zum Anzeigen hier nach (auftragZuEintrag).
 // null-Zeilen (von Hand bearbeiteter Stand) fallen raus statt zu werfen.
-function auftragAblegen(m, ausgang, heute) {
+// v233: `extra` (ziel, grund, umsatzZaehlt, rechteRuhen) beim Abbruch.
+function auftragAblegen(m, ausgang, heute, extra) {
   const ka = m.kundenauftrag;
   (m.auftraege = m.auftraege || [])
-    .push({ ...ka, checkliste: checklisteKopie(ka.checkliste), ende: heute, ausgang });
+    .push({ ...ka, checkliste: checklisteKopie(ka.checkliste), ende: heute, ausgang,
+            ...extra });
 }
 
 // Der fertige Auftrag zu einem Verlaufseintrag (Abschluss oder Rueckweg).
@@ -5542,8 +5718,10 @@ function nrAuftragZu(m, kennung) {
 // beim zuletzt abgeschlossenen (Entscheidung C) - seit v203 beliebig viele.
 // Bewusst der letzte Eintrag in m.auftraege, nicht letzterAuftrag(): der
 // findet nichts mehr, sobald ein neuer Auftrag laeuft (Codex 03.10.).
+// v233 (F4): an einem abgebrochenen Auftrag entsteht kein neues Recht.
 function nutzungsrechtKandidaten(m) {
-  const fertig = (m.auftraege || []).filter(Boolean);
+  const fertig = (m.auftraege || [])
+    .filter((a) => a && !["zurueck", "abgebrochen"].includes(a.ausgang));
   return [fertig[fertig.length - 1], m.kundenauftrag].filter(Boolean);
 }
 
@@ -5606,7 +5784,8 @@ function nutzungsrechtLoeschen(m, n) {
 function alleNutzungsrechte() {
   const aus = [];
   for (const m of (datenstand && datenstand.marken) || []) {
-    for (const a of nrAuftraege(m))
+    // v233 (E7 Nein): ruhende Rechte keine Kachel, keine Erinnerung
+    for (const a of nrAuftraege(m).filter((x) => !x.rechteRuhen))
       for (const nr of nrListe(a))
         aus.push({ marke: m.name, name: nutzungsrechtName(m, nr), nr,
                    kennung: a.kennung || 1, ...nutzungsrechtZustand(nr) });
@@ -5706,6 +5885,11 @@ function sheetNeuerKunde() {
   }
   const okZ = el("div", "chips");
   const ok = el("button", "chip haupt", "✓ Anlegen");
+  // v233 (E10): Status unter dem Namen, Knopf gesperrt bis gewaehlt
+  const wahl = { status: null };
+  const sperre = el("div", "stand", "Bitte erst den Status wählen.");
+  const pruefen = () => { ok.disabled = !wahl.status; sperre.hidden = !!wahl.status; };
+  pruefen();
   ok.onclick = () => {
     if (!datenstand) { banner("Kein Datenstand geladen."); return; }
     // Rueckfrage (Tobias 30.09.): "+ Kunde" ist fuer neue Namen. Eine
@@ -5714,8 +5898,9 @@ function sheetNeuerKunde() {
     if (vorh && vorh.brandrating && !vorh.pitchliste && !vorh.kundenauftrag &&
         !confirm(`„${vorh.name}“ steht schon im Brand Rating.\n\n` +
           "„＋ Kunde“ ist für neue Kunden gedacht. Trotzdem anlegen? Dann " +
-          "bleibt eine Achtung-Karte stehen, bis du den Auftrag abschließt.")) return;
-    const m = kundeAnlegen(name.value);
+          "bleibt eine Achtung-Karte stehen, bis du den Auftrag abschließt.\n\n" +
+          `Status: ${auftragStatusText(wahl.status)}.`)) return;
+    const m = kundeAnlegen(name.value, lokalIso(), wahl.status);
     if (typeof m === "string") { banner(m); return; }
     // Vorhandene Marke mit Book (auch aus dem Archiv = neuer Auftrag, v193):
     // das Book wandert mit. Hand-Kunde ohne Book: still.
@@ -5726,7 +5911,7 @@ function sheetNeuerKunde() {
     history.back();
   };
   okZ.append(ok);
-  wrap.append(name, dl, okZ, erklaerung("Neuer Kunde",
+  wrap.append(name, dl, statusChips(wahl, pruefen), okZ, sperre, erklaerung("Neuer Kunde",
     "Neuer Name: der Kunde steht nur in den Kundenaufträgen — nicht im " +
     "Brand Rating, nicht in der Pitchliste, ohne Brand-Book. Gibt es die " +
     "Marke schon, hängt der Auftrag an ihr (Folgeauftrag)."));
@@ -5928,21 +6113,38 @@ function ratingAbweichungen(marken) {
 // Wann wurde zugesagt? Liefert den Datumswert der gueltigen Zusage, oder
 // null. EINE Quelle - zusageAusEreignissen() ist nur die Ja/Nein-Sicht
 // darauf, verschiebenErlaubt() braucht zusaetzlich das Datum.
-function zusageDatum(events) {
+// Etappe 1 (v233, Bauplan Abbrechen Abschnitt 2). istZusage ist die EINZIGE
+// Stelle, die sich mit Etappe 3 (Antwortarten) aendert: heute "X" in Positiv.
+function istZusage(e) {
+  return String((e && e.positiv) || "").trim().toUpperCase() === "X";
+}
+// Art einer Antwort aus den zwei Book-Zellen. Beide gesetzt = Pruefzustand
+// (""). In Etappe 1 nur fuer die Zyklusgrenze "Absage" benutzt.
+function antwortArt(e) {
+  const p = String((e && e.positiv) || "").trim().toUpperCase();
+  const n = String((e && e.negativ) || "").trim();
+  if (p && n) return "";
+  if (p.includes("VERHANDLUNG")) return "verhandlung";
+  if (p) return "interesse";
+  if (n) return "absage";
+  return "";
+}
+// Juengste Antwort mit lesbarem Datum; Gleichstand -> die spaetere im Array.
+function juengsteAntwort(events) {
   let juengste = null, wert = -1;
   for (const e of events || []) {
     if (!e || e.typ !== "Antwort") continue;
     const d = eventDatum(e);
     if (d === null) continue;
-    // >= statt >: liegen zwei Antworten auf demselben Tag, gewinnt die
-    // SPAETER eingetragene. Die Reihenfolge im Datenstand ist die
-    // Eintragereihenfolge, also ist die hintere die aktuellere.
-    // zusage_nachtragen.py nimmt mit max() die erste - der Unterschied
-    // trifft heute 0 Marken, steht hier aber bewusst anders herum.
     if (d >= wert) { wert = d; juengste = e; }
   }
-  return (juengste &&
-    String(juengste.positiv || "").trim().toUpperCase() === "X") ? wert : null;
+  return juengste;
+}
+// Die "historische" Zusage, OHNE Rueckweg. Fuer den Zustand zaehlt
+// wirksameZusage(m).
+function zusageDatum(events) {
+  const j = juengsteAntwort(events);
+  return j && istZusage(j) ? eventDatum(j) : null;
 }
 
 function zusageAusEreignissen(events) {
@@ -5987,39 +6189,29 @@ function antwortStand(events) {
 //
 // Fehlt der Merker, sperrt der Rueckzug. Betrifft nur Eintraege aus der
 // Zeit vor v167 - im Bestand gemessen: 0 von 9.
-function zusageVerbraucht(m) {
+function letzterRueckweg(m) {
   let letzter = null;
   for (const h of (m && m.kundenauftragHistorie) || [])
     if (h && h.richtung === "zurueck") letzter = h;   // der spaeteste im Array
-  if (!letzter) return false;
-  // Von Hand entwertet: Andrea hat nach dem Rueckweg erneut eine Zusage
-  // eingetragen (Tobias, 25.09.). Das ist eine bewusste Handlung und zaehlt
-  // als neue Zusage - auch am selben Tag, wo gar kein neues Ereignis
-  // entsteht. Ohne diesen Weg waere die Marke bis Mitternacht gesperrt,
-  // ohne dass irgendwo stuende warum (vom Stresslauf als Sackgasse
-  // gemeldet).
-  if (letzter.entwertet) return false;
-  const damals = Number(letzter.antwortStand);
-  // Der Zaehler traegt den ANDEREN Weg: der Word-Import bringt Antworten
-  // herein, ohne antwortEintragen() zu rufen - dort gibt es niemanden, der
-  // entwerten koennte.
-  if (Number.isFinite(damals)) return antwortStand(m && m.events) <= damals;
+  return letzter;
+}
 
-  // ALTDATEN (Rueckweg vor v167, ohne Merker): Datumsvergleich als
-  // Rueckfall. Er ist bei Gleichstand ungenau - beide Seiten sind nur
-  // tagesgenau -, aber er ist das Beste, was aus diesen Eintraegen
-  // herauszuholen ist.
-  //
-  // Erst pauschal gesperrt (25.09.), dann am ECHTEN Stand nachgemessen und
-  // verworfen: im Testdaten-Ordner stehen 8 Rueckwege ohne Merker, und die
-  // Sperre haette 7 Marken mit gueltiger Zusage blockiert - also genau den
-  // Nutzen von Etappe C aufgefressen. Die Annahme "0 Altdaten" stammte aus
-  // der Repo-Kopie vom 20.09., nicht aus dem laufenden Bestand.
-  const rueck = datumWert(letzter.datum);
-  if (rueck >= 1e12) return true;        // unlesbares Datum -> sperren
-  const zusage = zusageDatum(m && m.events);
-  if (zusage === null) return true;
-  return zusage <= rueck;
+// Die Zusage, die den ZUSTAND bestimmt (Etappe 1, ersetzt zusageVerbraucht):
+// juengste Antwort ist eine Zusage UND sie ist nicht durch einen spaeteren
+// Rueckweg (Abbruch -> Pitchliste) verbraucht. Rueckgabe: Ereignis oder null.
+// Reihenfolge der Merker wie Bauplan 2.1: entwertet (App-Eingabe nach dem
+// Rueckweg) > antwortWert (ab v233) > antwortStand (v167-v232) > Datum.
+function wirksameZusage(m) {
+  const j = juengsteAntwort(m && m.events);
+  if (!j || !istZusage(j)) return null;
+  const h = letzterRueckweg(m);
+  if (!h || h.entwertet) return j;
+  if (Number.isFinite(h.antwortWert)) return eventDatum(j) > h.antwortWert ? j : null;
+  if (Number.isFinite(Number(h.antwortStand)))
+    return antwortStand(m.events) > Number(h.antwortStand) ? j : null;
+  const rueck = datumWert(h.datum);
+  if (rueck >= 1e12) return null;        // unlesbares Datum -> sperren
+  return eventDatum(j) > rueck ? j : null;
 }
 
 // Der Status, wie er auf der Karte steht. "Zugesagt" UEBERLAGERT den
@@ -6028,26 +6220,34 @@ function zusageVerbraucht(m) {
 // will niemand verlieren, nur weil eine Zusage vorliegt.
 function statusAnzeige(m) {
   const pl = (m && m.pitchliste) || {};
-  return zusageAusEreignissen(m && m.events) ? "Zugesagt" : (pl.status || "");
+  return wirksameZusage(m) ? "Zugesagt" : (pl.status || "");
 }
 
-function folgeSeitPitch(events) {
-  const liste = (events || [])
-    // Unlesbares Datum raus (v159): es sortiert sonst als "ganz spaet" ans
-    // Ende und setzt den Zaehler an der falschen Stelle zurueck. Seit v159
-    // ist das kein Anzeigefehler mehr, sondern ein Schreibvorgang.
+// Zyklusgrenzen (Etappe 1, Codex-Fund folgeSeitPitch): ab hier zaehlen
+// Follow-ups neu - eine Absage und ein Rueckweg (Abbruch -> Pitchliste).
+function zyklusGrenzen(events, hist) {
+  const g = [];
+  for (const e of events || [])
+    if (e && e.typ === "Antwort" && eventDatum(e) !== null &&
+        antwortArt(e) === "absage") g.push(datumWert(e.datum));
+  for (const h of hist || [])
+    if (h && h.richtung === "zurueck" && datumWert(h.datum) < 1e12)
+      g.push(datumWert(h.datum));
+  return g;
+}
+// Follow-ups seit dem letzten Pitch bzw. der letzten Zyklusgrenze. Gleiches
+// Datum: Kontakt vor Antwort (wie kpiMarke) - eine Absage am Tag eines
+// Follow-ups nullt also auch dieses.
+function folgeSeitPitch(events, hist) {
+  const punkte = (events || [])
     .filter((e) => e && (e.typ === "Pitch" || e.typ === "FollowUp")
                    && eventDatum(e) !== null)
-    .slice()
-    .sort((a, b) => datumWert(a.datum) - datumWert(b.datum));
+    .map((e) => ({ d: datumWert(e.datum), rang: 0, fu: e.typ === "FollowUp" }))
+    .concat(zyklusGrenzen(events, hist).map((d) => ({ d, rang: 1, fu: false })))
+    .sort((a, b) => a.d - b.d || a.rang - b.rang);
   let n = 0;
-  for (const e of liste) n = e.typ === "Pitch" ? 0 : n + 1;
+  for (const p of punkte) n = p.fu ? n + 1 : 0;
   return n;
-  // ponytail: sortiert wird nur nach dem DATUM. Liegen ein Pitch und ein
-  // Follow-up auf demselben Tag, entscheidet die Reihenfolge im Datenstand -
-  // bei Asam Beauty ist genau das der Fall. Aufmachen, wenn daraus ein
-  // echter Fehlalarm wird; dann braucht es einen Sortier-Tiebreak wie in
-  // ugc_core ("bei Gleichstand Kontakt vor Antwort").
 }
 
 function bestandBefunde(marken) {
@@ -6131,10 +6331,10 @@ function bestandBefunde(marken) {
     // richtig war. Am Bestand nachgemessen: 9 Marken tragen das Flag, die
     // Regel nimmt genau diesen einen Fehlalarm weg und laesst die zwei
     // echten Befunde stehen.
-    if (pl && !zusageAusEreignissen(m.events) &&
+    if (pl && !wirksameZusage(m) &&
         String(pl.zaehler || "").trim()) {          // Etappe C (v167)
       const z = parseInt(pl.zaehler, 10);
-      const echt = folgeSeitPitch(m.events);
+      const echt = folgeSeitPitch(m.events, m.kundenauftragHistorie);
       if (!isNaN(z) && z !== echt) {
         hinweise.push({ name: m.name, art: "zaehler-ereignisse",
           text: "Follow-up-Z\u00e4hler steht auf " + z + ", in der Historie "
@@ -6379,7 +6579,104 @@ function formularAnsicht(z, m) {
       kontaktFormular(m, () => history.back()));
     return f;
   }
+  if (z.modus === "abbrechen") {      // v233, "✕ Abbrechen" im Kundenauftrag
+    const f = document.createDocumentFragment();
+    f.append(el("div", "abschnitt", "Auftrag abbrechen"),
+      abbruchFormular(m, () => history.back()));
+    return f;
+  }
   return null;
+}
+
+// Status-Wahl beim Anlegen eines Auftrags (v233, E10): zwei Chips OHNE
+// Vorauswahl, die Wahl steht in z.status. Der Aufrufer sperrt seinen Knopf,
+// bis gewaehlt ist - fuer "→ in Kundenaufträge", "＋ Neuer Auftrag", "＋ Kunde".
+function statusChips(z, neu) {
+  const f = document.createDocumentFragment();
+  f.append(el("div", "stand", "Status:"), chipFilter(AUFTRAG_STATUS, z.status || "",
+    (w) => { z.status = w || null; }, neu));
+  return f;
+}
+
+// Formular "Auftrag abbrechen" (v233, Bauplan 3.3). Fragen in dieser
+// Reihenfolge: Ziel (immer, keine Vorauswahl, E5), Nutzungsrechte (nur wenn
+// welche erfasst sind, E7), Grund (freiwillig). Der Umsatz ist KEINE Frage,
+// nur eine Infozeile nach Status (E6). Beim Tippen wird die Marke frisch
+// geholt und die Kennung verglichen: wechselte der Auftrag bei offenem
+// Formular (OneDrive-Abgleich), wird nichts abgebrochen.
+function abbruchFormular(m, fertig) {
+  const wrap = el("div");
+  m = markeZuName(m.name) || m;
+  const ka = m.kundenauftrag;
+  const fehler = "Das ging nicht — bitte die Liste einmal neu laden.";
+  if (!ka) { wrap.append(el("div", "stand", fehler)); return wrap; }
+  const kennung = ka.kennung, rechte = nrListe(ka).length;
+  const w = { ziel: "", rechte: "" };
+  const rating = m.brandrating ? String(m.brandrating.rating || "").trim() : "";
+  const erklaert = {
+    pitchliste: `„${m.name}“ steht danach wieder in der Pitchliste, der Pitch ist ` +
+      "heute fällig." + (rating ? ` Das Brand-Book zieht zurück nach „${bookOrdnerName(rating)}“.` : ""),
+    kundenpflege: `„${m.name}“ ist danach wieder in der Kundenpflege. Das Brand-Book ` +
+      "bleibt in „Kundenaufträge“.",
+    ruhend: `„${m.name}“ ruht danach im Archiv, „＋ Neuer Auftrag“ holt sie zurück. ` +
+      `In die Pitchliste geht es nicht: ${m.pitchliste ? "Rating D" : "keine Pitchzeile"}.`,
+  };
+  const erkl = el("div", "stand");
+  const ok = el("button", "chip haupt", "✕ Auftrag abbrechen");
+  const sperre = el("div", "stand", "Bitte erst die Frage(n) oben beantworten.");
+  const pruefen = () => {
+    const bereit = !!w.ziel && (!rechte || !!w.rechte);
+    ok.disabled = !bereit;
+    sperre.hidden = bereit;
+    erkl.textContent = w.ziel ? "Der Auftrag kommt ins Archiv und zählt nicht als " +
+      "Abschluss. " + erklaert[w.ziel] : "";
+  };
+  const zielText = { pitchliste: "Pitchliste", kundenpflege: "Kundenpflege",
+                     ruhend: "ruht (Archiv)" };
+  wrap.append(el("div", "stand", `Wohin geht „${m.name}“ danach?`),
+    chipFilter(abbruchZiele(m).map((k) => [k, zielText[k]]), "",
+      (x) => { w.ziel = x; }, pruefen), erkl);
+  const offen = (ka.checkliste || []).filter((z) => z && !z.erledigt).length;
+  if (offen) wrap.append(el("div", "stand", `${offen} Punkt(e) der Checkliste sind ` +
+    "noch offen. Sie werden archiviert, nicht erledigt."));
+  if (Number(ka.umsatz) > 0) {
+    const betrag = kpiText("umsatz", Number(ka.umsatz));
+    wrap.append(el("div", "stand", ka.status === "bestaetigt"
+      ? `Der Betrag von ${betrag} zählt im Auftragswert (Status „bestätigt“), ` +
+        "aber nicht als Abschluss."
+      : `Der Betrag von ${betrag} zählt nicht, der Auftrag war noch in ` +
+        "Verhandlung. Er bleibt im Archiv sichtbar."));
+  }
+  if (rechte) wrap.append(el("div", "stand", "Für diesen Auftrag " + (rechte === 1
+      ? "ist 1 Nutzungsrecht" : `sind ${rechte} Nutzungsrechte`) + " erfasst. Weiter verfolgen?"),
+    chipFilter([["ja", "Ja, Erinnerungen laufen weiter"], ["nein", "Nein, nur im Archiv lesbar"]],
+      "", (x) => { w.rechte = x; }, pruefen));
+  const notiz = el("input", "feld");
+  notiz.type = "text";
+  notiz.placeholder = "z. B. Budget gestrichen";
+  wrap.append(el("div", "stand", "Grund (freiwillig):"), notiz);
+  ok.onclick = () => {
+    const mm = markeZuName(m.name);
+    const r = mm && mm.kundenauftrag && mm.kundenauftrag.kennung === kennung &&
+      auftragAbbrechen(mm, { ziel: w.ziel, notiz: notiz.value,
+        rechteVerfolgen: w.rechte ? w.rechte === "ja" : undefined }, lokalIso());
+    if (!r) { banner(fehler); return; }
+    banner(`Abgebrochen. „${mm.name}“ ` + { pitchliste: "steht wieder in der Pitchliste.",
+      kundenpflege: "ist wieder in der Kundenpflege.", ruhend: "ruht im Archiv." }[r.ziel] +
+      (r.ziel === "ruhend" && !archivSichtbar()
+        ? " Das Archiv ist gerade ausgeblendet (Einstellungen)." : ""));
+    // K14: bis das Book umgezogen ist, fehlt die Marke in ihrer Rating-Gruppe
+    bookNachziehen(mm, r.ziel === "pitchliste" && rating
+      ? ` Bis dahin fehlt „${mm.name}“ in der Übersicht „${bookOrdnerName(rating)}“.` : "");
+    fertig();
+  };
+  const zurueck = el("button", "chip", "Zurück");
+  zurueck.onclick = fertig;
+  const knoepfe = el("div", "chips");
+  knoepfe.append(ok, zurueck);
+  wrap.append(knoepfe, sperre);
+  pruefen();
+  return wrap;
 }
 
 function ratingFormular(m, fertig) {
@@ -6665,12 +6962,14 @@ function bereichVerwaltung(m) {
   lk.onclick = async () => {
     // C7 (Codex R1 #3): mit der Marke gehen auch ihre Umsaetze aus den
     // Kennzahlen - das soll vor dem Loeschen dastehen, nicht danach auffallen.
-    const ab = abschluesse(m);
-    const summe = ab.reduce((s, a) => s + a.umsatz, 0);
+    // v233: behaltene Betraege abgebrochener Auftraege gehen genauso mit.
+    const ab = abschluesse(m), bh = behalteneBetraege(m);
+    const summe = [...ab, ...bh].reduce((s, a) => s + a.umsatz, 0);
     if (!confirm(`„${m.name}“ komplett löschen?\n` +
         "Verschwindet aus allen Listen; ein per App angelegtes " +
         "Brand-Book wandert in den OneDrive-Papierkorb." +
-        (ab.length ? `\n\n${ab.length} abgeschlossene(r) Auftrag/Aufträge ` +
+        (ab.length || bh.length ? `\n\n${ab.length} abgeschlossene(r) Auftrag/Aufträge ` +
+          (bh.length ? `und ${bh.length} Betrag/Beträge abgebrochener Aufträge ` : "") +
           `(${kpiText("umsatz", summe)}) verschwinden damit aus den Kennzahlen.` : ""))) return;
     // v176: erst schliessen, wenn geloescht ist - bleibt das Book
     // gesperrt, bleibt auch das Sheet offen, samt Hinweis.
@@ -9544,6 +9843,8 @@ function renderHauptmenu() {
   if (bef) c.append(bef);
   const auftr = auftragWarnung();   // v188
   if (auftr) c.append(auftr);
+  const ohneStatus = statusWarnung();   // v233
+  if (ohneStatus) c.append(ohneStatus);
 
   const ugc = el("div", "karte menue-karte" + (snap ? "" : " leer"));
   ugc.append(el("div", "titel", "UGC"),
@@ -9834,6 +10135,8 @@ function renderUgc() {
   if (bef) c.append(bef);
   const auftr = auftragWarnung();   // v188
   if (auftr) c.append(auftr);
+  const ohneStatus = statusWarnung();   // v233
+  if (ohneStatus) c.append(ohneStatus);
   if (snap.zeitraeume.length > 1) c.append(chipZeile());
   // Pflicht-Hinweis (Briefing Abschnitt 5): Gefiltertes wird gezaehlt,
   // sonst haelt man die Ansicht fuer vollstaendig.
@@ -10426,10 +10729,9 @@ function fuSeitPitch(m) {
   if (!ev.length) return parseInt((m.pitchliste || {}).zaehler, 10) || 0;
   const zaehlt = ev.filter((e) => e && (e.typ === "Pitch" || e.typ === "FollowUp"));
   const datiert = zaehlt.length > 0 && zaehlt.every((e) => datumWert(e.datum) < 1e12);
-  const folge = datiert
-    ? zaehlt.slice().sort((a, b) => datumWert(a.datum) - datumWert(b.datum)) : zaehlt;
+  if (datiert) return folgeSeitPitch(ev, m.kundenauftragHistorie);
   let pos = 0;
-  for (const e of folge) pos = e.typ === "Pitch" ? 0 : pos + 1;
+  for (const e of zaehlt) pos = e.typ === "Pitch" ? 0 : pos + 1;
   return pos;
 }
 
@@ -10574,7 +10876,7 @@ function erledigen(m, s, tage, standard) {
   if (s.zaehlt) {
     m.pitchliste.zaehler = String(
       (parseInt(datenstand.letzteAktion.vorher.zaehler, 10) || 0) + 1);
-  } else if (s.typ === "Pitch" && !zusageAusEreignissen(m.events)) {
+  } else if (s.typ === "Pitch" && !wirksameZusage(m)) {
     // Z1 (gefunden 24.09. an "7 Hauben", gebaut als v170): Ein neuer Pitch
     // faengt die Kadenz von vorne an - also muss der Follow-up-Zaehler auf
     // 0. Vorher tat er hier GAR NICHTS: erhoeht wurde nur bei s.zaehlt
@@ -10601,7 +10903,7 @@ function erledigen(m, s, tage, standard) {
   // `status` wird MIT zurueckgesetzt: erledigen() hat ihn oben auf den
   // Schritt gesetzt ("Creatorpool"), und danach stuende auf der Karte wieder
   // etwas anderes als "Zugesagt" - A2 waere ausgehebelt. Gemessen 17.09.
-  if (zusageAusEreignissen(m.events)) {   // Etappe C (v167)
+  if (wirksameZusage(m)) {   // Etappe C (v167), Etappe 1: wirksam
     Object.assign(m.pitchliste, {
       status: "Zugesagt",
       naechste_aktion: "",
@@ -10850,8 +11152,7 @@ function verschiebenErlaubt(m) {
   // v193: auch aus Archiv/Kundenpflege nicht - von dort geht es nur ueber
   // "＋ Neuer Auftrag" weiter (v197), nicht ueber eine alte Zusage.
   if (!m || !m.pitchliste || imKundenbereich(m)) return false;
-  if (zusageDatum(m.events) === null) return false;
-  return !zusageVerbraucht(m);
+  return !!wirksameZusage(m);
 }
 
 // Interne Kennung eines Auftrags (v191, Backlog 58): je Marke gezaehlt,
@@ -10864,36 +11165,44 @@ function verschiebenErlaubt(m) {
 // Marke mit Vorgeschichte noch einmal die 1.
 // Neuer laufender Auftrag + Verlaufseintrag - EIN Weg fuer "aus der
 // Pitchliste", "＋ Kunde" und "Neuer Auftrag" aus Archiv/Kundenpflege.
-function auftragBeginnen(m, jetzt) {
+// v233 (E10): der Status ist Pflicht. Ohne gueltigen Status false, BEVOR
+// irgendetwas veraendert ist (kein kundenbereichVerlassen). Kein eigener
+// status-Verlaufseintrag: der Anfangsstatus steht im Auftrag (Codex F3 #4).
+function auftragBeginnen(m, jetzt, status) {
+  if (!statusGueltig({ status })) return false;
   const heute = deDatum(isoInTagen(0));
   const kennung = auftragKennungNeu(m);
   // Hoechstens EIN Zweig (v193): ein neuer Auftrag holt die Marke aus Archiv
   // bzw. Kundenpflege. Ihr Book zieht der Aufrufer mit bookUmziehen() nach.
   const pflege = kundenbereichVerlassen(m);
-  m.kundenauftrag = { kennung, seit: heute, prio: null, checkliste: [],
+  m.kundenauftrag = { kennung, seit: heute, prio: null, checkliste: [], status,
                       geaendert: jetzt };
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
     .push({ richtung: "hinein", kennung, datum: heute, ...pflege });
+  return true;
 }
-// Status eines laufenden Auftrags (v192, Release 2a). null = "offen" - ein
-// neuer Auftrag startet ohne Wahl (Entscheidung 3). Nochmal auf denselben
-// Status tippen hebt ihn auf (wie Prio). Nur ein ECHTER Wechsel landet im
-// Verlauf; Rueckgabe true, wenn sich etwas geaendert hat.
-// "abgebrochen" entfaellt mit v197 (ein Ausgang "✓ Abgeschlossen"); alte
-// Auftraege mit diesem Status bleiben lesbar, setzen laesst er sich nicht mehr.
+// Status eines laufenden Auftrags (v192, Release 2a). Seit v233 Pflicht
+// (E10): gesetzt beim Anlegen, danach nur noch WECHSEL zwischen den zwei
+// Werten - nochmal auf denselben tippen hebt nicht mehr auf. null (= "offen"
+// bis v232) und der Altwert "abgebrochen" (bis v196) bleiben lesbar und
+// zeigen am laufenden Auftrag "Status fehlt" (E11). Nur ein echter Wechsel
+// landet im Verlauf; Rueckgabe true, wenn sich etwas geaendert hat.
 const AUFTRAG_STATUS = [["verhandlung", "in Verhandlung"], ["bestaetigt", "bestätigt"]];
 function auftragStatusText(s) {
   if (s === "abgebrochen") return "abgebrochen";
   const t = AUFTRAG_STATUS.find(([k]) => k === s);
   return t ? t[1] : "offen";
 }
+// Die EINE Pruefung "Status gesetzt" (E10/E11). Nur auf Rohdaten (ka), nie
+// auf Kartenobjekte - dort ist status schon Text (Codex F3 #2).
+function statusGueltig(ka) {
+  return !!ka && AUFTRAG_STATUS.some(([k]) => k === ka.status);
+}
 function auftragStatusSetzen(m, status, jetzt) {
   const ka = m && m.kundenauftrag;
-  if (!ka || (status !== null && !AUFTRAG_STATUS.some(([k]) => k === status)))
-    return false;
+  if (!ka || !statusGueltig({ status }) || ka.status === status) return false;
   const von = ka.status || null;
-  const nach = von === status ? null : status;
-  if (von === nach) return false;
+  const nach = status;
   ka.status = nach;
   ka.geaendert = jetzt || lokalIso();
   (m.kundenauftragHistorie = m.kundenauftragHistorie || [])
@@ -10921,6 +11230,8 @@ function auftragsverlaufGruppen(hist) {
 // Kundenpflege, gelb = Wechsel (wie Rating-Wechsel), blau = zurueck in die
 // Pitchliste, grau = Ende/sonst.
 function verlaufPunkt(h) {
+  // v233: Abbruch in die Kundenpflege wie die Kundenpflege, "ruht" grau
+  if (h.richtung === "abgebrochen" && h.ziel === "kundenpflege") return "punkt-eigen";
   return { hinein: "punkt-positiv", fortgesetzt: "punkt-positiv",
            kundenpflege: "punkt-eigen", status: "punkt-rating",
            zurueck: "punkt-pitch" }[h.richtung] || "punkt-antwort";
@@ -10932,7 +11243,12 @@ function verlaufText(h) {
     : h.richtung === "kundenpflege" ? "Auftrag abgeschlossen → Kundenpflege"
     : h.richtung === "fortgesetzt"
       ? "Auftrag fortgesetzt" + (h.checkliste ? " (Checkliste wiederhergestellt)" : "")
-    : h.richtung === "zurueck" ? "zurück in die Pitchliste"
+    // v233: "zurueck" ist ein Abbruch mit Ziel Pitchliste (Altdaten v193-v196
+    // ebenso: auch damals ein Ende ohne Abschluss, Bauplan 1.3)
+    : h.richtung === "zurueck" ? "abgebrochen → zurück in die Pitchliste"
+    : h.richtung === "abgebrochen"
+      ? { kundenpflege: "abgebrochen → zurück in die Kundenpflege",
+          ruhend: "abgebrochen, Marke ruht" }[h.ziel] || "abgebrochen"
     : h.richtung === "ruhend" ? "Kundenpflege beendet — Marke ruht"
     : h.richtung === "status"
       ? `Status: ${auftragStatusText(h.von)} → ${auftragStatusText(h.nach)}`
@@ -10951,14 +11267,15 @@ function auftragKennungNeu(m) {
   return 1 + Math.max(0, ...alle.map((x) => Number(x.kennung) || 1));
 }
 
-function kundenauftragVerschieben(m, jetzt) {
-  if (!verschiebenErlaubt(m)) return false;
+function kundenauftragVerschieben(m, jetzt, status) {
   // geaendert: die Zeitspur AN DER MARKE (Audit A9, 17.09.). "seit" und der
   // Historien-Eintrag tragen nur ein Datum ohne Uhrzeit; beim Nachsehen, in
   // welcher Reihenfolge an einem Tag etwas passiert ist, half das nicht.
   // Der Parameter `jetzt` wurde bis dahin entgegengenommen und nirgends
   // benutzt - hier ist die Stelle, fuer die er gedacht war.
-  auftragBeginnen(m, jetzt || lokalIso());
+  // v233: ohne gueltigen Status false (auftragBeginnen prueft zuerst).
+  if (!verschiebenErlaubt(m) || !auftragBeginnen(m, jetzt || lokalIso(), status))
+    return false;
   // Ab hier beschreibt ein offener Ruecknahmepunkt einen Stand, den es nicht
   // mehr gibt - dieselbe Regel wie in terminSetzenDaten() (v131). Ohne das
   // naehme "Rueckgaengig" die Marke aus dem Auftrag heraus, ohne den Auftrag
@@ -11711,22 +12028,23 @@ async function bookUmziehen(m) {
 // Nach einem Zustandswechsel (Knopf) das Book nachziehen, ohne zu warten:
 // der Zustand ist schon gespeichert, die Datei folgt. Scheitert es, sieht
 // "Daten pruefen" den Unterschied (Befund book-zustand) und bietet ihn an.
-function bookNachziehen(m) {
+// `zusatz` (v233, K14): Satz, der an eine FEHLER-Meldung angehaengt wird.
+function bookNachziehen(m, zusatz) {
   return bookUmziehen(m).then((r) => {
     if (r.erg === "verschoben") { listeVeraltet = true; datenstandPersistieren(); }
-    umzugMeldung(r);
-  }, () => umzugMeldung({ erg: "fehler", von: bookOrdner(m) }));
+    umzugMeldung(r, zusatz);
+  }, () => umzugMeldung({ erg: "fehler", von: bookOrdner(m) }, zusatz));
 }
 
 // Banner zum Umzug. Still bei "ohne"/"gleich": da ist nichts passiert.
-function umzugMeldung(r) {
+function umzugMeldung(r, zusatz) {
   if (!r || r.erg === "ohne" || r.erg === "gleich") return;
   banner(r.erg === "verschoben"
     ? `Book nach „${bookOrdnerName(r.nach)}“ verschoben.`
-    : r.erg === "nicht gefunden"
-    ? `Book nicht in „${bookOrdnerName(r.von)}“ gefunden — „Daten prüfen“ zeigt, wo es liegt.`
-    : `Book konnte nicht verschoben werden — es bleibt in „${bookOrdnerName(r.von)}“. ` +
-      "„Daten prüfen“ bietet es später nochmal an.");
+    : (r.erg === "nicht gefunden"
+      ? `Book nicht in „${bookOrdnerName(r.von)}“ gefunden — „Daten prüfen“ zeigt, wo es liegt.`
+      : `Book konnte nicht verschoben werden — es bleibt in „${bookOrdnerName(r.von)}“. ` +
+        "„Daten prüfen“ bietet es später nochmal an.") + (zusatz || ""));
 }
 
 // ENTFALLEN mit v154: der geraetespezifische cTag-Merker (CTAG_KEY,
@@ -12529,7 +12847,7 @@ const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
 //
 // "Rueckantworten pruefen" zaehlt nicht als Kontakt (16.09.) - im Bestand
 // heute 0x, die Regel steht trotzdem hier, weil erledigen() sie auch hat.
-function abgeleitetePitchfelder(pl, events) {
+function abgeleitetePitchfelder(pl, events, hist) {
   if (!pl) return null;
   const raus = {};
   // eventDatum() statt e.datum: datumWert() liefert fuer Unlesbares 1e12,
@@ -12558,8 +12876,8 @@ function abgeleitetePitchfelder(pl, events) {
       raus.letzter_kontakt = String(letzt.datum);
     }
   }
-  if (!zusageAusEreignissen(events)) {     // Etappe C (v167)
-    const z = String(folgeSeitPitch(events));
+  if (!wirksameZusage({ events, kundenauftragHistorie: hist })) {   // Etappe C (v167)
+    const z = String(folgeSeitPitch(events, hist));
     if (String(pl.zaehler || "") !== z) raus.zaehler = z;
   }
   return Object.keys(raus).length ? raus : null;
@@ -12598,7 +12916,8 @@ function importUnterschied(m, lese) {
   // die Ereignisse laengst richtig da, nur der Zaehler nicht. Ohne diese
   // Zeile faellt der Lauf in "keine Aenderung" und die Marke bliebe fuer
   // immer schief.
-  const abgeleitet = abgeleitetePitchfelder(m && m.pitchliste, lese.events);
+  const abgeleitet = abgeleitetePitchfelder(m && m.pitchliste, lese.events,
+                                            m && m.kundenauftragHistorie);
   return { dazu, weg, felder, abgeleitet,
            etwas: !!(dazu || weg || felder.length || abgeleitet) };
 }
@@ -15032,14 +15351,14 @@ function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
     } else if (s === "wartet" || s === "nicht-bereit") {
       // Es wird NICHTS zurueckgenommen (Kern von v103). Die Antwort steht
       // im Datenstand und wartet auf ihren Weg ins Book.
-      outboxAufnehmen(m, datum, aktion, false, "wartet", "antwort", daten);
+      outboxFehler(m, datum, aktion, false, "wartet", "antwort", daten, rev);
       banner(s === "nicht-bereit"
         ? "Antwort ist eingetragen. Keine Verbindung zum Brand-Book — "
           + "wird nachgetragen, sobald du wieder angemeldet bist."
         : "Antwort ist eingetragen. Das Brand-Book ist gerade belegt — "
           + "wird automatisch nachgetragen." + BOOK_BELEGT_TIPP);
     } else if (s === "braucht-dich") {
-      outboxAufnehmen(m, datum, aktion, false, "braucht-dich", "antwort", daten);
+      outboxFehler(m, datum, aktion, false, "braucht-dich", "antwort", daten, rev);
       if (wartelisteZeigen()) return;
       banner("Brand-Book konnte nicht nachgetragen werden — " +
              "die Antwort-Tabelle dort bitte von Hand ergänzen.");
@@ -15201,16 +15520,16 @@ function bookKerninfosMelden(m) {
       // Beide Male gilt: nichts zurueckrollen, der Auftrag wartet. `grund`
       // ist bewusst "wartet" - das ist der Wert, den outboxAbarbeiten()
       // aufgreift.
-      outboxAufnehmen(m, deDatum(isoInTagen(0)), KERNINFOS_AKTION, false,
-                      "wartet", "kerninfos");
+      outboxFehler(m, deDatum(isoInTagen(0)), KERNINFOS_AKTION, false,
+                   "wartet", "kerninfos", undefined, rev);
       banner(s === "wartet"
         ? "Gespeichert. Das Brand-Book ist gerade belegt — " +
           "die Änderung wird automatisch nachgetragen." + BOOK_BELEGT_TIPP
         : "Gespeichert. Keine Verbindung zum Brand-Book — die Änderung " +
           "wird nachgetragen, sobald du wieder angemeldet bist.");
     } else if (s === "braucht-dich") {
-      outboxAufnehmen(m, deDatum(isoInTagen(0)), KERNINFOS_AKTION, false,
-                      "braucht-dich", "kerninfos");
+      outboxFehler(m, deDatum(isoInTagen(0)), KERNINFOS_AKTION, false,
+                   "braucht-dich", "kerninfos", undefined, rev);
       if (wartelisteZeigen()) return;
       banner("Brand-Book konnte nicht nachgetragen werden — " +
              "die Kerninfos dort bitte von Hand ändern.");
@@ -15345,6 +15664,24 @@ function outboxAufnehmen(m, datum, aktion, entfernen, grund, art, daten) {
   datenstandPersistieren();
   // Der Aufrufer braucht die Fassung, um sie spaeter abzuschliessen.
   return rev;
+}
+
+// Fehlerausgang eines Uploads (Etappe 0, K7, 20.11.). Der Melder kennt nur
+// SEINE Fassung (rev). Hat Andrea waehrend des Uploads nachgebessert, steht
+// unter demselben Schluessel schon eine neuere Fassung ("laeuft", mit neuer
+// Nutzlast). outboxAufnehmen() wuerde sie mit den ALTEN Daten und dem alten
+// Ausgang ueberschreiben - die Korrektur kaeme nie ins Word. Darum: fremde
+// Fassung -> stehen lassen, sie schliesst ihr eigener Lauf ab. Eigene Fassung
+// oder Eintrag weg -> wie bisher. Gleiche Regel wie outboxWeg(k, rev).
+function outboxFehler(m, datum, aktion, entfernen, grund, art, daten, rev) {
+  const k = outboxSchluessel(m, datum, aktion, entfernen, art);
+  const da = outbox().find((e) => e.k === k);
+  if (da && rev !== undefined && (da.rev || 1) !== rev) {
+    logZeile("warteliste-behalten", { eintrag: da,
+      warum: "neuere Fassung unterwegs, Fehler gehoerte zu rev " + rev });
+    return da.rev;
+  }
+  return outboxAufnehmen(m, datum, aktion, entfernen, grund, art, daten);
 }
 
 // rev (optional): nur diese Fassung entfernen. Hat Andrea waehrend des
@@ -15745,7 +16082,7 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
       // Kern von v103: es wird NICHTS zurueckgenommen. Der Eintrag steht im
       // Datenstand und wartet auf seinen Weg ins Book. Andrea muss nichts
       // von Hand machen und nichts noch einmal antippen.
-      outboxAufnehmen(m, datum, aktion, entfernen, "wartet");
+      outboxFehler(m, datum, aktion, entfernen, "wartet", undefined, undefined, rev);
       banner(s === "nicht-bereit"
         ? "„" + aktion + "“ ist eingetragen. Keine Verbindung zum Brand-Book — "
           + "wird nachgetragen, sobald du wieder angemeldet bist."
@@ -15758,7 +16095,7 @@ function bookHistorieMelden(m, datum, aktion, entfernen) {
       // erwartete Tabelle fehlt (Andreas handgepflegte Books).
       // Richtungsabhaengig (v88): beim Entfernen "ergaenzen" zu sagen war
       // genau verkehrt herum.
-      outboxAufnehmen(m, datum, aktion, entfernen, "braucht-dich");
+      outboxFehler(m, datum, aktion, entfernen, "braucht-dich", undefined, undefined, rev);
       // Fenster auf, wenn moeglich - sonst haette sie genau einen
       // Banner lang Zeit, das mitzubekommen.
       if (wartelisteZeigen()) return;
