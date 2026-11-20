@@ -12029,8 +12029,11 @@ async function bookUmziehen(m) {
 // der Zustand ist schon gespeichert, die Datei folgt. Scheitert es, sieht
 // "Daten pruefen" den Unterschied (Befund book-zustand) und bietet ihn an.
 // `zusatz` (v233, K14): Satz, der an eine FEHLER-Meldung angehaengt wird.
+// Erst warten, bis der eingereihte Zustand gespeichert ist (Codex 20.11.,
+// seit v193): sonst konnte bei laufendem Upload das Book schon umziehen,
+// waehrend der Zustand noch in der Kette wartet - App zu, Handgriff weg.
 function bookNachziehen(m, zusatz) {
-  return bookUmziehen(m).then((r) => {
+  return persistRuhe().then(() => bookUmziehen(m)).then((r) => {
     if (r.erg === "verschoben") { listeVeraltet = true; datenstandPersistieren(); }
     umzugMeldung(r, zusatz);
   }, () => umzugMeldung({ erg: "fehler", von: bookOrdner(m) }, zusatz));
