@@ -4154,7 +4154,8 @@ function sheetPitch(p) {
     // Etappe C (v167): abgeleitet statt am Flag. `termin_hand` bleibt
     // unangetastet - es traegt Andreas selbst gesetzte Wiedervorlage,
     // und die darf aus einer Tatsache nicht verschwinden.
-    const gestoppt = !!wirksameZusage(m) && !q.termin_hand;
+    // v234: nur nach "Gespräch" gestoppt - Interesse laesst die Kadenz laufen.
+    const gestoppt = kadenzStill(m) && !q.termin_hand;
     const pos = fuSeitPitch(m);
     const s = naechsterSchritt(q.naechste_aktion, pos);
     const standard = (m.intervalle || {})[s.key] || KADENZ_STD[s.key];
@@ -4346,8 +4347,9 @@ function sheetPitch(p) {
     if (gestoppt) {
       frag.append(el("div", "stand", m.kundenauftrag
         ? "Kadenz gestoppt — die Marke steht im Kundenauftrag."
-        : "Kadenz gestoppt — positiv beantwortet. Von allein wird nichts " +
-          "mehr fällig."));
+        : "Kadenz gestoppt: Antwort „Gespräch“. Von allein wird nichts " +
+          "mehr fällig. Vertippt? Unter „Antwort eintragen“ für denselben " +
+          "Tag die richtige Antwort eintragen."));
     } else {
       if (eigen) {
         frag.append(el("div", "stand",
@@ -6113,21 +6115,145 @@ function ratingAbweichungen(marken) {
 // Wann wurde zugesagt? Liefert den Datumswert der gueltigen Zusage, oder
 // null. EINE Quelle - zusageAusEreignissen() ist nur die Ja/Nein-Sicht
 // darauf, verschiebenErlaubt() braucht zusaetzlich das Datum.
-// Etappe 1 (v233, Bauplan Abbrechen Abschnitt 2). istZusage ist die EINZIGE
-// Stelle, die sich mit Etappe 3 (Antwortarten) aendert: heute "X" in Positiv.
-function istZusage(e) {
-  return String((e && e.positiv) || "").trim().toUpperCase() === "X";
+// v234 (Bauplan Antwortarten, Abschnitte 1, 2, 12): drei Antwortarten
+// Gespraech / Interesse / Absage. Die Art reist weiter in e.positiv /
+// e.negativ, als WORT ("GESPRÄCH", "INTERESSE") bzw. "X" in negativ.
+// Zusage = Gespraech ODER Interesse (N2: beide verschiebbar). Ob die Kadenz
+// still steht, fragt kadenzStill() - das ist NUR das Gespraech (D2).
+function istZusage(e, m) {
+  const a = antwortArt(e, m);
+  return a === "gespraech" || a === "interesse";
 }
-// Art einer Antwort aus den zwei Book-Zellen. Beide gesetzt = Pruefzustand
-// (""). In Etappe 1 nur fuer die Zyklusgrenze "Absage" benutzt.
-function antwortArt(e) {
+// Art einer Antwort: "gespraech" | "interesse" | "absage" | "" (Pruefzustand:
+// mehr als eine Spalte belegt, oder gar keine). Ein altes "X" in Positiv
+// (Book vor v234) ordnet altXArt() ein. Ohne `m` (Altaufrufer): "interesse".
+// "VERHANDLUNG" stammt aus dem verworfenen Plan vom 20.11. (nie
+// ausgeliefert, nur Tests) und zaehlt als Gespraech.
+function antwortArt(e, m) {
   const p = String((e && e.positiv) || "").trim().toUpperCase();
   const n = String((e && e.negativ) || "").trim();
   if (p && n) return "";
-  if (p.includes("VERHANDLUNG")) return "verhandlung";
-  if (p) return "interesse";
+  const g = p.includes("GESPR") || p.includes("VERHANDLUNG");
+  const i = p.includes("INTERESSE");
+  if (g && i) return "";
+  if (g) return "gespraech";
+  if (i) return "interesse";
+  if (p) return altXArt(m, e);
   if (n) return "absage";
   return "";
+}
+// Ein altes "X" ist eine Antwort ohne Wort in Positiv und ohne Negativ.
+function istAltX(e) {
+  const p = String((e && e.positiv) || "").trim().toUpperCase();
+  return !!p && !String((e && e.negativ) || "").trim() &&
+    !p.includes("GESPR") && !p.includes("VERHANDLUNG") && !p.includes("INTERESSE");
+}
+// Einordnung eines alten X (Codex R1 Fund 3): steht sie in
+// m.antwortEinordnung[datum], gilt NUR das Feld - alte Monatszahlen haengen
+// damit nicht am heutigen Zustand. Fehlt sie (X nachtraeglich im alten
+// Book), Regel D4: kam danach ein Kundenauftrag -> Gespraech, sonst
+// Interesse. Festgeschrieben wird sie in antwortEinordnungPflegen().
+function altXArt(m, e) {
+  if (!m || !e) return "interesse";
+  const eo = m.antwortEinordnung && m.antwortEinordnung[e.datum];
+  const art = eo && (typeof eo === "string" ? eo : eo.art);
+  if (art === "gespraech" || art === "interesse") return art;
+  return hineinNachAntwort(m, e) ? "gespraech" : "interesse";
+}
+// Liegt nach dieser Antwort (Datum >= ihr Datum) und vor der naechsten
+// Antwort derselben Marke ein Eintrag "hinein" (in die Kundenauftraege)?
+// Gibt den Eintrag oder null - die Abschlussquote braucht seine Kennung.
+function hineinNachAntwort(m, e) {
+  const d = eventDatum(e);
+  if (d === null) return null;
+  let bis = Infinity;
+  for (const x of (m && m.events) || []) {
+    if (!x || x === e || x.typ !== "Antwort") continue;
+    const dx = eventDatum(x);
+    if (dx !== null && dx > d && dx < bis) bis = dx;
+  }
+  for (const h of (m && m.kundenauftragHistorie) || []) {
+    if (!h || h.richtung !== "hinein") continue;
+    const dh = datumWert(h.datum);
+    if (dh < 1e12 && dh >= d && dh < bis) return h;
+  }
+  return null;
+}
+// Die Marken der Achtung-Karte "Alte Antworten einordnen" (N1): ein altes X
+// ist nur VORLAEUFIG als Gespraech eingeordnet, bis Andrea waehlt.
+function altXOffen(m, e) {
+  const eo = m && e && m.antwortEinordnung && m.antwortEinordnung[e.datum];
+  return !!(eo && typeof eo === "object" && eo.vorlaeufig && istAltX(e));
+}
+// Liste der offenen alten X einer Marke (fuer die Achtung-Karte).
+function altXOffeneAntworten(m) {
+  return ((m && m.events) || []).filter(
+    (e) => e && e.typ === "Antwort" && altXOffen(m, e));
+}
+// Einordnung festschreiben (Codex R1 Fund 3). `erstlauf` = Migration beim
+// ersten Laden von v234: die offenen (juengste Antwort, Marke wartet in der
+// Pitchliste, kein Auftrag danach) werden VORLAEUFIG Gespraech - so bleibt
+// ihr Zustand wie in v233 ("Zugesagt"). Spaeter (Import) wird ein neues
+// altes X nach D4 eingeordnet, nicht vorlaeufig. Bestehende Eintraege
+// bleiben. Rueckgabe: Zahl neuer Eintraege.
+function antwortEinordnungPflegen(m, erstlauf) {
+  if (!m) return 0;
+  let n = 0;
+  const j = juengsteAntwort(m.events);
+  for (const e of m.events || []) {
+    if (!e || e.typ !== "Antwort" || !istAltX(e)) continue;
+    if (m.antwortEinordnung && m.antwortEinordnung[e.datum]) continue;
+    let eintrag;
+    if (hineinNachAntwort(m, e)) eintrag = { art: "gespraech" };
+    else if (erstlauf && e === j && m.pitchliste && !imKundenbereich(m))
+      eintrag = { art: "gespraech", vorlaeufig: true };
+    else eintrag = { art: "interesse" };
+    (m.antwortEinordnung = m.antwortEinordnung || {})[e.datum] = eintrag;
+    n++;
+  }
+  return n;
+}
+// Andreas Wahl auf der Achtung-Karte "Alte Antworten einordnen" (N1). Nur
+// fuer ein altes X an diesem Datum. Entfernt `vorlaeufig`. War die Marke bis
+// eben still (vorlaeufig Gespraech) und ist es jetzt nicht mehr (Interesse),
+// laeuft die Kadenz wieder an (Codex R1 Fund 1). Kein Book-Schreiben - das
+// Book traegt weiter "X", deshalb ein eigenes Feld statt das Ereignis
+// umzuschreiben (Bauplan Antwortarten 1).
+function antwortEinordnungWaehlen(m, datum, art, jetzt) {
+  if (!m || (art !== "gespraech" && art !== "interesse")) return false;
+  const e = (m.events || []).find(
+    (x) => x && x.typ === "Antwort" && x.datum === datum && istAltX(x));
+  if (!e) return false;
+  jetzt = jetzt || lokalIso();
+  const warStill = kadenzStill(m);
+  (m.antwortEinordnung = m.antwortEinordnung || {})[datum] = { art };
+  if (m.pitchliste) m.pitchliste.geaendert = jetzt;
+  if (warStill && !kadenzStill(m)) kadenzWiederAufnehmen(m, jetzt);
+  listeVeraltet = true;
+  datenstandPersistieren();
+  return true;
+}
+// Alle offenen alten X ueber den Bestand: [{ marke, antwort }] - fuer die
+// Achtung-Karte und ihr Sheet. Leer = keine Karte.
+function altXOffeneListe(marken) {
+  const raus = [];
+  for (const m of marken || [])
+    for (const e of altXOffeneAntworten(m)) raus.push({ marke: m, antwort: e });
+  return raus;
+}
+// Einmalige Einordnung aller alten X beim ersten Laden von v234 (Merker
+// datenstand.antwortartenStand = 1). true, wenn etwas zu speichern ist.
+function antwortartenEinordnen(ds) {
+  if (!ds || !Array.isArray(ds.marken) || ds.antwortartenStand === 1) return false;
+  for (const m of ds.marken) antwortEinordnungPflegen(m, true);
+  ds.antwortartenStand = 1;
+  return true;
+}
+// Steht die Kadenz still? Nur nach einem wirksamen GESPRAECH (D2): Interesse
+// ist eine Zusage (verschiebbar), die Erinnerungen laufen aber weiter.
+function kadenzStill(m) {
+  const z = wirksameZusage(m);
+  return !!z && antwortArt(z, m) === "gespraech";
 }
 // Juengste Antwort mit lesbarem Datum; Gleichstand -> die spaetere im Array.
 function juengsteAntwort(events) {
@@ -6142,13 +6268,13 @@ function juengsteAntwort(events) {
 }
 // Die "historische" Zusage, OHNE Rueckweg. Fuer den Zustand zaehlt
 // wirksameZusage(m).
-function zusageDatum(events) {
+function zusageDatum(events, m) {
   const j = juengsteAntwort(events);
-  return j && istZusage(j) ? eventDatum(j) : null;
+  return j && istZusage(j, m) ? eventDatum(j) : null;
 }
 
-function zusageAusEreignissen(events) {
-  return zusageDatum(events) !== null;
+function zusageAusEreignissen(events, m) {
+  return zusageDatum(events, m) !== null;
 }
 
 // Wann wurde zuletzt aus den Kundenauftraegen ZURUECK in die Pitchliste
@@ -6203,7 +6329,7 @@ function letzterRueckweg(m) {
 // Rueckweg) > antwortWert (ab v233) > antwortStand (v167-v232) > Datum.
 function wirksameZusage(m) {
   const j = juengsteAntwort(m && m.events);
-  if (!j || !istZusage(j)) return null;
+  if (!j || !istZusage(j, m)) return null;
   const h = letzterRueckweg(m);
   if (!h || h.entwertet) return j;
   if (Number.isFinite(h.antwortWert)) return eventDatum(j) > h.antwortWert ? j : null;
@@ -6214,13 +6340,16 @@ function wirksameZusage(m) {
   return eventDatum(j) > rueck ? j : null;
 }
 
-// Der Status, wie er auf der Karte steht. "Zugesagt" UEBERLAGERT den
+// Der Status, wie er auf der Karte steht. "Gespräch" (v234, vorher
+// "Zugesagt") UEBERLAGERT den
 // gespeicherten Wert, statt ihn zu ersetzen: `status` traegt sonst den
 // Schritt ("Follow up", "Creatorpool") oder Freitext aus dem Word, und den
 // will niemand verlieren, nur weil eine Zusage vorliegt.
 function statusAnzeige(m) {
   const pl = (m && m.pitchliste) || {};
-  return wirksameZusage(m) ? "Zugesagt" : (pl.status || "");
+  // v234: nur das Gespraech legt die Kadenz still; Interesse zeigt den
+  // gespeicherten Schritt ("Follow up ..."), die Kadenz laeuft weiter.
+  return kadenzStill(m) ? "Gespräch" : (pl.status || "");
 }
 
 // Zyklusgrenzen (Etappe 1, Codex-Fund folgeSeitPitch): ab hier zaehlen
@@ -6229,7 +6358,7 @@ function zyklusGrenzen(events, hist) {
   const g = [];
   for (const e of events || [])
     if (e && e.typ === "Antwort" && eventDatum(e) !== null &&
-        antwortArt(e) === "absage") g.push(datumWert(e.datum));
+        antwortArt(e) === "absage") g.push(datumWert(e.datum));   // Absage braucht kein m
   for (const h of hist || [])
     if (h && h.richtung === "zurueck" && datumWert(h.datum) < 1e12)
       g.push(datumWert(h.datum));
@@ -6331,8 +6460,8 @@ function bestandBefunde(marken) {
     // richtig war. Am Bestand nachgemessen: 9 Marken tragen das Flag, die
     // Regel nimmt genau diesen einen Fehlalarm weg und laesst die zwei
     // echten Befunde stehen.
-    if (pl && !wirksameZusage(m) &&
-        String(pl.zaehler || "").trim()) {          // Etappe C (v167)
+    if (pl && !kadenzStill(m) &&
+        String(pl.zaehler || "").trim()) {          // Etappe C (v167), v234: nur Gespraech friert
       const z = parseInt(pl.zaehler, 10);
       const echt = folgeSeitPitch(m.events, m.kundenauftragHistorie);
       if (!isNaN(z) && z !== echt) {
@@ -10876,7 +11005,7 @@ function erledigen(m, s, tage, standard) {
   if (s.zaehlt) {
     m.pitchliste.zaehler = String(
       (parseInt(datenstand.letzteAktion.vorher.zaehler, 10) || 0) + 1);
-  } else if (s.typ === "Pitch" && !wirksameZusage(m)) {
+  } else if (s.typ === "Pitch" && !kadenzStill(m)) {   // v234: nur Gespraech friert
     // Z1 (gefunden 24.09. an "7 Hauben", gebaut als v170): Ein neuer Pitch
     // faengt die Kadenz von vorne an - also muss der Follow-up-Zaehler auf
     // 0. Vorher tat er hier GAR NICHTS: erhoeht wurde nur bei s.zaehlt
@@ -10903,7 +11032,7 @@ function erledigen(m, s, tage, standard) {
   // `status` wird MIT zurueckgesetzt: erledigen() hat ihn oben auf den
   // Schritt gesetzt ("Creatorpool"), und danach stuende auf der Karte wieder
   // etwas anderes als "Zugesagt" - A2 waere ausgehebelt. Gemessen 17.09.
-  if (wirksameZusage(m)) {   // Etappe C (v167), Etappe 1: wirksam
+  if (kadenzStill(m)) {   // Etappe C (v167), Etappe 1: wirksam, v234: nur Gespraech
     Object.assign(m.pitchliste, {
       status: "Zugesagt",
       naechste_aktion: "",
@@ -10977,7 +11106,49 @@ function ruecksprungAufPitch(m, jetzt) {
 // Punkt dieser Marke wuerde sonst weiter anbieten, die Pitchliste auf einen
 // Stand VOR der Antwort zurueckzurollen - waehrend das Antwort-Ereignis
 // stehen bleibt. Genau der v131-Fehler, nur an einer neuen Stelle.
-function antwortEintragen(m, datumIso, positiv, bemerkung, jetzt) {
+// v234 (Codex R1 Fund 1/2): die Kadenz wieder anlaufen lassen, wenn eine
+// Marke von "still" (Gespraech) auf "laeuft" wechselt - neue Antwort
+// Interesse, Korrektur Gespraech -> Interesse, Achtung-Karte "Interesse",
+// Import. KEINE zweite Kadenz-Rechnung: der zuletzt erledigte Schritt wird
+// aus dem (beim Gespraech eingefrorenen) Zaehler ueber naechsterSchritt()
+// bestimmt, Abstand wie in bereichErledigen (m.intervalle > KADENZ_STD).
+// Termin = letzter Kontakt + Abstand, liegt er zurueck -> heute.
+// `status` wie erledigen() ihn fuer diesen Schritt geschrieben haette.
+function kadenzWiederAufnehmen(m, jetzt) {
+  const pl = m && m.pitchliste;
+  if (!pl) return false;
+  const roh = parseInt(pl.zaehler, 10);
+  const pos = Math.max(0, Math.min(3, Number.isFinite(roh) ? roh : fuSeitPitch(m)));
+  const zuletzt = pos === 0 ? naechsterSchritt("Pitch", 0)
+                            : naechsterSchritt("Follow up", pos - 1);
+  const tage = (m.intervalle || {})[zuletzt.key] || KADENZ_STD[zuletzt.key];
+  const lk = String(pl.letzter_kontakt || "");
+  const lkIso = datumWert(lk) < 1e12 ? lk.split(".").reverse().join("-") : "";
+  let termin = (lkIso && isoPlusTage(lkIso, tage)) || isoInTagen(0);
+  if (termin < isoInTagen(0)) termin = isoInTagen(0);
+  Object.assign(pl, {
+    status: zuletzt.status,
+    naechste_aktion: zuletzt.naechste,
+    datum_naechste_aktion: termin,
+    termin_hand: false,
+    geaendert: jetzt || lokalIso(),
+  });
+  listeVeraltet = true;
+  return true;
+}
+
+// v234: `art` = "gespraech" | "interesse" | "absage". Boolean-Uebergang fuer
+// Altaufrufer (Tests): true -> Gespraech, false -> Absage.
+// Ereignis nach Bauplan Antwortarten Tabelle 1 (Wort in Positiv bzw. X in
+// Negativ). Gespraech: Kadenz still wie frueher "positiv". Interesse: nur
+// letzter Kontakt + Stempel, Termin/Zaehler/Status bleiben - war die Marke
+// still (Gespraech), laeuft die Kadenz wieder an (kadenzWiederAufnehmen).
+// Beide entwerten Rueckwege (Codex R1 Fund 4: Interesse ist eine Zusage,
+// das Verhalten ist dasselbe wie frueher bei "positiv", bewusst so).
+function antwortEintragen(m, datumIso, art, bemerkung, jetzt) {
+  if (art === true) art = "gespraech";
+  else if (art === false) art = "absage";
+  if (["gespraech", "interesse", "absage"].indexOf(art) < 0) return false;
   if (!m || !m.pitchliste) return false;
   // Antworten gehoeren in die Pitchliste (Tobias, 17.09.). Steht die Marke
   // im Kundenbereich, gibt es seit v197 keinen Weg zurueck - Antworten sind
@@ -11013,8 +11184,11 @@ function antwortEintragen(m, datumIso, positiv, bemerkung, jetzt) {
   const neuereAntwort = (m.events || []).some(
     (e) => e && e.typ === "Antwort" && e.datum !== datum &&
            datumWert(e.datum) > datumWert(datum));
+  const warStill = kadenzStill(m);
   const ereignis = { typ: "Antwort", datum, aktion: "",
-                     positiv: positiv ? "X" : "", negativ: positiv ? "" : "X",
+                     positiv: art === "gespraech" ? "GESPRÄCH"
+                       : art === "interesse" ? "INTERESSE" : "",
+                     negativ: art === "absage" ? "X" : "",
                      bemerkung: bemerkung || "" };
   m.events = m.events || [];
   const i = m.events.findIndex(
@@ -11026,10 +11200,22 @@ function antwortEintragen(m, datumIso, positiv, bemerkung, jetzt) {
     // aktualisieren, Zustand in Ruhe lassen.
     listeVeraltet = true;
     datenstandPersistieren();
-    bookAntwortMelden(m, datum, positiv, !positiv, bemerkung);
+    bookAntwortMelden(m, datum, ereignis);
     return true;
   }
-  if (positiv) {
+  if (art === "interesse") {
+    // Interesse (D2): die Kadenz laeuft weiter. Nur der letzte Kontakt
+    // ruckt vor - Termin, Zaehler, Status bleiben, ausser die Marke stand
+    // bis eben still (Gespraech am selben Tag korrigiert): dann neu anlaufen.
+    Object.assign(m.pitchliste, {
+      letzter_kontakt: datum,
+      positivBeantwortet: true,   // v167: geschrieben, nicht mehr gelesen
+      geaendert: jetzt,
+    });
+    if (warStill) kadenzWiederAufnehmen(m, jetzt);
+    for (const h of m.kundenauftragHistorie || [])
+      if (h && h.richtung === "zurueck") h.entwertet = true;
+  } else if (art === "gespraech") {
     // Stilllegung nach positiv, Option A (Tobias, 16.09.): die Kadenz wird
     // still gelegt, indem BEIDE Terminfelder geleert werden. Das
     // entscheidende Feld ist das DATUM - daran haengt die Faelligkeit;
@@ -11070,7 +11256,7 @@ function antwortEintragen(m, datumIso, positiv, bemerkung, jetzt) {
   }
   listeVeraltet = true;
   datenstandPersistieren();
-  bookAntwortMelden(m, datum, positiv, !positiv, bemerkung);
+  bookAntwortMelden(m, datum, ereignis);
   return true;
 }
 
@@ -11274,6 +11460,9 @@ function kundenauftragVerschieben(m, jetzt, status) {
   // Der Parameter `jetzt` wurde bis dahin entgegengenommen und nirgends
   // benutzt - hier ist die Stelle, fuer die er gedacht war.
   // v233: ohne gueltigen Status false (auftragBeginnen prueft zuerst).
+  // v234 (D1): nach "Gespräch" steht der Status automatisch auf "in
+  // Verhandlung". Nach "Interesse" bleibt er Pflicht (N2).
+  if (!status && kadenzStill(m)) status = "verhandlung";
   if (!verschiebenErlaubt(m) || !auftragBeginnen(m, jetzt || lokalIso(), status))
     return false;
   // Ab hier beschreibt ein offener Ruecknahmepunkt einen Stand, den es nicht
@@ -12821,7 +13010,10 @@ const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
                      // Zweite E-Mail (v202, Andrea 04.10.): steht NICHT im
                      // Word - in m.kerninfos waere sie beim naechsten Import
                      // weg (Import ERSETZT die Kerninfos). Darum eigenes Feld.
-                     "email2"];
+                     "email2",
+                     // v234 (Bauplan Antwortarten 1): Einordnung alter X als
+                     // Gespraech/Interesse - App-Hoheit, das Book traegt "X".
+                     "antwortEinordnung"];
 
 // Zwei Felder der Pitchzeile sind reine RECHENERGEBNISSE aus den
 // Ereignissen - und liefen deshalb still auseinander, seit der Import die
@@ -12850,7 +13042,10 @@ const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
 //
 // "Rueckantworten pruefen" zaehlt nicht als Kontakt (16.09.) - im Bestand
 // heute 0x, die Regel steht trotzdem hier, weil erledigen() sie auch hat.
-function abgeleitetePitchfelder(pl, events, hist) {
+// v234 (Codex R1 Fund 1/2): `m` = die GANZE Marke, damit antwortEinordnung
+// und kadenzStill richtig gelesen werden. events/hist bleiben eigene
+// Parameter: der Import rechnet mit den NEU gelesenen Ereignissen.
+function abgeleitetePitchfelder(pl, events, hist, m) {
   if (!pl) return null;
   const raus = {};
   // eventDatum() statt e.datum: datumWert() liefert fuer Unlesbares 1e12,
@@ -12879,7 +13074,7 @@ function abgeleitetePitchfelder(pl, events, hist) {
       raus.letzter_kontakt = String(letzt.datum);
     }
   }
-  if (!wirksameZusage({ events, kundenauftragHistorie: hist })) {   // Etappe C (v167)
+  if (!kadenzStill(Object.assign({}, m || {}, { events, kundenauftragHistorie: hist }))) {   // Etappe C (v167), v234: nur Gespraech friert
     const z = String(folgeSeitPitch(events, hist));
     if (String(pl.zaehler || "") !== z) raus.zaehler = z;
   }
@@ -12920,9 +13115,26 @@ function importUnterschied(m, lese) {
   // Zeile faellt der Lauf in "keine Aenderung" und die Marke bliebe fuer
   // immer schief.
   const abgeleitet = abgeleitetePitchfelder(m && m.pitchliste, lese.events,
-                                            m && m.kundenauftragHistorie);
+                                            m && m.kundenauftragHistorie, m);
   return { dazu, weg, felder, abgeleitet,
            etwas: !!(dazu || weg || felder.length || abgeleitet) };
+}
+
+// v234: Folgen eines uebernommenen Imports fuer die Antwortarten. `vorher`
+// ist die Marke vor dem Import, `neu` die Kopie aus importAnwenden() (wird
+// veraendert). Einordnung und Pitchzeile werden KOPIERT, die Vorlage teilt
+// sie sonst. Rueckgabe: true, wenn die Kadenz wieder anlief.
+function importAntwortFolgen(vorher, neu) {
+  if (!neu) return false;
+  if (neu.antwortEinordnung) neu.antwortEinordnung = Object.assign({}, neu.antwortEinordnung);
+  antwortEinordnungPflegen(neu, false);
+  if (!neu.pitchliste || !kadenzStill(vorher) || kadenzStill(neu)) return false;
+  // Absage: das macht der Import heute schon nicht (kein Ruecksprung) -
+  // nur der Wechsel Gespraech -> Interesse laesst die Kadenz anlaufen.
+  const z = wirksameZusage(neu);
+  if (!z || antwortArt(z, neu) !== "interesse") return false;
+  neu.pitchliste = Object.assign({}, neu.pitchliste);
+  return kadenzWiederAufnehmen(neu, lokalIso());
 }
 
 // Den Plan ausführen. Gibt IMMER ein Ergebnis zurück.
@@ -13156,6 +13368,10 @@ async function importEinBook(m, datei, abbrechen) {
     });
   }
 
+  // v234: ein neu gelesenes altes X einordnen (D4, nicht vorlaeufig) und,
+  // wenn der Import die juengste Antwort von Gespraech auf etwas anderes als
+  // Gespraech dreht, die Kadenz wieder anlaufen lassen (Codex R1 Fund 1).
+  if (erg.getan) importAntwortFolgen(frisch, erg.marke);
   if (erg.getan) datenstand.marken[stelle] = erg.marke;
 
   return { lage: "gelesen", plan, erg,
@@ -13257,6 +13473,9 @@ async function importLauf(fortschritt, abbrechen) {
   if (!datenstand || !Array.isArray(datenstand.marken)) {
     return { fehler: "kein Datenstand" };
   }
+  // v234: auch ein frisch getauschter Stand (Andreas Stand holen) hat seine
+  // alten X noch nicht eingeordnet - vor dem ersten Lesen nachholen.
+  if (antwortartenEinordnen(datenstand)) datenstandPersistieren();
   importLaeuft = true;
   const b = { faellig: 0, gelesen: 0, uebernommen: 0, unveraendert: 0,
               befunde: [], zurueckgestellt: [], probleme: [], fremd: [],
@@ -15312,7 +15531,10 @@ async function bookAntwort(m, datum, positiv, negativ, bemerkung) {
 // Schreiben und nur dann etwas sagen, wenn es etwas zu sagen gibt.
 // Laeuft NEBEN dem Speichern (kein await): das Antwort-Fenster soll nicht
 // auf einen Word-Upload warten - genauso wie beim Erledigt-Knopf.
-function bookAntwortMelden(m, datum, positiv, negativ, bemerkung) {
+function bookAntwortMelden(m, datum, ereignis) {
+  const positiv = !!String((ereignis && ereignis.positiv) || "").trim();
+  const negativ = !!String((ereignis && ereignis.negativ) || "").trim();
+  const bemerkung = (ereignis && ereignis.bemerkung) || "";
   const aktion = antwortAktion(positiv);
   const daten = { positiv: !!positiv, negativ: !!negativ,
                   bemerkung: bemerkung || "" };
@@ -17452,6 +17674,8 @@ async function laden() {
   const beste = [lokal, cloud, geraet].filter(Boolean).sort(
     (a, b) => String(b.erzeugt || "").localeCompare(String(a.erzeugt || "")))[0];
   await datenstandFertig; // Overlay (Phase 5) braucht den Datenstand vor dem Rendern
+  // v234: alte X einmalig einordnen (Codex R1 Fund 3), dann speichern.
+  if (antwortartenEinordnen(datenstand)) datenstandPersistieren();
 
   // ------------------------------------------------------------- S1
   // Die Zeitraeume kommen ab hier IMMER aus dem Datenstand, auch wenn ein
