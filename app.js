@@ -16929,8 +16929,8 @@ async function datenstandSchreibenEinmal(still) {
   // (Codex 16.09., Fund 2; kein v128-Fehler, der stand vorher schon drin).
   let aufGeraet = true;
   try { await idbSchreib("datenstand", stand); } catch (_) { aufGeraet = false; }
-  const ok = typeof OD !== "undefined" &&
-    await OD.graphPutLeise(OD_DATENSTAND(), stand);
+  // v234 (Punkt 84): der EINE Schreibweg nach OneDrive (cloudStandSchreiben)
+  const ok = typeof OD !== "undefined" && await cloudStandSchreiben(stand);
   // Befund 9: OneDrive hat ihn, das Geraet nicht -> Geraetestand ist ab jetzt
   // aelter. Merken (ueberlebt den Neustart), bis das Geraet wieder mitkommt.
   if (ok && !aufGeraet) einst.geraetVeraltet = stand.geaendert;
@@ -17321,6 +17321,200 @@ async function standWahlKlaeren(kandidaten) {
   return !direkt;
 }
 
+// ------------------------------ Punkt 84 (v234): fremder Stand in OneDrive
+//
+// Anlass 23.11. (Bauplan Antwortarten 11): Tobias legte Andreas Stand in
+// seinen Testordner, das Handy ueberschrieb ihn dreimal, bevor "Andreas Stand
+// holen" gedrueckt war. Deshalb auf Tobias' Geraet (einst.abendKnopf):
+//   - JEDES Schreiben des Datenstands nach OneDrive laeuft ueber
+//     cloudStandSchreiben(), das vorher nachsieht, ob dort noch ein EIGENER
+//     Stand liegt (Codex R1 Fund 11-15). Fremd -> nicht schreiben, fragen.
+//   - datenstandLaden() fragt beim Start, BEVOR irgendetwas geschrieben wird.
+// "Eigen" = ein Stempel, den dieses Geraet erfolgreich geschrieben oder
+// bewusst gesehen hat (einst.eigeneCloudStempel, die letzten 20, mit ms).
+// Andreas Geraet (abendKnopf nie gesetzt): exakt wie v233.
+let fremderStand = false;          // Schreibschutz greift, Frage steht aus
+let andreasImportNachStart = false; // nach OK: Books nach dem ersten Zeichnen lesen
+
+function cloudStempelMerken(stempel) {
+  if (!einst.abendKnopf || !stempel) return false;
+  const alt = Array.isArray(einst.eigeneCloudStempel) ? einst.eigeneCloudStempel : [];
+  einst.eigeneCloudStempel = [String(stempel)]
+    .concat(alt.filter((x) => x !== String(stempel))).slice(0, 20);
+  try { localStorage.setItem(EINST_KEY, JSON.stringify(einst)); } catch (_) {}
+  return true;
+}
+// Rein: ist `cloud` ein fremder Stand gegenueber dem Stand dieses Geraets?
+// Gleicher Stempel ist NICHT fremd (Fund 15: dann bleibt die alte
+// Gleichstandsfrage in standWahlKlaeren zustaendig). Leere Merkliste (erster
+// Start nach dem Update, Fund 11): anderer Stempel -> einmal fragen.
+function fremderCloudStand(cloud, geraet, e) {
+  const ein = e || {};
+  if (!ein.abendKnopf || !cloud || !Array.isArray(cloud.marken) || !geraet) return false;
+  const c = String(cloud.geaendert || "");
+  if (c === String(geraet.geaendert || "")) return false;
+  const liste = Array.isArray(ein.eigeneCloudStempel) ? ein.eigeneCloudStempel : [];
+  return liste.indexOf(c) < 0;
+}
+// DER Schreibweg des Datenstands nach OneDrive (Fund 11-15). Alle Schreiber
+// (Speicherkern, Nachreichen in datenstandLaden, "Jetzt sichern") rufen ihn;
+// Andreas-Stand-Holen und Standwahl gehen ueber datenstandPersistieren() und
+// damit ebenfalls hierher. Rueckgabe true/false wie graphPutLeise.
+async function cloudStandSchreiben(stand) {
+  if (typeof OD === "undefined") return false;
+  if (einst.abendKnopf) {
+    if (fremderStand) return false;           // Frage steht aus
+    // onedrive.js gibt keinen eTag her -> GET und Stempel vergleichen.
+    const cloud = await OD.graphLeise(OD_DATENSTAND());
+    const liste = Array.isArray(einst.eigeneCloudStempel) ? einst.eigeneCloudStempel : [];
+    if (cloud && Array.isArray(cloud.marken) && liste.length &&
+        liste.indexOf(String(cloud.geaendert || "")) < 0) {
+      fremderStand = true;
+      logZeile("stand-fremd-gesperrt", { ...logMehr({ cloud: cloud.geaendert,
+        soll: stand && stand.geaendert }) });
+      banner("In OneDrive liegt ein anderer Stand — er wird NICHT " +
+        "überschrieben. Die Frage kommt gleich.");
+      setTimeout(fremdeFrageNachholen, 0);
+      return false;
+    }
+    // Leere Liste (erster Lauf nach dem Update, noch keine Start-Frage):
+    // der Stand in OneDrive gilt als eigener, wenn er dem Geraet gleicht.
+    if (cloud && !liste.length) cloudStempelMerken(cloud.geaendert);
+  }
+  const ok = await OD.graphPutLeise(OD_DATENSTAND(), stand);
+  if (ok) cloudStempelMerken(stand && stand.geaendert);   // nur nach Erfolg (S4, Fund 15)
+  return ok;
+}
+// Die Frage an der naechsten sicheren Stelle: kein Sheet offen, keine
+// KI-Suche - sonst ueber abgleichNachholen nach dem Schliessen.
+function fremdeFrageNachholen() {
+  if (standGesperrt()) { abgleichNachholen = true; return; }
+  abgleichBeiRueckkehr();
+}
+// Andreas Stand einsetzen (Schritte 1-3 aus andreasStandUebernehmen, Fund 13):
+// `sicherung` (Kaltstart: der Geraetestand, sonst der laufende) wird ZUERST
+// in OneDrive gesichert - scheitert das, passiert nichts. Dann Tausch ohne
+// Altersvergleich, Lese-Merker weg, Stempel als eigen merken (sonst haelt
+// der Schreibschutz das eigene Persist an), persistieren. Ein Weg fuer den
+// Knopf und die Start-Frage. `cloud` undefined (Knopf): erst NACH der
+// Sicherung lesen, wie bis v233 (test_v166: "gesichert vor dem Holen").
+async function andreasStandTauschen(cloud, sicherung, sag) {
+  sag = sag || (() => {});
+  if (scanKiLauf) return { fehler: SCAN_KI_SPERRE };
+  if (sicherung) {
+    sag("Eigener Stand wird gesichert …");
+    const kopie = "cockpit-vor-andreas-" +   // mit Sekunden wie die Rueckspiel-Kopie
+      lokalIso().slice(0, 19).replace("T", "-").replace(/:/g, "") + ".json";
+    const gesichert = typeof OD !== "undefined" && await OD.graphPutLeise(
+      datenBasis() + "/" + kopie + ":/content", sicherung);
+    datenstandBackup("cockpit-vor-andreas-");  // zusaetzlich, ungeprueft
+    if (!gesichert) {
+      logZeile("andrea-abgebrochen", { grund: "Sicherung fehlgeschlagen" });
+      logSichern();
+      return { fehler: "Sicherheitskopie konnte nicht in OneDrive abgelegt " +
+                       "werden — es wurde NICHTS geändert." };
+    }
+  }
+  if (cloud === undefined) {
+    sag("OneDrive wird gelesen …");
+    cloud = typeof OD !== "undefined" ? await OD.graphLeise(OD_DATENSTAND()) : null;
+  }
+  // Nochmal direkt vor dem Tausch (Codex Runde 3, Fund 1) - siehe backupLaden().
+  if (scanKiLauf) return { fehler: SCAN_KI_SPERRE };
+  let standGetauscht = false;
+  if (cloud && Array.isArray(cloud.marken)) {
+    logZeile("andrea-stand-uebernommen", { quelle: "OneDrive",
+      ...logMehr({ soll: cloud.geaendert,
+                   ist: datenstand && datenstand.geaendert }) });
+    cloudStempelMerken(cloud.geaendert);
+    [datenstand, datenstandQuelle] = [cloud, "OneDrive"];
+    for (const e of datenstand.ausstehend || [])
+      if (e.grund === "laeuft") e.grund = "wartet";
+    standGetauscht = true;
+  }
+  fremderStand = false;
+  // Merker loeschen - auch wenn kein Cloud-Stand kam (Tobias, 25.09.).
+  let merkerWeg = 0;
+  for (const m of (datenstand && datenstand.marken) || [])
+    if (m.bookImport) { delete m.bookImport; merkerWeg++; }
+  await datenstandPersistieren();   // MUSS vor den Import (andreasStandUebernehmen)
+  return { standGetauscht, merkerWeg };
+}
+// Nach OK auf die Start-Frage: alle Books lesen, Fortschritt im Banner.
+async function andreasImportNachholen() {
+  if (!andreasImportNachStart) return null;
+  andreasImportNachStart = false;
+  const bericht = await importLauf((wieviel, von, name) => {
+    banner(`Andreas Stand: lese Book ${wieviel} von ${von} (${name})`);
+  });
+  banner(bericht && bericht.fehler
+    ? "Andreas Stand ist geholt, die Books konnten nicht gelesen werden (" +
+      bericht.fehler + ")."
+    : "Andreas Stand ist geholt, alle Brand-Books gelesen.");
+  logSichern();
+  return bericht;
+}
+// Text der Start-Frage (Bauplan Antwortarten 11 + Fund 12).
+function fremdFrageText(cloud, geraet) {
+  const zeit = (st) => {
+    const t = String((st && st.geaendert) || "");
+    return t ? t.slice(8, 10) + "." + t.slice(5, 7) + ". " + t.slice(11, 16) : "?";
+  };
+  const zahl = (st) => ((st && st.marken) || []).length;
+  return "In OneDrive liegt ein anderer Stand als zuletzt auf diesem Gerät." +
+    "\n\n" +
+    "OneDrive — " + zeit(cloud) + " · " + zahl(cloud) + " Marken\n" +
+    "Dieses Gerät — " + zeit(geraet) + " · " + zahl(geraet) + " Marken\n\n" +
+    "OK = Andreas Stand holen und alle Brand-Books neu lesen (dein Stand " +
+    "wird vorher gesichert)\n" +
+    "Abbrechen = mit dem Stand dieses Geräts weiterarbeiten. OneDrive wird " +
+    "damit überschrieben, Andreas Datei vorher gesichert.";
+}
+// Die Start-Frage selbst. true = datenstandLaden ist fertig (beantwortet
+// oder vertagt), false = keine Frage, normaler Weg.
+async function fremdenStandKlaeren(cloud, geraet) {
+  const aktuell = datenstand || geraet;
+  if (!fremderCloudStand(cloud, aktuell, einst)) {
+    // Leere Liste, gleicher Stempel: den Stand als eigenen merken (Fund 11)
+    if (einst.abendKnopf && cloud && aktuell &&
+        !(Array.isArray(einst.eigeneCloudStempel) && einst.eigeneCloudStempel.length) &&
+        String(cloud.geaendert || "") === String(aktuell.geaendert || ""))
+      cloudStempelMerken(cloud.geaendert);
+    return false;
+  }
+  fremderStand = true;               // bis zur Antwort schreibt nichts nach OneDrive
+  if (standGesperrt()) { abgleichNachholen = true; return true; }
+  logZeile("stand-fremd-gefragt", { ...logMehr({ cloud: cloud.geaendert,
+    geraet: aktuell.geaendert }) });
+  if (confirm(fremdFrageText(cloud, aktuell))) {
+    const r = await andreasStandTauschen(cloud, aktuell);
+    if (r.fehler) { banner(r.fehler); return true; }   // fremderStand bleibt: nichts ueberschreiben
+    andreasImportNachStart = true;
+    versionsSicherung(); autoBackupPruefen();
+    return true;
+  }
+  // Abbrechen (Fund 12): Andreas Datei zuerst sichern, dann AUSDRUECKLICH den
+  // Geraetestand setzen (kein Altersvergleich) und OneDrive damit ueberschreiben.
+  const kopie = "cockpit-verworfen-onedrive-" +
+    lokalIso().slice(0, 19).replace("T", "-").replace(/:/g, "") + ".json";
+  const gesichert = typeof OD !== "undefined" && await OD.graphPutLeise(
+    datenBasis() + "/" + kopie + ":/content", cloud);
+  if (!datenstand) [datenstand, datenstandQuelle] = [geraet, "Gerät"];
+  if (!gesichert) {
+    banner("Andreas Datei in OneDrive konnte nicht gesichert werden — sie wird " +
+      "NICHT überschrieben. Die App arbeitet mit dem Stand dieses Geräts.");
+    return true;                      // fremderStand bleibt gesetzt
+  }
+  cloudStempelMerken(cloud.geaendert);   // "gesehen, nicht wollen" (S3)
+  fremderStand = false;
+  logZeile("stand-fremd-abgelehnt", { ...logMehr({ cloud: cloud.geaendert }) });
+  for (const e of (datenstand && datenstand.ausstehend) || [])
+    if (e.grund === "laeuft") e.grund = "wartet";
+  await datenstandPersistieren();
+  versionsSicherung(); autoBackupPruefen();
+  return true;
+}
+
 function datenstandUebernehmen(paar) {
   const alt = datenstand && datenstand.geaendert;
   // Zweite Frage, gefunden vom Lasttest am 11.09. (Seed 31337, v109):
@@ -17414,50 +17608,11 @@ async function andreasStandUebernehmen(melde) {
   const sag = (t) => { if (melde) melde(t); };
   // v210: wie backupLaden() - nicht waehrend einer KI-Suche (Codex Runde 2, Fund 2).
   if (scanKiLauf) return { fehler: SCAN_KI_SPERRE };
-
-  // 1. Sicherheitskopie. Muster aus backupLaden(): die CLOUD-Kopie ist die
-  // Bedingung, der Download laeuft nur zusaetzlich mit. Einbahnstrassen
-  // sind in diesem Projekt schon zweimal teuer geworden.
-  if (datenstand) {
-    sag("Eigener Stand wird gesichert …");
-    const kopie = "cockpit-vor-andreas-" +   // mit Sekunden wie die Rueckspiel-Kopie
-      lokalIso().slice(0, 19).replace("T", "-").replace(/:/g, "") + ".json";
-    const gesichert = typeof OD !== "undefined" && await OD.graphPutLeise(
-      datenBasis() + "/" + kopie + ":/content", datenstand);
-    datenstandBackup("cockpit-vor-andreas-");  // zusaetzlich, ungeprueft
-    if (!gesichert) {
-      logZeile("andrea-abgebrochen", { grund: "Sicherung fehlgeschlagen" });
-      logSichern();
-      return { fehler: "Sicherheitskopie konnte nicht in OneDrive abgelegt " +
-                       "werden — es wurde NICHTS geändert." };
-    }
-  }
-
-  // 2. Cloud-Stand holen und ohne Altersvergleich setzen.
-  sag("OneDrive wird gelesen …");
-  const cloud = typeof OD !== "undefined"
-    ? await OD.graphLeise(OD_DATENSTAND())
-    : null;
-  let standGetauscht = false;
-  // Nochmal direkt vor dem Tausch (Codex Runde 3, Fund 1) - siehe backupLaden().
-  if (scanKiLauf) return { fehler: SCAN_KI_SPERRE };
-  if (cloud && Array.isArray(cloud.marken)) {
-    logZeile("andrea-stand-uebernommen", { quelle: "OneDrive",
-      ...logMehr({ soll: cloud.geaendert,
-                   ist: datenstand && datenstand.geaendert }) });
-    [datenstand, datenstandQuelle] = [cloud, "OneDrive"];
-    await datenstandPersistieren();
-    standGetauscht = true;
-  }
-
-  // 3. Merker loeschen - auch wenn kein Cloud-Stand kam (Tobias, 25.09.).
-  // Dann ist der Knopf eben nur "alle Books noch einmal lesen". Die Kopien
-  // liegen auf einem anderen Laufwerk und haben andere itemIds; ohne den
-  // Reset gelten sie als FREMD statt als ungelesen.
-  let merkerWeg = 0;
-  for (const m of (datenstand && datenstand.marken) || [])
-    if (m.bookImport) { delete m.bookImport; merkerWeg++; }
-  await datenstandPersistieren();   // MUSS vor den Import, siehe Kopf
+  // v234 (Punkt 84): Schritte 1-3 in andreasStandTauschen - EIN Weg fuer den
+  // Knopf und die Start-Frage. Reihenfolge wie bis v233: sichern, lesen, tauschen.
+  const t = await andreasStandTauschen(undefined, datenstand, sag);
+  if (t.fehler) return { fehler: t.fehler };
+  const { standGetauscht, merkerWeg } = t;
 
   // 4. Import. bookGeaendert raeumt importLauf() selbst auf.
   sag("Brand-Books werden gelesen …");
@@ -17488,6 +17643,10 @@ async function datenstandLaden() {
   if (!kandidaten.length) return;
   kandidaten.sort((a, b) =>
     String(b[0].geaendert || "").localeCompare(String(a[0].geaendert || "")));
+  // v234 (Punkt 84): auf Tobias' Geraet zuerst fragen, ob in OneDrive ein
+  // FREMDER Stand liegt - vor standWahlKlaeren und vor jedem Schreiben. Die
+  // Start-Frage ersetzt dort die Aelter/Neuer-Frage. Andreas Geraet: nie.
+  if (einst.abendKnopf && (await fremdenStandKlaeren(cloud, geraet))) return;
   // Wuerde der Zeit-Gewinner Marken verschlucken? Dann fragen, bevor
   // irgendetwas angefasst wird (v136). Gibt false zurueck, wenn hier Schluss
   // ist - entweder weil die Wahl schon umgesetzt wurde oder weil sie vertagt
@@ -17520,7 +17679,7 @@ async function datenstandLaden() {
       // v177 (Backlog 42/F7): klappt das stille Nachreichen, muss auch die
       // Karte "Nur auf diesem Geraet" weg - sie behauptete sonst weiter das
       // Gegenteil, bis Andrea selbst etwas eintraegt. Nur bei Erfolg.
-      persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand))
+      persistKettenLauf(() => cloudStandSchreiben(datenstand))
         .then((ok) => { if (ok) wolkeMerken(true); });
     }
     if (datenstand) { versionsSicherung(); autoBackupPruefen(); }
@@ -17549,7 +17708,7 @@ async function datenstandLaden() {
     // Durch die Kette (v128): das hier ist der ZWEITE Schreiber auf
     // datenstand.json. Lief er gleichzeitig mit einem Persistieren, konnten
     // sich die beiden PUTs ueberholen - genau der Fall aus Backlog 5.
-    persistKettenLauf(() => OD.graphPutLeise(OD_DATENSTAND(), datenstand))
+    persistKettenLauf(() => cloudStandSchreiben(datenstand))
       .then((ok) => { if (ok) wolkeMerken(true); });   // v177 (F7), wie oben
   }
   // Rueckfahrkarte fuer ein missratenes Release ZUERST, dann das taegliche
@@ -17792,7 +17951,7 @@ async function datenstandSichern(statusEl) {
     // Sperre auch IM Kettenschritt pruefen (Codex Runde 2): zwischen Klick und
     // Schreiben koennte der Stand gewechselt haben.
     await persistKettenLauf(() => (geraetStandGesperrt() ? false
-      : OD.graphPutLeise(OD_DATENSTAND(), datenstand)));
+      : cloudStandSchreiben(datenstand)));
   if (ok) {
     einst.gesichert = lokalIso().slice(0, 16).replace("T", " ");   // Ortszeit, nicht UTC (Großtest)
     localStorage.setItem(EINST_KEY, JSON.stringify(einst));
@@ -17951,6 +18110,9 @@ window.addEventListener("od-ready", async () => {
   // App-Eintraege ins Book, dann lesen, dann pruefen. BEWUSST ohne await -
   // der Start wartet nicht darauf, das Ergebnis zeichnet sich selbst nach.
   outboxAbarbeiten();
+  // v234 (Punkt 84): nach OK auf die Start-Frage alle Books lesen - nach dem
+  // ersten Zeichnen, mit Fortschritt im Banner.
+  if (andreasImportNachStart) await andreasImportNachholen();
   importDannPruefen();
 });
 
@@ -18137,6 +18299,8 @@ async function abgleichBeiRueckkehr() {
   } finally {
     abgleichLaeuft = false;
   }
+  // v234 (Punkt 84): Start-Frage im warmen Pfad mit OK beantwortet
+  if (andreasImportNachStart) andreasImportNachholen();
   // Wartende Book-Eintraege nachtragen (v103). Der richtige Moment:
   // Andrea kommt gerade aus Word zurueck, die Sperre ist gefallen.
   outboxAbarbeiten();
