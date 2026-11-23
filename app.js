@@ -763,6 +763,56 @@ function auftraegeOhneStatus() {
   return (datenstand ? datenstand.marken || [] : [])
     .filter((m) => m.kundenauftrag && !statusGueltig(m.kundenauftrag));
 }
+// v234 (N1): Achtung-Karte "Alte Antworten einordnen", solange ein altes X
+// nur vorlaeufig als Gespraech gilt. Tippen oeffnet das Sheet.
+function altXWarnung() {
+  const offen = altXOffeneListe(datenstand && datenstand.marken);
+  if (!offen.length) return null;
+  const marken = new Set(offen.map((x) => x.marke.name)).size;
+  const k = el("div", "karte block warnung tippbar");
+  const kopf = el("div", "kopf");
+  kopf.append(el("span", "pill", "\u26a0 Achtung"));
+  k.append(kopf, el("div", "titel", "Alte Antworten einordnen"),
+    el("div", "kontext", marken + (marken === 1 ? " Marke hat" : " Marken haben") +
+      " eine alte Antwort „positiv“. Bitte je Marke wählen: Gespräch oder " +
+      "Interesse. Zum Öffnen hier tippen."));
+  k.onclick = sheetAltXEinordnen;
+  return k;
+}
+function sheetAltXEinordnen() {
+  const wrap = el("div");
+  const fuellen = () => {
+    wrap.textContent = "";
+    wrap.append(el("div", "stand", "Gespräch = konkrete Buchungsabsicht oder " +
+      "Angebot angefragt. Interesse = gerade keine Kapazität oder Budget. Bei " +
+      "Interesse laufen die Erinnerungen wieder an."));
+    const offen = altXOffeneListe(datenstand && datenstand.marken);
+    if (!offen.length) {
+      wrap.append(el("div", "leerzustand kompakt", "Alles eingeordnet."));
+      return;
+    }
+    for (const { marke, antwort } of offen) {
+      const b = el("div", "block altx-zeile");
+      b.append(el("div", "abschnitt", marke.name),
+        el("div", "stand", "Antwort vom " + antwort.datum +
+          (antwort.bemerkung ? " · " + antwort.bemerkung : "")));
+      const chips = el("div", "chips");
+      for (const [wert, text] of ANTWORT_ARTEN.slice(0, 2)) {
+        const c = el("button", "chip", text);
+        c.onclick = () => {
+          antwortEinordnungWaehlen(marke, antwort.datum, wert, lokalIso());
+          fuellen();
+        };
+        chips.append(c);
+      }
+      b.append(chips);
+      wrap.append(b);
+    }
+  };
+  fuellen();
+  sheetOeffnen("Alte Antworten einordnen", wrap);
+}
+
 function statusWarnung() {
   return auftragKarte(auftraegeOhneStatus(), "Kundenauftrag ohne Status",
     " \u2014 bitte „in Verhandlung“ oder „bestätigt“ wählen. Zum Öffnen hier tippen.",
@@ -3217,11 +3267,15 @@ function bereichHistorie(m, quelle) {
   const tab = el("div", "tabelle");
   for (const e of eintraege) {
     const zeile = el("div", "zeile historie");
+    // v234: Punkt und Text nach der Antwortart (Gespraech/Interesse gruen,
+    // Absage und ohne Bewertung grau). `m` ist hier die Marke des Sheets.
+    const art = e.typ === "Antwort" ? antwortArt(e, m) : "";
     const punktKlasse = e.typ === "Antwort"
-      ? (e.positiv === "X" ? "punkt-positiv" : "punkt-antwort")
+      ? (art === "gespraech" || art === "interesse" ? "punkt-positiv" : "punkt-antwort")
       : "punkt-" + e.typ.toLowerCase();
     const text = e.typ === "Antwort"
-      ? (e.positiv === "X" ? "Antwort — positiv" : "Antwort")
+      ? "Antwort — " + ({ gespraech: "Gespräch", interesse: "Interesse",
+                          absage: "Absage" }[art] || "ohne Bewertung")
       : (e.aktion || e.typ);
     const label = el("span");
     label.append(el("span", "punkt " + punktKlasse), document.createTextNode(text));
@@ -4066,20 +4120,23 @@ function sheetPitch(p) {
     // ruft diesen Baustein dort gar nicht auf (v192, schlankes Formular).
     if (!m || !m.pitchliste || !q.letzter_kontakt) return frag;
 
-    // Zwei Chips statt <input type="radio">: die App hat fuer "chip aktiv"
-    // schon eine Darstellung, ein Radio braeuchte neues CSS.
-    let positiv = true;
-    const kPos = el("button", "chip aktiv", "positiv");
-    const kNeg = el("button", "chip", "negativ");
-    const setzen = (wert) => {
-      positiv = wert;
-      kPos.className = wert ? "chip aktiv" : "chip";
-      kNeg.className = wert ? "chip" : "chip aktiv";
-    };
-    kPos.onclick = () => setzen(true);
-    kNeg.onclick = () => setzen(false);
+    // v234 (Bauplan Antwortarten 2/6): drei Chips Gespraech · Interesse ·
+    // Absage, KEINER vorgewaehlt - "Antwort eintragen" bleibt gesperrt, bis
+    // gewaehlt ist. Chips statt <input type="radio"> wie bisher. Auswahl
+    // ohne bau(): sie ist keine Datenaenderung (wie die Chips im Erledigen).
+    let art = null;
     const wahl = el("div", "chips");
-    wahl.append(kPos, kNeg);
+    const chips = ANTWORT_ARTEN.map(([wert, text]) => {
+      const k = el("button", "chip", text);
+      k.onclick = () => {
+        art = wert;
+        for (const [kk, w] of chips) kk.className = w === art ? "chip aktiv" : "chip";
+        ok.disabled = false;
+        ok.className = "chip haupt";
+      };
+      wahl.append(k);
+      return [k, wert];
+    });
 
     // Das Datum ist der LETZTE KONTAKT, nicht der naechste Termin (Andrea,
     // 16.09., rot auf dem Blatt). Die Antwort IST ein Kontaktereignis; die
@@ -4093,8 +4150,10 @@ function sheetPitch(p) {
     bem.type = "text";
     bem.placeholder = "kurzer Satz — der ausführliche Text gehört ins Book";
 
-    const ok = el("button", "chip haupt", "Antwort eintragen");
+    const ok = el("button", "chip", "Antwort eintragen");
+    ok.disabled = true;
     ok.onclick = () => {
+      if (!art) return;
       if (!d.value) { banner("Bitte ein Datum wählen."); return; }
       const datumDe = deDatum(d.value);
       // Steht fuer diesen Tag schon eine Antwort, ist das eine KORREKTUR -
@@ -4102,18 +4161,8 @@ function sheetPitch(p) {
       // (Tobias, 17.09.). Andrea soll das vorher wissen.
       const alt = (m.events || []).find(
         (e) => e && e.typ === "Antwort" && e.datum === datumDe);
-      if (!confirm((alt
-            ? `Für den ${datumDe} ist schon eine Antwort eingetragen ` +
-              `(${alt.positiv ? "positiv" : "negativ"}).\n` +
-              "Sie wird ERSETZT — auch im Brand-Book.\n\n"
-            : "") +
-          `Antwort als ${positiv ? "positiv" : "negativ"} eintragen, ` +
-          `datiert auf den ${datumDe}?\n\n` +
-          (positiv
-            ? "Die Kadenz wird danach gestoppt: es wird nichts mehr von " +
-              "allein fällig."
-            : "Die Marke springt danach zurück auf Pitch."))) return;
-      antwortEintragen(m, d.value, positiv, bem.value.trim(), lokalIso());
+      if (!confirm(antwortRueckfrage(m, art, datumDe, alt))) return;
+      antwortEintragen(m, d.value, art, bem.value.trim(), lokalIso());
       bau();
     };
     const zeile = el("div", "chips");
@@ -4156,18 +4205,21 @@ function sheetPitch(p) {
     // Dieselbe Funktion, die auch das Verschieben selbst absichert -
     // nicht eine zweite Abfrage von q.positivBeantwortet (Fall 27/29).
     const erlaubt = verschiebenErlaubt(m);
-    // v233 (E10): Status vorher waehlen, Knopf bis dahin gesperrt
-    const kaKnopf = el("button", erlaubt && z.status ? "chip haupt" : "chip",
+    // v234 (D1/N2): nach "Gespräch" steht der Status automatisch auf "in
+    // Verhandlung" - keine Status-Chips. Nach "Interesse" waehlt Andrea den
+    // Status (v233, E10), Knopf bis dahin gesperrt.
+    const autoStatus = erlaubt && kadenzStill(m) ? "verhandlung" : null;
+    const status = autoStatus || z.status;
+    const kaKnopf = el("button", erlaubt && status ? "chip haupt" : "chip",
       "→ in Kundenaufträge verschieben");
-    if (!erlaubt || !z.status) {
+    if (!erlaubt || !status) {
       kaKnopf.disabled = true;
     } else {
       kaKnopf.onclick = () => {
-        if (!confirm(`„${m.name}“ in die Kundenaufträge verschieben?\n\n` +
-            "Die Marke verschwindet aus der Pitchliste. Die Pitchdaten " +
-            "bleiben erhalten, „✕ Abbrechen“ im Auftrag holt sie zurück.\n\n" +
-            `Status: ${auftragStatusText(z.status)}.`)) return;
-        if (!kundenauftragVerschieben(m, lokalIso(), z.status)) {
+        if (!confirm(`„${m.name}“ in die Kundenaufträge verschieben? ` +
+            `Status: ${auftragStatusText(status)}. Die Marke verschwindet ` +
+            "aus der Pitchliste, „✕ Abbrechen“ im Auftrag holt sie zurück.")) return;
+        if (!kundenauftragVerschieben(m, lokalIso(), autoStatus ? undefined : status)) {
           banner("Das ging nicht — bitte die Liste einmal neu laden.");
           return;
         }
@@ -4178,17 +4230,18 @@ function sheetPitch(p) {
       };
     }
     kaZeile.append(kaKnopf);
-    if (erlaubt) frag.append(statusChips(z, bau));
+    if (erlaubt && !autoStatus) frag.append(statusChips(z, bau));
     frag.append(kaZeile);
-    if (erlaubt && !z.status) frag.append(el("div", "stand", "Bitte erst den Status wählen."));
+    if (autoStatus) frag.append(el("div", "stand",
+      "Nach „Gespräch“ steht der Status gleich auf „in Verhandlung“."));
+    if (erlaubt && !status) frag.append(el("div", "stand", "Bitte erst den Status wählen."));
     if (!erlaubt) {
-      const alt = zusageAusEreignissen(m.events) && juengsteAntwort(m.events);
+      const alt = zusageAusEreignissen(m.events, m) && juengsteAntwort(m.events);
       frag.append(erklaerung("In Kundenaufträge verschieben", alt
-        ? `Die Zusage vom ${alt.datum} gehörte zu einem Auftrag, der ` +
+        ? `Die Antwort vom ${alt.datum} gehörte zu einem Auftrag, der ` +
           "abgebrochen wurde. Für einen neuen Auftrag bitte erst die neue " +
           "Antwort hier in der App eintragen."
-        : "Erst nach einer positiv eingetragenen Antwort — der Auftrag " +
-          "entsteht aus der Zusage, nicht aus dem Knopf."));
+        : "Erst nach einer Antwort „Gespräch“ oder „Interesse“."));
     }
     return abschnitt("In Kundenaufträge", frag);
   }
@@ -5316,8 +5369,8 @@ function renderKundenauftraege() {
     z.append(neuBtn);
     c.append(z, el("div", "leerzustand",
       "Noch keine Kundenaufträge. Marken kommen hierher über " +
-      "„in Kundenaufträge verschieben“ im Pitchlisten-Eintrag — erst nach " +
-      "einer positiv eingetragenen Antwort — oder von Hand über „＋ Kunde“."));
+      "„→ in Kundenaufträge“ nach einer Antwort „Gespräch“ oder " +
+      "„Interesse“ oder von Hand über „＋ Kunde“."));
     return;
   }
   const suche = el("input", "suche");
@@ -6352,6 +6405,28 @@ function antwortZellen(m, datum, daten) {
   const b = antwortBelegung({ typ: "Antwort", datum,
     positiv: text(d.positiv), negativ: text(d.negativ) }, m);
   return { g: b.g ? "X" : "", i: b.i ? "X" : "", a: b.a ? "X" : "" };
+}
+// Die drei Antwortarten fuer die Chips (Bauplan Antwortarten 6).
+const ANTWORT_ARTEN = [["gespraech", "Gespräch"], ["interesse", "Interesse"],
+                       ["absage", "Absage"]];
+// Rueckfrage vor dem Eintragen (Texte Bauplan Antwortarten 6). DOM-frei,
+// damit der Test die Texte pruefen kann. `alt` = vorhandene Antwort am Tag.
+function antwortRueckfrage(m, art, datumDe, alt) {
+  const name = (m && m.name) || "";
+  const altText = alt ? ({ gespraech: "Gespräch", interesse: "Interesse",
+    absage: "Absage" }[antwortArt(alt, m)] || "ohne Bewertung") : "";
+  return (alt ? `Für den ${datumDe} ist schon eine Antwort eingetragen ` +
+                `(${altText}). Sie wird ERSETZT, auch im Brand-Book.\n\n` : "") +
+    (art === "gespraech"
+      ? `Antwort „Gespräch“ eintragen, datiert auf den ${datumDe}? Die ` +
+        `Erinnerungen hören auf. In die Kundenaufträge schiebst du „${name}“ ` +
+        "selbst, der Status steht dann gleich auf „in Verhandlung“."
+      : art === "interesse"
+      ? `Antwort „Interesse“ eintragen, datiert auf den ${datumDe}? „${name}“ ` +
+        "bleibt in der Pitchliste, die Erinnerungen laufen weiter. In die " +
+        "Kundenaufträge schieben geht trotzdem, dann wählst du den Status."
+      : `Antwort „Absage“ eintragen, datiert auf den ${datumDe}? Die Marke ` +
+        "springt danach zurück auf Pitch.");
 }
 // Juengste Antwort mit lesbarem Datum; Gleichstand -> die spaetere im Array.
 function juengsteAntwort(events) {
@@ -10082,6 +10157,8 @@ function renderHauptmenu() {
   // Zahlen sieht, soll den Grund auf dem ersten Bildschirm finden.
   const warnung = pfadWarnung();
   if (warnung) c.append(warnung);
+  const altx = altXWarnung();   // v234 (N1): oben in der Achtung-Liste
+  if (altx) c.append(altx);
   const wolke = wolkenWarnung();
   if (wolke) c.append(wolke);
   const wahl = standWahlWarnung();
@@ -10375,6 +10452,8 @@ function renderUgc() {
 
   const warnung = pfadWarnung();
   if (warnung) c.append(warnung);
+  const altx = altXWarnung();   // v234 (N1): oben in der Achtung-Liste
+  if (altx) c.append(altx);
   const wolke = wolkenWarnung();
   if (wolke) c.append(wolke);
   const wahl = standWahlWarnung();
