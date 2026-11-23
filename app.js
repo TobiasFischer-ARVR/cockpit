@@ -12,32 +12,39 @@ const KACHEL_TITEL = {
   pitches: "Pitches",
   followups: "Follow-ups",
   antworten: "Antworten",
-  positiv: "Davon positiv",
+  // v234 (Bauplan Antwortarten 4, D6): aus "Davon positiv" werden drei
+  // Kacheln. NEUE Schluessel - `gespraeche` steht im Altsnapshot fuer die
+  // Kennenlerngespraeche, kpiWert() wuerde ihn sonst lesen.
+  ant_gespraech: "Davon Gespräche",
+  ant_interesse: "Davon Interesse",
+  ant_absage: "Davon Absagen",
   nach_erstkontakt: "Nach Erstkontakt",
   // Seite 2 - die restlichen Zeilen aus Andreas Kennzahlen-Blatt
   nach_followup: "Nach Follow-up",
-  gespraeche: "Kennenlerngespräche",
   kooperationen: "Kooperationen",
-  koop_quote: "Kooperationsquote",
-  abschlussquote: "Abschlussquote",
+  // v234 (Codex R1 Fund 18): eigener Schluessel, ein Altsnapshot mit
+  // `abschlussquote` (alte Formel ÷ Pitchliste) zeigt hier "—".
+  abschlussquote_gespraeche: "Abschlussquote aus Gesprächen",
   auftragswert: "Auftragswert",     // v214: Summe brutto, Ø klein darunter
   // Ohne eigene Kachel: nur als Prozentwert oben rechts in ihrer Kachel
   // und als zweites Diagramm im Verlaufs-Sheet.
   quote_antworten: "Antwortquote",
-  quote_positiv: "Positivquote",
+  quote_gespraech: "Gesprächsquote",   // v234: ersetzt die Positivquote
   auftrag_schnitt: "Ø Auftragswert",   // v215: oben rechts in "Auftragswert"
 };
 
 // Zwei Seiten zu je sechs Kacheln, horizontal wischbar (Tobias 05.09.).
+// v234 (D6): Kennenlerngespraeche und Kooperationsquote (dauerhaft "—")
+// sind weg, dafuer Gespraeche / Interesse / Absagen.
 const KACHEL_SEITEN = [
-  ["marken", "pitches", "followups", "antworten", "positiv",
-   "nach_erstkontakt"],
-  ["nach_followup", "gespraeche", "kooperationen", "koop_quote",
-   "abschlussquote", "auftragswert"],
+  ["marken", "pitches", "followups", "antworten", "ant_gespraech",
+   "ant_interesse"],
+  ["ant_absage", "nach_erstkontakt", "nach_followup", "kooperationen",
+   "abschlussquote_gespraeche", "auftragswert"],
 ];
 
 // Welche Kachel traegt oben rechts eine Quote.
-const KACHEL_QUOTE = { antworten: "quote_antworten", positiv: "quote_positiv",
+const KACHEL_QUOTE = { antworten: "quote_antworten", ant_gespraech: "quote_gespraech",
                        auftragswert: "auftrag_schnitt" };
 // Ecke und Monatstabelle: "Ø 750 €" statt nur "750 €" neben "Auftragswert".
 function quoteText(k, g) {
@@ -55,9 +62,10 @@ const KACHEL_UNTER = {
     return summe > 0 && u
       ? ["netto " + kpiText("umsatz", summe / (1 + u / 100))] : [];
   },
-  abschlussquote: (g) => !("abschluesse" in g && "pitchliste" in g) ? [] :
-    [g.abschluesse + (g.abschluesse === 1 ? " Abschluss" : " Abschlüsse") +
-     " von " + g.pitchliste + " in der Pitchliste"],
+  // v234 (D5): Kohorte - von den Gespraechen des Zeitraums abgeschlossen
+  abschlussquote_gespraeche: (g) => !("gespr_kohorte" in g) ? [] :
+    [g.gespr_abgeschlossen + " von " + g.gespr_kohorte +
+     (g.gespr_kohorte === 1 ? " Gespräch" : " Gesprächen") + " abgeschlossen"],
 };
 
 // Quoten in PROZENTPUNKTEN (0-100), nicht als Bruch: das Verlaufs-Diagramm
@@ -82,25 +90,31 @@ function quote(a, b) {
 // zeigt die Kachel ehrlich "—" statt einer geratenen Zahl.
 const KPI_ABGELEITET = {
   quote_antworten: (g) => quote(g.antworten, g.pitches + g.followups),
+  // v234: keine Kachel mehr (die Ecke zeigt quote_gespraech). Bleibt als
+  // Rechnung stehen: positiv = Gespraech + Interesse, test_kpi haelt damit
+  // den Port gegen Andreas alte Monatswerte fest.
   quote_positiv:   (g) => quote(g.positiv, g.antworten),
+  // v234: Gespraeche ÷ Antworten (ersetzt die Positivquote in der Kachel)
+  quote_gespraech: (g) => "ant_gespraech" in g ? quote(g.ant_gespraech, g.antworten) : null,
   // C7 (Tobias 31.10.): die Zaehler setzt kpiZeitraum (abschluesse, umsatz).
   // Fehlen sie (alter Snapshot ohne Datenstand), bleibt es bei "—" - der
   // `in`-Test verhindert quote(undefined, n) = NaN. Quote darf ueber 100 %
   // liegen: Auftraege ohne Pitch zaehlen mit. Auftragswert = Summe brutto
   // (v214, Tobias 01.11.: die Summe gross, Ø klein darunter); ohne Abschluss
   // ehrlich 0 €, ohne Zaehler (alter Snapshot) "—".
-  // v215: Quote = Abschluesse ÷ Marken in der Pitchliste (heute), nicht mehr
-  // ÷ angeschriebene Marken des Monats (Tobias 01.11.).
-  abschlussquote:  (g) => "abschluesse" in g && "pitchliste" in g
-    ? quote(g.abschluesse, g.pitchliste) : null,
+  // v234 (D5, vorlaeufig): Abschlussquote aus Gespraechen = abgeschlossene
+  // Gespraeche der Kohorte ÷ Gespraeche im Zeitraum (abschlussquoteGespraeche).
+  // Ersetzt v215 (Abschluesse ÷ Pitchliste von heute).
+  abschlussquote_gespraeche: (g) => "gespr_kohorte" in g
+    ? quote(g.gespr_abgeschlossen, g.gespr_kohorte) : null,
   // v233 (E6/F2): + behaltene Betraege abgebrochener, bestaetigter Auftraege.
   // Ø (auftrag_schnitt) bleibt nur aus Abschluessen.
   auftragswert:    (g) => "abschluesse" in g ? g.umsatz + (g.umsatzBehalten || 0) : null,
   auftrag_schnitt: (g) => g.abschluesse ? g.umsatz / g.abschluesse : null,
 };
 
-const KPI_EINHEIT = { quote_antworten: " %", quote_positiv: " %",
-                      koop_quote: " %", abschlussquote: " %",
+const KPI_EINHEIT = { quote_antworten: " %", quote_positiv: " %", quote_gespraech: " %",
+                      abschlussquote_gespraeche: " %",
                       auftragswert: " €", umsatz: " €", auftrag_schnitt: " €" };
 
 // Ohne Datenquelle (Stand 05.09.): Kennenlerngespraeche und Kooperationen
@@ -191,7 +205,9 @@ function istKontakt(e) {
 
 // Kennzahlen EINER Marke für einen Zeitraum. Gibt null zurück, wenn die
 // Marke im Zeitraum gar nichts hatte - dann taucht sie auch nicht auf.
-function kpiMarke(ereignisse, von, bis) {
+// v234: `m` (die Marke) fuer die Antwortart - ein altes X liest seine
+// Einordnung aus m.antwortEinordnung.
+function kpiMarke(ereignisse, von, bis, m) {
   const gueltig = ereignisse.filter((e) => eventDatum(e) !== null);
   const drin = (e) => {
     const d = eventDatum(e);
@@ -232,13 +248,19 @@ function kpiMarke(ereignisse, von, bis) {
     pitches: vomTyp("Pitch").length,
     followups: vomTyp("FollowUp").length,
     antworten: antworten.length,
-    positiv: antworten.filter((e) => e.positiv === "X").length,
+    // v234: drei Arten. `positiv` = Gespraech + Interesse bleibt NUR fuer
+    // den Excel-Export (KENNZAHL_LABELS.positiv) und den Markenfilter.
+    ant_gespraech: antworten.filter((e) => antwortArt(e, m) === "gespraech").length,
+    ant_interesse: antworten.filter((e) => antwortArt(e, m) === "interesse").length,
+    ant_absage: antworten.filter((e) => antwortArt(e, m) === "absage").length,
+    positiv: antworten.filter((e) => istZusage(e, m)).length,
     nach_erstkontakt: nachErst,
     nach_followup: nachFu,
   };
 }
 
 const KPI_SUMMEN = ["pitches", "followups", "antworten", "positiv",
+                    "ant_gespraech", "ant_interesse", "ant_absage",
                     "nach_erstkontakt", "nach_followup"];
 
 // Ein Zeitraum, frisch gerechnet: {gesamt, marken}. `historien` ist die
@@ -269,8 +291,46 @@ function behalteneBetraege(marke) {
     .filter((a) => eventDatum(a) !== null);
 }
 
+// Abschlussquote aus Gespraechen (v234, D5 vorlaeufig, Codex R1 Fund 16/17).
+// DIE EINZIGE Stelle der Formel. Nenner: Gespraech-Antworten mit Datum im
+// Zeitraum (gezaehlt im Monat des GESPRAECHS). Zaehler: davon die, bei denen
+// der ERSTE "hinein" ab dem Gespraechsdatum (gleicher Tag zaehlt) und vor dem
+// naechsten Gespraech derselben Marke eine Kennung K hat und in m.auftraege
+// ein Auftrag K abgeschlossen mit Umsatz > 0 steht - egal wann bis heute.
+// Ueber die Kennung, nicht ueber abschluesse(): Folgeauftraege aus der
+// Kundenpflege und Auftraege nach einem spaeteren Interesse zaehlen so nicht
+// fuer das alte Gespraech. Auftraege ohne Gespraech zaehlen nie (N2).
+// Kennung fehlt (vor v191) = 1, wie auftragsverlaufGruppen().
+function abschlussquoteGespraeche(marken, von, bis) {
+  let gespraeche = 0, abgeschlossen = 0;
+  for (const m of marken || []) {
+    const gs = ((m && m.events) || [])
+      .filter((e) => e && e.typ === "Antwort" && eventDatum(e) !== null &&
+                     antwortArt(e, m) === "gespraech")
+      .sort((a, b) => eventDatum(a) - eventDatum(b));
+    gs.forEach((g, i) => {
+      const d = eventDatum(g);
+      if (d < von || d > bis) return;
+      gespraeche++;
+      const bis2 = i + 1 < gs.length ? eventDatum(gs[i + 1]) : Infinity;
+      const hin = ((m.kundenauftragHistorie) || [])
+        .filter((h) => h && h.richtung === "hinein" && datumWert(h.datum) < 1e12 &&
+                       datumWert(h.datum) >= d && datumWert(h.datum) < bis2)
+        .sort((a, b) => datumWert(a.datum) - datumWert(b.datum))[0];
+      if (!hin) return;
+      const k = Number(hin.kennung) || 1;
+      if ((m.auftraege || []).some((a) => a && (Number(a.kennung) || 1) === k &&
+            a.ausgang === "abgeschlossen" && Number(a.umsatz) > 0)) abgeschlossen++;
+    });
+  }
+  return { gespraeche, abgeschlossen };
+}
+
 function kpiZeitraum(historien, von, bis) {
   const gesamt = { marken: 0, abschluesse: 0, umsatz: 0, umsatzBehalten: 0 };
+  const kohorte = abschlussquoteGespraeche(historien.map((h) => h.marke), von, bis);
+  gesamt.gespr_kohorte = kohorte.gespraeche;
+  gesamt.gespr_abgeschlossen = kohorte.abgeschlossen;
   for (const k of KPI_SUMMEN) gesamt[k] = 0;
   const marken = [];
   for (const { marke, ereignisse } of historien) {
@@ -286,7 +346,7 @@ function kpiZeitraum(historien, von, bis) {
       const d = eventDatum(a);
       if (d >= von && d <= bis) gesamt.umsatzBehalten += a.umsatz;
     }
-    const k = kpiMarke(ereignisse, von, bis);
+    const k = kpiMarke(ereignisse, von, bis, marke);
     if (!k) continue;
     if (k.kontaktiert) gesamt.marken++;
     for (const feld of KPI_SUMMEN) gesamt[feld] += k[feld];
@@ -352,15 +412,12 @@ function kpiNachrechnen() {
     for (const e of [...ereignisse, ...abschluesse(marke), ...behalteneBetraege(marke)])
       juengste = Math.max(juengste, eventDatum(e) || 0);
 
-  // Nenner der Abschlussquote (v215): die Pitchliste von HEUTE, fuer jeden
-  // Zeitraum derselbe. ponytail: kein Rueckblick, wie gross sie im Juli war -
-  // das gibt der Datenstand nicht her.
-  const pitchliste = datenstand.marken.filter(sichtbarInPitchliste).length;
+  // v234: der Nenner "Pitchliste von heute" (v215) ist mit der
+  // Abschlussquote aus Gespraechen entfallen (Kohorte in kpiZeitraum).
   snap.zeitraeume.forEach((z, i) => {
     if (i === 0 && juengste > datumWert(z.ende)) z.ende = isoZuDe(juengste);
     const { gesamt, marken } = kpiZeitraum(historien, datumWert(z.start),
                                                       datumWert(z.ende));
-    gesamt.pitchliste = pitchliste;
     z.gesamt = gesamt;
     z.marken = marken;
   });
@@ -2293,23 +2350,26 @@ function sheetInfo() {
             "Follow-up im Zeitraum. „Gesamt“ zählt jede Marke nur einmal — " +
             "deshalb ist Gesamt kleiner als die Summe der Monate."),
       zeile("Pitches / Follow-ups / Antworten: alle Einträge im Zeitraum."),
-      zeile("Davon positiv: Antworten, die in den Books mit „X“ markiert sind."),
+      zeile("Davon Gespräche / Interesse / Absagen: nach der Spalte im " +
+            "Brand-Book. Ein altes X bei „Positiv“ zählt als Gespräch, wenn " +
+            "danach ein Kundenauftrag kam oder die Marke noch darauf wartet, " +
+            "sonst als Interesse."),
       zeile("Nach Erstkontakt: Antworten direkt auf einen Pitch, " +
             "ohne Follow-up dazwischen."),
       zeile("Antwortquote = Antworten ÷ (Pitches + Follow-ups). " +
-            "Positivquote = positive ÷ alle Antworten. Beide stehen als " +
+            "Gesprächsquote = Gespräche ÷ alle Antworten. Beide stehen als " +
             "Prozentwert oben rechts in ihrer Kachel."),
-      zeile("Auftragswert (Summe brutto, oben rechts Ø, darunter netto) und " +
-            "Abschlussquote kommen aus dem Umsatz im " +
-            "Kundenauftrag: ein abgeschlossener Auftrag mit Umsatz zählt im " +
-            "Monat seines Abschlusses. Abschlussquote = Abschlüsse ÷ Marken, " +
-            "die heute in der Pitchliste stehen. Geht eine Marke nach einem " +
-            "Abbruch zurück in die Pitchliste oder geht sie in Verhandlung, " +
-            "ändert sich der Nenner um 1, auch für frühere Monate."),
+      zeile("Auftragswert (Summe brutto, oben rechts Ø, darunter netto) " +
+            "kommt aus dem Umsatz im Kundenauftrag: ein abgeschlossener " +
+            "Auftrag mit Umsatz zählt im Monat seines Abschlusses."),
+      zeile("Abschlussquote aus Gesprächen = Gespräche im Zeitraum, aus " +
+            "denen inzwischen ein Abschluss wurde ÷ alle Gespräche im " +
+            "Zeitraum. Aufträge ohne Gespräch (eigene Kunden, Folgeaufträge, " +
+            "Aufträge direkt nach „Interesse“) zählen nicht."),
       zeile("Bricht ein bestätigter Auftrag ab, zählt sein Betrag (z. B. eine " +
             "Anzahlung) im Auftragswert, aber nicht als Abschluss."),
-      zeile("Kennenlerngespräche, Kooperationen und Kooperationsquote stehen " +
-            "in keinem Brand-Book — sie zeigen „—“, bis es eine Quelle gibt."),
+      zeile("Kooperationen stehen in keinem Brand-Book — die Kachel zeigt " +
+            "„—“, bis es eine Quelle gibt."),
       titel("Bedienung"),
       zeile("Kachelblock nach links wischen → die restlichen sechs " +
             "Kennzahlen. Die Punkte darunter zeigen, wo man ist."),
@@ -2674,7 +2734,7 @@ function markenKarte(m) {
               el("span", null, m.kontaktiert ? "Kontaktiert" : "Nur Antwort"));
   karte.append(kopf, el("div", "titel", m.name),
     el("div", "kontext",
-      `Follow-ups: ${m.followups} · Antworten: ${m.antworten} (${m.positiv} positiv) · Nach Erstkontakt: ${m.nach_erstkontakt}`),
+      `Follow-ups: ${m.followups} · Antworten: ${m.antworten} (${m.ant_gespraech || 0} Gespräch, ${m.ant_interesse || 0} Interesse) · Nach Erstkontakt: ${m.nach_erstkontakt}`),
     el("div", "fuss", `Quelle: ${m.quelle}.docx`
       + (bookGeaendert.has(m.name) ? " · ⭳ noch nicht gelesen" : "")));
   karte.classList.add("tippbar");
@@ -10273,7 +10333,8 @@ function filterZeilen(neuzeichnen, alles) {
   const zeilen = [];
   if (alles) {
     zeilen.push(filterGruppe("Antwort",
-      [["antwort", "Mit Antwort"], ["positiv", "Antwort positiv"]],
+      // v234: Wert bleibt "positiv" (= Gespraech + Interesse, m.positiv)
+      [["antwort", "Mit Antwort"], ["positiv", "Gespräch/Interesse"]],
       () => mf.antwort, (w) => { mf.antwort = w; }, neuzeichnen));
     // Aus BEIDEN Quellen (v125): sonst fehlt ein Buchstabe als Knopf,
     // sobald Andrea ihn in der App neu vergibt - der Filter koennte dann
