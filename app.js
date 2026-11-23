@@ -3125,7 +3125,12 @@ function historieAktuell(m, quelle) {
   const gesehen = new Set();
   const raus = [];
   for (const e of alle) {
-    const id = historieSchluessel(e.datum, e.typ, e.aktion, e.positiv);
+    // v234: Antworten nur ueber (Datum, "Antwort") - der Datenstand steht
+    // vorn und gewinnt (Codex-Fund aus dem Plan vom 20.11.): ein Snapshot-X
+    // und ein App-Wort am selben Tag sind EINE Antwort.
+    const id = e.typ === "Antwort"
+      ? historieSchluessel(e.datum, "Antwort")
+      : historieSchluessel(e.datum, e.typ, e.aktion, e.positiv);
     if (gesehen.has(id)) continue;
     gesehen.add(id);
     raus.push(e);
@@ -6243,9 +6248,15 @@ function altXOffeneListe(marken) {
 }
 // Einmalige Einordnung aller alten X beim ersten Laden von v234 (Merker
 // datenstand.antwortartenStand = 1). true, wenn etwas zu speichern ist.
+// Merker und Speichern NUR, wenn wirklich etwas eingeordnet wurde: ein Stand
+// ohne alte X bleibt Byte fuer Byte gleich (Anschauen schreibt nie). Sicher,
+// weil schon eingeordnete X uebersprungen werden und ein spaeter
+// importiertes X dort sofort eingeordnet wird (importAntwortFolgen).
 function antwortartenEinordnen(ds) {
   if (!ds || !Array.isArray(ds.marken) || ds.antwortartenStand === 1) return false;
-  for (const m of ds.marken) antwortEinordnungPflegen(m, true);
+  let n = 0;
+  for (const m of ds.marken) n += antwortEinordnungPflegen(m, true);
+  if (!n) return false;
   ds.antwortartenStand = 1;
   return true;
 }
@@ -6254,6 +6265,33 @@ function antwortartenEinordnen(ds) {
 function kadenzStill(m) {
   const z = wirksameZusage(m);
   return !!z && antwortArt(z, m) === "gespraech";
+}
+// Belegung der drei Spalten Gespraech / Interesse / Absage einer Antwort
+// ({g, i, a} als true/false). Vergleichsgrundlage fuer Import, Dubletten im
+// Book und den Verlauf (Codex R1 Fund 7/8) - NICHT der Rohtext, nicht die
+// Art: zwei verschiedene Pruefzustaende am selben Tag sind verschieden, ein
+// altes X und das Wort seiner Einordnung sind gleich.
+function antwortBelegung(e, m) {
+  const p = String((e && e.positiv) || "").trim().toUpperCase();
+  const n = String((e && e.negativ) || "").trim();
+  let g = p.includes("GESPR") || p.includes("VERHANDLUNG");
+  let i = p.includes("INTERESSE");
+  if (p && !g && !i) { if (altXArt(m, e) === "gespraech") g = true; else i = true; }
+  return { g, i, a: !!n };
+}
+function belegungText(b) {
+  return (b.g ? "G" : "-") + (b.i ? "I" : "-") + (b.a ? "A" : "-");
+}
+// DIE Normalisierungsstelle fuer das Schreiben ins Book (Codex R1 Fund 6):
+// aus der Outbox-Nutzlast {positiv, negativ} - Wort-Kodierung ab v234 ODER
+// Altform bis v233 (Boolean, true = altes X) - werden die drei Zellen
+// {g, i, a} mit "X" oder "". Ein altes X geht ueber altXArt (Einordnung).
+function antwortZellen(m, datum, daten) {
+  const d = daten || {};
+  const text = (v) => v === true ? "X" : (v === false || v == null ? "" : String(v));
+  const b = antwortBelegung({ typ: "Antwort", datum,
+    positiv: text(d.positiv), negativ: text(d.negativ) }, m);
+  return { g: b.g ? "X" : "", i: b.i ? "X" : "", a: b.a ? "X" : "" };
 }
 // Juengste Antwort mit lesbarem Datum; Gleichstand -> die spaetere im Array.
 function juengsteAntwort(events) {
@@ -6430,6 +6468,28 @@ function bestandBefunde(marken) {
           "erwartet wird genau ein Buchstabe A, B, C oder D" +
           (/[\/,;+&]|\s/.test(bookRating)
             ? ". Sieht nach zwei Ratings in einer Zelle aus" : "") });
+    }
+
+    // --- 2d. Antworten (v234, Bauplan Antwortarten 2 + Codex R1 Fund 9) ---
+    // Hinweis, kein Fehler: eine Antwort mit mehr als einer belegten Spalte
+    // oder ganz ohne Kreuz (M2 23.11.: 0 Faelle), und zwei Antworten am
+    // selben Datum (Identitaet ist Marke + Datum, die App schreibt die erste).
+    const tage = new Map();
+    for (const e of m.events || []) {
+      if (!e || e.typ !== "Antwort") continue;
+      if (antwortArt(e, m) === "") {
+        hinweise.push({ name: m.name, art: "antwort-unklar",
+          text: "Antwort vom " + e.datum + ": im Brand-Book ist " +
+            (String(e.positiv || "").trim() || String(e.negativ || "").trim()
+              ? "mehr als eine Spalte" : "keine Spalte") +
+            " angekreuzt (Gespräch · Interesse · Absage) — sie zählt nirgends" });
+      }
+      tage.set(e.datum, (tage.get(e.datum) || 0) + 1);
+    }
+    for (const [datum, anzahl] of tage) if (anzahl > 1) {
+      hinweise.push({ name: m.name, art: "antwort-doppelt",
+        text: anzahl + " Antworten am " + datum + " — die App kennt je Tag " +
+              "nur eine und schreibt in die erste Zeile" });
     }
 
     if (archiv) continue;
@@ -12648,9 +12708,13 @@ function bookLesen(xml, parser) {
   const tabellen = domKinder(body, "tbl");
 
   const erg = { ok: true, grund: null, events: [], kerninfos: {},
-                kerninfosLeer: [], befunde: [],
+                kerninfosLeer: [], befunde: [], hinweise: [],
                 tabellen: { pitch: "fehlt", antwort: "fehlt",
                             kerninfos: "fehlt" } };
+  // v234 (Codex R1 Fund 10): hat das Book die NEUE Antwort-Tabelle, gilt nur
+  // sie - eine daneben stehende alte wird nicht gelesen (keine Doppelung).
+  const neueAntwort = tabellen.some((t) =>
+    !domKopfPasst(t, "aktion") && domKopfPasst(t, "gespr"));
   const setze = (art, lage) => {
     erg.tabellen[art] = lageHoeher(erg.tabellen[art], lage);
   };
@@ -12667,7 +12731,17 @@ function bookLesen(xml, parser) {
   for (const tbl of tabellen) {
     const zeilen = domZeilen(tbl);
     const istPitch = domKopfPasst(tbl, "aktion");
-    const istAntwort = !istPitch && domKopfPasst(tbl, "positiv");
+    // v234: zwei Formen. Neu "Datum | Gespräch | Interesse | Absage |
+    // Bemerkung", alt "Datum | Positiv | Negativ | Bemerkung".
+    const antwortNeu = !istPitch && domKopfPasst(tbl, "gespr");
+    const antwortAlt = !istPitch && !antwortNeu && domKopfPasst(tbl, "positiv");
+    if (antwortAlt && neueAntwort) {
+      erg.hinweise.push({ art: "antwort", code: "alte-antwort-tabelle",
+        text: "Alte Antwort-Tabelle (Positiv/Negativ) neben der neuen — " +
+              "sie wird nicht mehr gelesen und kann gelöscht werden" });
+      continue;
+    }
+    const istAntwort = antwortNeu || antwortAlt;
 
     if (istPitch || istAntwort) {
       const art = istPitch ? "pitch" : "antwort";
@@ -12705,6 +12779,19 @@ function bookLesen(xml, parser) {
           // Fingerabdruck sprang nicht auf den Ausgangswert zurück.
           erg.events.push({ typ: klassifiziereAktion(aktion), datum,
                             aktion, positiv: "", negativ: "", bemerkung: "" });
+        } else if (antwortNeu) {
+          // Je Spalte ein Kreuz (Gross/klein, Leerzeichen egal; jeder Text
+          // zaehlt als belegt - nichts still verschlucken). Kodierung wie
+          // im Datenstand (Bauplan Antwortarten 1): Woerter in positiv,
+          // "X" in negativ. Mehr als eine Spalte = Pruefzustand.
+          const belegt = (k) => z.length > k && !!domZellText(z[k]).trim();
+          erg.events.push({
+            typ: "Antwort", datum, aktion: "",
+            positiv: [belegt(1) ? "GESPRÄCH" : "", belegt(2) ? "INTERESSE" : ""]
+              .filter(Boolean).join(" "),
+            negativ: belegt(3) ? "X" : "",
+            bemerkung: z.length > 4 ? domZellText(z[4]).trim() : "",
+          });
         } else {
           erg.events.push({
             typ: "Antwort", datum, aktion: "",
@@ -13086,8 +13173,14 @@ function abgeleitetePitchfelder(pl, events, hist, m) {
 function importUnterschied(m, lese) {
   const alt = (m && m.events) || [];
   const neu = lese.events || [];
-  const zeile = (e) => [e.typ, e.datum, e.aktion, e.positiv,
-                        e.negativ || "", e.bemerkung || ""].join("|");
+  // v234 (Codex R1 Fund 7/8): Antworten ueber die BELEGUNG der drei
+  // Spalten, ein altes X ueber die Einordnung der Marke - der Rundlauf
+  // App -> neues Book -> Import ist damit keine Schein-Aenderung.
+  const zeile = (e) => e.typ === "Antwort"
+    ? [e.typ, e.datum, e.aktion, belegungText(antwortBelegung(e, m)),
+       e.bemerkung || ""].join("|")
+    : [e.typ, e.datum, e.aktion, e.positiv,
+       e.negativ || "", e.bemerkung || ""].join("|");
   const altZ = alt.map(zeile), neuZ = neu.map(zeile);
 
   // Mehrfachvorkommen zählen mit: zwei gleiche Zeilen sind zwei Zeilen.
@@ -14815,13 +14908,22 @@ function historieXml(xml, datum, aktion, entfernen) {
 // irgendwo "positiv" im Kopf steht, wuerde sonst dort landen.
 // Aendert sich die Regel, muss sie in ugc_core.py mitwandern - JS kann
 // Python nicht importieren, das sind zwei Implementierungen derselben Regel.
+// v234: zwei Formen (Bauplan Antwortarten 3). Alt "Datum | Positiv |
+// Negativ | Bemerkung", neu "Datum | Gespräch | Interesse | Absage |
+// Bemerkung" (Kopfzelle 1 enthaelt "gespr"). Hat ein Book BEIDE, gilt nur die
+// neue (Codex R1 Fund 10). Rueckgabe {tbl, form: "alt" | "neu"} oder null.
 function antwortTabelle(xml) {
-  return (String(xml).match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) || []).find((t) => {
+  const alle = String(xml).match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) || [];
+  const kopfHat = (t, wort) => {
     const kopf = wordZellen(wordZeilen(t)[0] || "");
     return kopf.length >= 2 &&
       wordText(kopf[0]).toLowerCase().includes("datum") &&
-      wordText(kopf[1]).toLowerCase().includes("positiv");
-  }) || null;
+      wordText(kopf[1]).toLowerCase().includes(wort);
+  };
+  const neu = alle.find((t) => kopfHat(t, "gespr"));
+  if (neu) return { tbl: neu, form: "neu" };
+  const alt = alle.find((t) => kopfHat(t, "positiv"));
+  return alt ? { tbl: alt, form: "alt" } : null;
 }
 
 // Zeilenumbrueche raus, Raender weg. NICHT kosmetisch:
@@ -14840,8 +14942,9 @@ function antwortZelltext(s) {
   return String(s == null ? "" : s).replace(/\s*[\r\n]+\s*/g, " ").trim();
 }
 
-// Neue Antwort-Zeile aus einer Vorlagen-Zeile: alle vier Zellen werden
-// gesetzt, Spalte 5+ (gibt es in keinem Book, aber kostenlos) bleibt stehen.
+// Neue Antwort-Zeile aus einer Vorlagen-Zeile: alle Zellen aus `werte`
+// werden gesetzt (alte Tabelle 4, neue 5 - die Mindestzahl je Form), weitere
+// Spalten (gibt es in keinem Book, aber kostenlos) bleiben stehen.
 // `null` in werte[i] heisst: DIESE Zelle nicht anfassen, die der Vorlage
 // bleibt wie sie ist. Gebraucht beim Korrigieren, wo Andreas nachgetragener
 // Bemerkungstext stehen bleiben muss (siehe antwortXml).
@@ -14849,78 +14952,65 @@ function antwortZeileBauen(vorlage, werte) {
   if (/<w:(sdt|gridSpan|vMerge)[\s>\/]/.test(vorlage)) return null; // wie zeileBauen
   const trPr = (vorlage.match(/<w:trPr>[\s\S]*?<\/w:trPr>/) || [""])[0];
   const zellen = wordZellen(vorlage);
-  if (zellen.length < 4) return null;
-  const neu = zellen.slice(0, 4).map((z, i) => werte[i] === null
+  const k = Math.max(4, werte.length);
+  if (zellen.length < k) return null;
+  const neu = zellen.slice(0, k).map((z, i) => werte[i] === null
     ? z : zelleSetzen(z, antwortZelltext(werte[i])));
   if (neu.includes(null)) return null;            // Backlog 32, Fall 3
-  return "<w:tr>" + trPr + neu.join("") + zellen.slice(4).join("") + "</w:tr>";
+  return "<w:tr>" + trPr + neu.join("") + zellen.slice(k).join("") + "</w:tr>";
 }
 
-// Gibt die neue XML zurueck, "dublette" (steht schon da) oder null
-// (Tabelle/Zeile nicht gefunden) - dann bleibt das Book unangetastet,
-// statt es kaputtzuschreiben. Gleiche drei Ausgaenge wie historieXml.
-function antwortXml(xml, datum, positiv, negativ, bemerkung) {
-  const tbl = antwortTabelle(xml);
-  if (!tbl || /<w:tbl[\s>]/.test(tbl.slice(1))) return null;  // Backlog 32, Fall 2
+// Gibt die neue XML zurueck, "dublette" (steht schon da), "alte-tabelle"
+// (v234, N3: das Book hat nur die alte Positiv/Negativ-Tabelle - es bleibt
+// unangetastet, die Antwort wartet) oder null (Tabelle/Zeile nicht gefunden)
+// - dann bleibt das Book unangetastet, statt es kaputtzuschreiben.
+// `zellen` = {g, i, a} fertig aus antwortZellen() (Codex R1 Fund 6).
+function antwortXml(xml, datum, zellen, bemerkung) {
+  const t = antwortTabelle(xml);
+  if (!t) return null;
+  if (t.form === "alt") return "alte-tabelle";
+  const tbl = t.tbl;
+  if (/<w:tbl[\s>]/.test(tbl.slice(1))) return null;  // Backlog 32, Fall 2
   const zeilen = wordZeilen(tbl);
   if (zeilen.length < 2) return null;
-  // Steht die Antwort schon da? Verglichen werden NUR Datum und die beiden
-  // Kreuze - die Bemerkung bleibt bewusst draussen (Tobias, 17.09.).
-  // Andrea ergaenzt den langen Text nachtraeglich im Word; naehme man ihn
-  // in den Vergleich auf, erkennt die App ihre eigene Zeile danach nicht
-  // wieder und schriebe sie ein zweites Mal.
-  // Gegenprobe am Bestand (17.09., 64 Books, 21 Antworten): keine Marke hat
-  // zwei Antworten am selben Tag. Das Kreuz steht mal "X", mal "x" -
-  // historieSchluessel() normalisiert Schreibweise und Leerzeichen weg.
-  const suche = historieSchluessel(datum, positiv, negativ);
+  const z = zellen || {};
+  const soll = belegungText({ g: !!z.g, i: !!z.i, a: !!z.a });
   const nurDatum = historieSchluessel(datum);
-  // Das DATUM ist der Anker, nicht der ganze Schluessel: dieselbe Zeile ist
-  // je nach Inhalt eine Dublette (nichts tun) oder eine Korrektur
-  // (ersetzen). Am Bestand gemessen (17.09., 64 Books, 21 Antworten) hat
-  // keine Marke zwei Antworten am selben Tag - ein Datum trifft hoechstens
-  // eine Zeile.
+  // Steht die Antwort schon da? Verglichen werden Datum und die BELEGUNG der
+  // drei Spalten (Codex R1 Fund 7) - die Bemerkung bleibt bewusst draussen
+  // (Tobias, 17.09.): Andrea ergaenzt den langen Text nachtraeglich im Word.
+  // Das DATUM ist der Anker (Fund 9): Identitaet = Marke + Datum. Stehen zwei
+  // Zeilen am selben Datum (Bestand 17.09.: 0), gilt die ERSTE - "Daten
+  // pruefen" meldet den Doppeltag (bestandBefunde, antwort-doppelt).
   let treffer = -1;
   for (let j = 1; j < zeilen.length; j++) {
     const c = wordZellen(zeilen[j]);
     if (c.length < 2) continue;
     if (historieSchluessel(wordText(c[0])) !== nurDatum) continue;
-    if (historieSchluessel(wordText(c[0]), wordText(c[1]),
-                           wordText(c[2] || "")) === suche) {
-      // Datum und Kreuze stimmen ueberein - aber steht im Book noch KEINE
-      // Bemerkung und wir haben eine, ist das ein Nachtrag, keine Dublette
-      // (Codex-Befund, nachgemessen 17.09.). Ohne diesen Zweig kam eine
-      // nachtraeglich ergaenzte Bemerkung nie ins Word, und der wartende
-      // Auftrag wurde als erledigt gestrichen.
-      const bemImBook = wordText(c[3] || "").trim();
+    const ist = belegungText({ g: !!wordText(c[1] || "").trim(),
+      i: !!wordText(c[2] || "").trim(), a: !!wordText(c[3] || "").trim() });
+    if (ist === soll) {
+      // Nachtrag der Bemerkung ist keine Dublette (Codex-Befund 17.09.)
+      const bemImBook = wordText(c[4] || "").trim();
       if (bemImBook || !String(bemerkung == null ? "" : bemerkung).trim()) {
         return "dublette";
       }
     }
     treffer = j;
+    break;
   }
-  const werte = [datum, positiv, negativ, bemerkung];
+  const werte = [datum, z.g || "", z.i || "", z.a || "", bemerkung];
   let tblNeu;
   if (treffer > 0) {
-    // Korrektur derselben Zeile (Tobias, 17.09.: "korrigieren statt
-    // zuruecknehmen"). Geaendert werden Datum und die beiden Kreuze.
-    //
-    // Die BEMERKUNG wird nur gesetzt, wenn die Zelle im Book leer ist.
-    // Andrea schreibt den ausfuehrlichen Text ueber "Brandbook oeffnen"
-    // direkt ins Word; ein Korrekturklick in der App wuerde ihn sonst durch
-    // den kurzen App-Satz ersetzen - genau der Datenverlust, den v88
-    // verhindern sollte, und dieselbe Regel wie bei den Kerninfos (v121,
-    // "LEER ueberschreibt NIE", hier eine Stufe strenger).
-    // ponytail: Book-Text gewinnt immer. Feiner unterscheiden (nur
-    // ueberschreiben, wenn der Text noch der zuletzt von der App
-    // geschriebene ist) erst, wenn Andrea es vermisst - dafuer muesste der
-    // alte Wert mitgereicht werden.
+    // Korrektur derselben Zeile. Bemerkung nur, wenn die Zelle im Book leer
+    // ist - Book-Text gewinnt (v88/v121, unveraendert).
     const alt = wordZellen(zeilen[treffer]);
-    if (wordText(alt[3] || "").trim()) werte[3] = null;
+    if (wordText(alt[4] || "").trim()) werte[4] = null;
     const neu = antwortZeileBauen(zeilen[treffer], werte);
     if (!neu) return null;
     tblNeu = tbl.replace(zeilen[treffer], () => neu);
   } else {
-    const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
+    const leer = zeilen.findIndex((zz, j) => j > 0 && !wordText(zz).trim());
     // Vorlage = die ersetzte Zeile, wie in historieXml (Codex 30.09.).
     const neu = antwortZeileBauen(zeilen[leer > 0 ? leer : zeilen.length - 1], werte);
     if (!neu) return null;
@@ -15449,16 +15539,53 @@ async function bookHistorie(m, datum, aktion, entfernen) {
 // Beschriftung in der Warteliste - steht dort, wo bei einem
 // Historien-Eintrag die Aktion steht ("Follow up 2"). Damit zeigt
 // wartelisteZeile() alle drei Arten ohne eine Zeile Sonderfall.
-function antwortAktion(positiv) {
-  return "Antwort " + (positiv ? "positiv" : "negativ");
+// v234: Beschriftung nach Art ("Antwort Gespräch" ...). Nur Text, nicht im
+// Outbox-Schluessel (der ist Marke + Datum). Altaufrufer mit Boolean:
+// true -> Gespraech, false -> Absage.
+function antwortAktion(art) {
+  if (art === true) art = "gespraech";
+  else if (art === false) art = "absage";
+  return { gespraech: "Antwort Gespräch", interesse: "Antwort Interesse",
+           absage: "Antwort Absage" }[art] || "Antwort ohne Bewertung";
+}
+// Art aus fertigen Zellen {g, i, a} (fuer Beschriftung und Log).
+function zellenArt(z) {
+  const n = (z.g ? 1 : 0) + (z.i ? 1 : 0) + (z.a ? 1 : 0);
+  if (n !== 1) return "";
+  return z.g ? "gespraech" : z.i ? "interesse" : "absage";
 }
 
-async function bookAntwortEinmal(m, datum, positiv, negativ, bemerkung, versuch) {
+// Banner "alte Antwort-Tabelle" (N3, Codex R1 Fund 5): einmal je Marke und
+// Sitzung, nicht bei jedem Outbox-Lauf.
+const alteTabelleGemeldet = new Set();
+function alteTabelleMelden(m) {
+  const k = schluessel(m.name);
+  if (alteTabelleGemeldet.has(k)) return false;
+  alteTabelleGemeldet.add(k);
+  banner("Das Brand-Book von „" + m.name + "“ hat noch die alte " +
+    "Antwort-Tabelle (Positiv/Negativ). Die Antwort ist in der App " +
+    "gespeichert und wartet. Bitte im Book die Tabelle auf Gespräch · " +
+    "Interesse · Absage umstellen, dann trägt die App sie nach.");
+  return true;
+}
+
+// v234: `daten` = Outbox-Nutzlast {positiv, negativ, bemerkung} (Wort-
+// Kodierung oder Altform). Die Zellen macht antwortZellen() - EINE Stelle,
+// auch fuer Wiederholungen aus der Outbox (Codex R1 Fund 6).
+async function bookAntwortEinmal(m, datum, daten, versuch) {
   const pfad = bookPfad(m);
   const t0 = Date.now();
-  const aktion = antwortAktion(positiv);
+  const zellen = antwortZellen(m, datum, daten);
+  const bemerkung = (daten && daten.bemerkung) || "";
+  const aktion = antwortAktion(zellenArt(zellen));
   const grund = { marke: m.name, aktion, datum, entfernen: false,
                   pfad, versuch: versuch || 1 };
+  // Keine einzige Spalte belegt: eine LEERE Antwort-Zeile ins Book zu
+  // schreiben waere schlimmer als warten (Altnutzlast {false,false}).
+  if (!zellen.g && !zellen.i && !zellen.a) {
+    logZeile("book-abbruch", { ...grund, warum: "Antwort ohne Art" });
+    return "braucht-dich";
+  }
   try {
     const etag = await bookETagLesen(m, grund);
     if (!ETAG_MUSTER.test(etag)) return etag;    // Status statt eTag (A4)
@@ -15479,8 +15606,11 @@ async function bookAntwortEinmal(m, datum, positiv, negativ, bemerkung, versuch)
     // die Signatur versprach eine Unabhaengigkeit, die es nicht gab. Ein
     // Outbox-Auftrag mit {positiv:false, negativ:false} waere sonst als
     // negativ ins Book gegangen.
-    const xml = antwortXml(await d.async("string"), datum,
-                           positiv ? "X" : "", negativ ? "X" : "", bemerkung);
+    const xml = antwortXml(await d.async("string"), datum, zellen, bemerkung);
+    if (xml === "alte-tabelle") {                 // N3: Book bleibt unangetastet
+      logZeile("book-abbruch", { ...grund, warum: "alte Antwort-Tabelle" });
+      return "alte-tabelle";
+    }
     if (xml === "dublette") {                     // steht schon im Book
       logZeile("book-dublette", { ...grund,
         ...logMehr({ soll: datum + " " + aktion, ist: "stand schon da" }) });
@@ -15516,13 +15646,12 @@ async function bookAntwortEinmal(m, datum, positiv, negativ, bemerkung, versuch)
 // nach einer Sperre kann Andrea in Word gespeichert haben, und ein zweiter
 // Versuch mit dem alten Dokumentinhalt wuerde ihre Aenderung ueberschreiben
 // (conflictBehavior=replace fragt nicht nach).
-async function bookAntwort(m, datum, positiv, negativ, bemerkung) {
+async function bookAntwort(m, datum, daten) {
   if (!m.brandrating || !m.brandrating.brandbook) return "kein-book";
   if (typeof OD === "undefined" || !OD.konto() ||
       typeof JSZip === "undefined") return "nicht-bereit";
   for (let i = 0; ; i++) {
-    const s = await bookAntwortEinmal(m, datum, positiv, negativ, bemerkung,
-                                      i + 1);
+    const s = await bookAntwortEinmal(m, datum, daten, i + 1);
     if (s !== "wartet" || i >= BOOK_WARTEN_MS.length) { logSichern(); return s; }
     await pause(BOOK_WARTEN_MS[i]);
   }
@@ -15531,13 +15660,13 @@ async function bookAntwort(m, datum, positiv, negativ, bemerkung) {
 // Schreiben und nur dann etwas sagen, wenn es etwas zu sagen gibt.
 // Laeuft NEBEN dem Speichern (kein await): das Antwort-Fenster soll nicht
 // auf einen Word-Upload warten - genauso wie beim Erledigt-Knopf.
+// v234: bekommt das Antwort-Ereignis. Nutzlast = TEXT (Wort-Kodierung wie
+// im Ereignis), nicht mehr Boolean - die Altform liest antwortZellen() noch.
 function bookAntwortMelden(m, datum, ereignis) {
-  const positiv = !!String((ereignis && ereignis.positiv) || "").trim();
-  const negativ = !!String((ereignis && ereignis.negativ) || "").trim();
-  const bemerkung = (ereignis && ereignis.bemerkung) || "";
-  const aktion = antwortAktion(positiv);
-  const daten = { positiv: !!positiv, negativ: !!negativ,
-                  bemerkung: bemerkung || "" };
+  const e = ereignis || {};
+  const daten = { positiv: String(e.positiv || ""), negativ: String(e.negativ || ""),
+                  bemerkung: e.bemerkung || "" };
+  const aktion = antwortAktion(antwortArt(e, m));
   const k = outboxSchluessel(m, datum, aktion, false, "antwort");
   // A5-Fix (22.09.): Der Nachholauftrag entsteht HIER - VOR dem ersten
   // Netzzugriff - und nicht mehr nur im Fehlerzweig. Vorher galt: stirbt
@@ -15561,7 +15690,7 @@ function bookAntwortMelden(m, datum, ereignis) {
     // sonst kann die Zeile im Book stehen, waehrend die App nichts davon
     // weiss. Kostet keinen zusaetzlichen Schreibvorgang.
     await persistRuhe();
-    const s = await bookAntwort(m, datum, positiv, negativ, bemerkung);
+    const s = await bookAntwort(m, datum, daten);
     if (s === "ok") {
       outboxWeg(k, rev);
       banner("Antwort auch in die Antwort-Tabelle im Brand-Book eingetragen.");
@@ -15582,6 +15711,11 @@ function bookAntwortMelden(m, datum, ereignis) {
           + "wird nachgetragen, sobald du wieder angemeldet bist."
         : "Antwort ist eingetragen. Das Brand-Book ist gerade belegt — "
           + "wird automatisch nachgetragen." + BOOK_BELEGT_TIPP);
+    } else if (s === "alte-tabelle") {
+      // N3 / Codex R1 Fund 5: eigener Zustand, wird bei jedem Lauf neu
+      // versucht. Nichts im alten Book, Banner einmal je Marke und Sitzung.
+      outboxFehler(m, datum, aktion, false, "alte-tabelle", "antwort", daten, rev);
+      alteTabelleMelden(m);
     } else if (s === "braucht-dich") {
       outboxFehler(m, datum, aktion, false, "braucht-dich", "antwort", daten, rev);
       if (wartelisteZeigen()) return;
@@ -15936,7 +16070,9 @@ let outboxLaeuft = false;
 let outboxGemahnt = false;
 async function outboxAbarbeiten(still) {
   if (outboxLaeuft) return 0;
-  const offen = outbox().filter((e) => e.grund === "wartet");
+  // v234: "alte-tabelle" wird wie "wartet" bei jedem Lauf neu versucht
+  // (Codex R1 Fund 5) - stellt Andrea das Book um, kommt die Antwort rein.
+  const offen = outbox().filter((e) => e.grund === "wartet" || e.grund === "alte-tabelle");
   if (!offen.length) return 0;
   outboxLaeuft = true;
   let fertig = 0;
@@ -15986,8 +16122,7 @@ async function outboxAbarbeiten(still) {
           // schriebe er eine LEERE Antwort-Zeile in Andreas Book - und die
           // Kennzahlen kommen aus den Books.
           if (!e.daten) return "braucht-dich";
-          return bookAntwort(m, e.datum, e.daten.positiv, e.daten.negativ,
-                             e.daten.bemerkung);
+          return bookAntwort(m, e.datum, e.daten);
         }
         return bookHistorie(m, e.datum, e.aktion, e.entfernen);
       });
@@ -16018,6 +16153,7 @@ async function outboxAbarbeiten(still) {
         e.versuche = (e.versuche || 1) + 1;
         e.grund = s;                          // ggf. jetzt "braucht-dich"
         datenstandPersistieren();
+        if (s === "alte-tabelle") alteTabelleMelden(m);
       }
     }
   } finally { outboxLaeuft = false; }
@@ -16087,6 +16223,9 @@ function wartelisteZeile(e, abhaken) {
     `${e.datum} · seit ${wartelisteDatum(e.seit)} · ` +
     `${e.versuche} Versuch${e.versuche === 1 ? "" : "e"}` +
     (alt >= OUTBOX_MAHNUNG_STD ? ` · ⚠ wartet seit über ${Math.floor(alt / 24)} Tag(en)` : "")));
+  // v234 (N3): warum er wartet - die alte Antwort-Tabelle im Book
+  if (e.grund === "alte-tabelle") d.append(el("div", "stand",
+    "Wartet auf die neue Antwort-Tabelle (Gespräch · Interesse · Absage) im Brand-Book."));
   if (abhaken) {
     const knoepfe = el("div", "chips");
     // Die einzige Aussage, die Andrea hier ehrlich treffen kann: nicht
@@ -16401,14 +16540,24 @@ async function historieInsNeueBook(puffer, m) {
   let xml = await datei.async("string"), fehlt = 0;
   for (const e of ev) {
     if (e.typ === "Antwort") {
-      const tbl = antwortTabelle(xml);
+      const t = antwortTabelle(xml);
+      const tbl = t && t.tbl;
       if (!tbl || /<w:tbl[\s>]/.test(tbl.slice(1))) { fehlt++; continue; }
       const zeilen = wordZeilen(tbl);
       if (zeilen.length < 2) { fehlt++; continue; }
       const leer = zeilen.findIndex((z, j) => j > 0 && !wordText(z).trim());
-      const neu = antwortZeileBauen(zeilen[leer > 0 ? leer : zeilen.length - 1],
-        [e.datum, String(e.positiv || "").trim() ? "X" : "",
-         String(e.negativ || "").trim() ? "X" : "", e.bemerkung || ""]);
+      // v234: derselbe Uebersetzer wie beim Schreiben (antwortZellen).
+      // Hat die Vorlage noch die ALTE Tabelle, passt eine Antwort mit Wort
+      // (Gespraech/Interesse) nicht hinein: als "X" gelesen wuerde sie beim
+      // naechsten Import zur Aenderung - also wie jede unpassende Zeile
+      // "fehlt", das Book wird nicht hochgeladen.
+      const zz = antwortZellen(m, e.datum, e);
+      let werte;
+      if (t.form === "neu") werte = [e.datum, zz.g, zz.i, zz.a, e.bemerkung || ""];
+      else if (!istAltX(e) && String(e.positiv || "").trim()) { fehlt++; continue; }
+      else werte = [e.datum, String(e.positiv || "").trim() ? "X" : "",
+                    String(e.negativ || "").trim() ? "X" : "", e.bemerkung || ""];
+      const neu = antwortZeileBauen(zeilen[leer > 0 ? leer : zeilen.length - 1], werte);
       if (!neu) { fehlt++; continue; }
       const tblNeu = leer > 0 ? tbl.replace(zeilen[leer], () => neu)
         : tbl.slice(0, -"</w:tbl>".length) + neu + "</w:tbl>";
