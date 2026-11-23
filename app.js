@@ -4257,7 +4257,7 @@ function sheetPitch(p) {
         : "Erledigt-Funktion braucht den Datenstand — App einmal mit Internet öffnen."));
       return abschnitt("Nächster Schritt", frag);
     }
-    // Nach einer positiven Antwort ist die Kadenz still (Tobias, 16.09.):
+    // Nach einer Antwort „Gespräch“ (bis v233: positiv) ist die Kadenz still (Tobias, 16.09.; v234: Interesse NICHT):
     // kein Erledigt-Knopf, kein "Danach: ...", kein Herkunftsfeld. OHNE das
     // meldete die App weiter "Follow up 2 fällig", obwohl von allein nichts
     // mehr fällig werden darf - und ein Klick erzeugte ein Ereignis, das dem
@@ -6346,7 +6346,9 @@ function antwortEinordnungWaehlen(m, datum, art, jetzt) {
   const warStill = kadenzStill(m);
   (m.antwortEinordnung = m.antwortEinordnung || {})[datum] = { art };
   if (m.pitchliste) m.pitchliste.geaendert = jetzt;
-  if (warStill && !kadenzStill(m)) kadenzWiederAufnehmen(m, jetzt);
+  // Im Kundenbereich gibt es keine Kadenz (eigene Code-Pruefung 24.11.): die
+  // Marke ist inzwischen verschoben, ein Termin in der Pitchzeile waere tot.
+  if (warStill && !kadenzStill(m) && !imKundenbereich(m)) kadenzWiederAufnehmen(m, jetzt);
   listeVeraltet = true;
   datenstandPersistieren();
   return true;
@@ -6643,7 +6645,7 @@ function bestandBefunde(marken) {
     //
     // Und bewusst OHNE Reparatur-Knopf: die App weiss nicht, welche Seite
     // recht hat - genau wie beim Rating-Konflikt.
-    // NICHT bei zugesagten Marken (v140, Tobias 19.09.): Ab der Zusage ist
+    // NICHT nach einem Gespraech (v140, Tobias 19.09.; v234: kadenzStill, Interesse zaehlt weiter): Ab da ist
     // der Zaehler kein laufender Zaehler mehr, sondern eine Notiz darueber,
     // WIE LANGE es gedauert hat - antwortEintragen() laesst ihn deshalb
     // ausdruecklich stehen. Ihn danach gegen die Historie zu halten
@@ -11215,14 +11217,14 @@ function erledigen(m, s, tage, standard) {
     // Historie zaehlt 1 Follow-up seit dem zweiten Pitch, der Zaehler stand
     // auf 2. "Daten pruefen" meldete es jedes Mal neu.
     //
-    // Der Guard auf die Zusage ist Pflicht (v140, Asam Beauty): ab da ist
+    // Der Guard auf das Gespraech ist Pflicht (v140, Asam Beauty; v234: kadenzStill): ab da ist
     // der Zaehler kein laufender Zaehler mehr, sondern die Notiz "so lange
     // hat es gedauert". antwortEintragen() laesst ihn aus genau dem Grund
     // stehen - hier darf er ihn nicht hintenherum doch noch plattmachen.
     m.pitchliste.zaehler = "0";
   }
   if (tage !== standard) (m.intervalle = m.intervalle || {})[s.key] = tage;
-  // A1 (Tobias, 17.09.): Nach einer Zusage haekelt der Erledigt-Knopf nur
+  // A1 (Tobias, 17.09.): Nach einem Gespraech (v234; bis v233 jede Zusage) haekelt der Erledigt-Knopf nur
   // die von Hand gesetzte Wiedervorlage ab - er startet KEINE neue Kadenz.
   // Das Ereignis bleibt stehen (Andrea hat ja etwas getan), aber die
   // Terminfelder werden sofort wieder geleert, sonst rechnete die Kadenz
@@ -11416,7 +11418,7 @@ function antwortEintragen(m, datumIso, art, bemerkung, jetzt) {
     for (const h of m.kundenauftragHistorie || [])
       if (h && h.richtung === "zurueck") h.entwertet = true;
   } else if (art === "gespraech") {
-    // Stilllegung nach positiv, Option A (Tobias, 16.09.): die Kadenz wird
+    // Stilllegung nach Gespraech (bis v233: positiv), Option A (Tobias, 16.09.): die Kadenz wird
     // still gelegt, indem BEIDE Terminfelder geleert werden. Das
     // entscheidende Feld ist das DATUM - daran haengt die Faelligkeit;
     // ampel("") liefert sauber grau statt eines Fehlers (vorab geprueft).
@@ -11531,7 +11533,7 @@ function naechsterCheckpunkt(ka) {
 //      verschoben. Und eine spaetere ABSAGE loest einen bestehenden
 //      Auftrag NICHT auf: kundenauftragVerschieben() legt einen eigenen
 //      Vorgang samt Historie an, den raeumt nur der Rueckweg wieder ab.
-//   2. Es gibt eine gueltige Zusage (juengste Antwort ist positiv).
+//   2. Es gibt eine gueltige Zusage (juengste Antwort ist Gespraech oder Interesse, v234).
 //   3. Die Zusage ist nicht VERBRAUCHT - nach einem Rueckweg braucht es
 //      eine neue (Tobias, 25.09.).
 function verschiebenErlaubt(m) {
@@ -13051,7 +13053,12 @@ function bookLesen(xml, parser) {
 // Gelesenen geschieht (abgeleitetePitchfelder). Derselbe Hebel, derselbe
 // Grund: ohne ihn wirkt die Korrektur nur bei Books, die sich zufaellig
 // sowieso aendern - 18 der 118 Marken blieben schief stehen.
-const LESER_VERSION = 3;
+// v234: 3 -> 4. bookLesen() liest die NEUE Antwort-Tabelle (Gespräch ·
+// Interesse · Absage). Ein Book, das Andrea schon vor v234 umgestellt hat,
+// lief beim alten Leser ohne Antwort-Tabelle durch ("fehlt"; ohne Antworten
+// in der App kein Befund) - der Merker rueckte weiter und die Antworten darin
+// kaemen ohne neuen Lauf nie an (eigene Code-Pruefung 24.11.).
+const LESER_VERSION = 4;
 
 function importMerkerLies(m) {
   const i = m && m.bookImport;
@@ -13260,7 +13267,7 @@ const IMPORT_TABU = ["brandrating", "pitchliste", "ratingHistorie",
 //     Schritt oder Word-Freitext und bleibt deshalb stehen.
 //
 // Zwei Sonderfaelle, beide aus Schaden gelernt:
-//   1. KEIN Zaehler-Nachziehen bei zugesagten Marken. Ab der Zusage ist er
+//   1. KEIN Zaehler-Nachziehen nach einem Gespraech (v234: kadenzStill; bis v233 jede Zusage). Ab da ist er
 //      kein laufender Zaehler mehr, sondern die Notiz "so lange hat es
 //      gedauert" - antwortEintragen() laesst ihn aus demselben Grund stehen
 //      (v140, Asam Beauty). Dieselbe Bedingung wie in bestandBefunde().
