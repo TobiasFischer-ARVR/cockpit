@@ -769,7 +769,7 @@ function kopfzeile(titel, zurueckSichtbar) {
 // Persoenlicher Stil (Andrea), pro Geraet in localStorage. Kein Sync -
 // Geschmackssache gehoert aufs Geraet, nicht in die Daten.
 
-const APP_VERSION = "v233"; // im Gleichschritt mit CACHE in service-worker.js pflegen
+const APP_VERSION = "v235"; // im Gleichschritt mit CACHE in service-worker.js pflegen
 
 const EINST_KEY = "cockpit-einst";
 let einst = {};
@@ -7665,27 +7665,63 @@ function scanAufnehmen(name, website, instagram, warum, signal, beleg) {
 }
 
 // status "offen" = zurueckholen. `bis` nur bei "pausiert", "" = unbefristet.
-function scanSetzen(name, status, bis) {
+// `gruende` (v235, Liste) nur bei "ignoriert" - Pflicht ist Sache des Sheets.
+function scanSetzen(name, status, bis, gruende) {
   const k = scanFinde(name);
   if (!k) return false;
   k.status = status;
   k.bis = status === "pausiert" ? String(bis || "") : "";
+  scanLog(k, status === "offen" ? "zurueckgeholt" : status, { gruende });
   return true;
 }
 
 // v220: wie scanRaus, fuer alle Offenen (inkl. abgelaufener Pausen - die
 // zeigt der Scanner auch unter "Offen"). Liefert die Anzahl.
 function scanOffenLeeren() {
-  const sc = scanner(), vorher = sc.kandidaten.length;
-  sc.kandidaten = sc.kandidaten.filter((k) => scanZustand(k) !== "offen");
-  return vorher - sc.kandidaten.length;
+  const sc = scanner();
+  const weg = sc.kandidaten.filter((k) => scanZustand(k) === "offen");
+  for (const k of weg) scanLog(k, "liste-geloescht");
+  sc.kandidaten = sc.kandidaten.filter((k) => !weg.includes(k));
+  return weg.length;
 }
 
-function scanRaus(name) {
+// `aktion` (v235): "brand-rating" oder "geloescht" -> ins Log. Ohne (z. B.
+// "Entfernen", Marke kam auf anderem Weg in die App) keine Log-Zeile.
+function scanRaus(name, aktion, extra) {
   const s = schluessel(name), sc = scanner();
   const vorher = sc.kandidaten.length;
+  const treffer = aktion && scanFinde(name);
+  if (treffer) scanLog(treffer, aktion, extra);
   sc.kandidaten = sc.kandidaten.filter((k) => schluessel(k.name) !== s);
   return sc.kandidaten.length < vorher;
+}
+
+// v235 (C8, Tobias 25.11.): Andreas Entscheidungen als Protokoll fuer die
+// Auswertung durch Claude (Plan KI-Suche 3). Die Suche liest das Log NICHT -
+// kein Selbstlernen, das wird erst nach der Auswertung entschieden. Liegt in
+// scanner.log (APP_TOP), kommt also mit dem Abend-Download mit.
+// Gruende Pflicht bei Ignorieren und Brand Rating, nur antippen (Andrea),
+// mehrere moeglich (Tobias 25.11.).
+// ponytail: Log waechst ohne Grenze (~30 Zeilen/Woche), kappen wenn es stoert.
+const SCAN_GRUENDE = {
+  ignoriert: ["zu klein", "kein Budget erkennbar", "kein UGC-/Creator-Bedarf",
+              "passt nicht zu mir", "zu groß/Konzern", "schon bekannt", "anderes"],
+  "brand-rating": ["passt zu meiner Nische", "schaltet Anzeigen", "sucht Creator",
+                   "Produkt gut filmbar", "gute Größe", "Bauchgefühl", "anderes"],
+};
+
+// Immer dieselben Felder, damit die Auswertung eine glatte Tabelle bekommt.
+// aktion: ignoriert | pausiert | zurueckgeholt | brand-rating | geloescht
+// (eine Ignorierte endgueltig weg) | liste-geloescht (nie entschieden, per
+// "Liste löschen" weg). `marke` = Name, unter dem Andrea sie angelegt hat
+// (darf vom KI-Namen abweichen). Zeiten lokal wie `erstellt` (lokalIso).
+function scanLog(k, aktion, extra) {
+  const x = extra || {}, sc = scanner();
+  (sc.log || (sc.log = [])).push({
+    zeit: lokalIso(), firma: k.name, marke: x.marke || "", aktion,
+    gruende: x.gruende || [], rating: x.rating || "", bis: k.bis || "",
+    warum: k.warum || "", signal: k.signal || "", beleg: k.beleg || "",
+    lauf: k.lauf || "", version: APP_VERSION });
 }
 
 // ---------------------------------------------------------- KI-Suche (v210)
@@ -7857,10 +7893,11 @@ function scanKiKosten(usages, preis = SCAN_KI_PREIS) {
 function scanKiUebernehmen(firmen) {
   let neu = 0, uebersprungen = 0;   // schon da, Niemals-Wort oder Name ohne Buchstaben
   const niemals = scanDaten().niemals;
+  const lauf = lokalIso();   // v235: welcher Suchlauf, fuers Log
   for (const f of firmen) {
-    if (scanNiemals([f.name, f.website, f.instagram].join(" "), niemals)) uebersprungen++;
-    else if (scanAufnehmen(f.name, f.website, f.instagram, f.warum, f.signal, f.beleg)) neu++;
-    else uebersprungen++;
+    const k = !scanNiemals([f.name, f.website, f.instagram].join(" "), niemals) &&
+      scanAufnehmen(f.name, f.website, f.instagram, f.warum, f.signal, f.beleg);
+    if (k) { k.lauf = lauf; neu++; } else uebersprungen++;
   }
   return { neu, uebersprungen };
 }
@@ -8233,6 +8270,38 @@ function sheetScanPause(name) {
   sheetOeffnen(`„${name}“ pausieren`, wrap);
 }
 
+// v235: Gruende-Auswahl (mehrere moeglich) fuer Ignorieren und Brand Rating.
+// wahl() liefert die Liste oder null + Hinweis, wenn nichts angetippt ist.
+function gruendeWahl(liste, frage) {
+  let gruende = [];
+  return {
+    knoten: [el("div", "stand", frage + " (mehrere möglich)"),
+      chipFilter(liste.map((g) => [g, g]), [], (w) => { gruende = w; }, () => {}, true)],
+    wahl: () => (gruende.length ? gruende : (banner("Bitte mindestens einen Grund antippen."), null)),
+  };
+}
+
+// v235: Ignorieren nur mit mindestens einem Grund, dann "✓ Ignorieren".
+// Zurueck = abgebrochen.
+function sheetScanIgnorieren(name) {
+  const wrap = el("div");
+  const gw = gruendeWahl(SCAN_GRUENDE.ignoriert, "Warum passt sie nicht?");
+  const okZ = el("div", "chips");
+  const ok = el("button", "chip haupt", "✓ Ignorieren");
+  ok.onclick = () => {
+    const gruende = gw.wahl();
+    if (!gruende) return;
+    if (scanSetzen(name, "ignoriert", "", gruende)) {
+      listeVeraltet = true;
+      datenstandPersistieren();
+    } else banner("Nicht mehr in der Liste — Ansicht neu geladen.");
+    history.back();
+  };
+  okZ.append(ok);
+  wrap.append(...gw.knoten, okZ);
+  sheetOeffnen(`„${name}“ ignorieren`, wrap);
+}
+
 // ------------------------------------------- Kontakt-KI (v211, Backlog 68)
 // "✨ Kontakt suchen" im Kontaktformular - gilt fuer Brand Rating UND
 // Pitchliste (beide zeigen dasselbe Formular). Bauplan: doku/Bauplan
@@ -8480,11 +8549,12 @@ function scanKarte(k, marken) {
     if (w) karte.append(el("div", "stand", `⚠ Enthält „${w}“ (Niemals-Liste)`));
     const br = el("button", "chip haupt", "→ Brand Rating");
     br.onclick = () => sheetNeueBrand({ name: k.name, website: k.website,
-      instagram: k.instagram, danach: () => scanRaus(k.name) });
+      instagram: k.instagram, gruende: SCAN_GRUENDE["brand-rating"],
+      danach: (x) => scanRaus(k.name, "brand-rating", x) });
     const pausKnopf = el("button", "chip", "⏸ Pausieren");
     pausKnopf.onclick = () => sheetScanPause(k.name);
     const ign = el("button", "chip", "✕ Ignorieren");
-    ign.onclick = () => scanFertig(scanSetzen(k.name, "ignoriert"));
+    ign.onclick = () => sheetScanIgnorieren(k.name);
     aktionen.append(br, pausKnopf, ign);
   }
   karte.append(aktionen);
@@ -8509,7 +8579,7 @@ function scanGruppe(titel, liste, mitLoeschen) {
       const weg = el("button", "chip", "Löschen");
       weg.onclick = () => {
         if (confirm(`„${k.name}“ endgültig löschen? Danach lässt sie sich wieder eintragen.`))
-          scanFertig(scanRaus(k.name));
+          scanFertig(scanRaus(k.name, "geloescht"));
       };
       chips.append(weg);
     }
@@ -11406,6 +11476,9 @@ function sheetNeueBrand(vorlage) {
   zeile("Brand Fit", skala, "fit");
   zeile("Begeisterung", skala, "geist");
   zeile("Erfolgschance", skala, "chance");
+  // v235: aus der KI-Suche ist ein Grund Pflicht (antippen, fuers Log).
+  const gw = vorlage && vorlage.gruende && gruendeWahl(vorlage.gruende, "Warum übernimmst du sie?");
+  if (gw) wrap.append(...gw.knoten);
   const okZ = el("div", "chips");
   const ok = el("button", "chip haupt", "✓ Brand anlegen");
   ok.onclick = () => {
@@ -11419,7 +11492,9 @@ function sheetNeueBrand(vorlage) {
     if (ig.value.trim()) ki["Social Media"] = scanHref("instagram", ig.value);
     // ERST nach allen Pruefungen, VOR brandAnlegen: das speichert Scanner
     // und neue Marke in einem Lauf (kein zweites Hochladen).
-    if (vorlage && vorlage.danach) vorlage.danach();
+    const gruende = gw ? gw.wahl() : [];
+    if (!gruende) return;
+    if (vorlage && vorlage.danach) vorlage.danach({ gruende, rating: f.rating, marke: n });
     brandAnlegen(n, kategorie.value.trim(), f, ki);
     history.back(); // Sheet zu, popstate zeichnet die Liste frisch
   };
