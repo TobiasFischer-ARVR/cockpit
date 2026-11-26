@@ -7715,13 +7715,16 @@ const SCAN_GRUENDE = {
 // (eine Ignorierte endgueltig weg) | liste-geloescht (nie entschieden, per
 // "Liste löschen" weg). `marke` = Name, unter dem Andrea sie angelegt hat
 // (darf vom KI-Namen abweichen). Zeiten lokal wie `erstellt` (lokalIso).
+// `website` (Tobias 26.11.): damit Claude bei der Auswertung jede Firma
+// nachpruefen kann, auch wenn der Treffer schon geloescht ist.
 function scanLog(k, aktion, extra) {
   const x = extra || {}, sc = scanner();
   (sc.log || (sc.log = [])).push({
-    zeit: lokalIso(), firma: k.name, marke: x.marke || "", aktion,
+    zeit: lokalIso(), firma: k.name, website: k.website || "",
+    marke: x.marke || "", aktion,
     gruende: x.gruende || [], rating: x.rating || "", bis: k.bis || "",
     warum: k.warum || "", signal: k.signal || "", beleg: k.beleg || "",
-    lauf: k.lauf || "", version: APP_VERSION });
+    lauf: k.lauf || "", modus: k.modus || "", version: APP_VERSION });
 }
 
 // ---------------------------------------------------------- KI-Suche (v210)
@@ -7737,7 +7740,8 @@ const SCAN_KI_MODELL = "gpt-6.1-sol";
 // OpenAI-Preise gpt-6.1-sol (developers.openai.com, 13.11.) - zufaellig gleich
 // wie frueher Sonnet. suche = je web_search_call (auch Seitenabrufe, eher zu hoch).
 const SCAN_KI_PREIS = { ein: 2, aus: 10, suche: 0.01 };   // $ je Mio. Token / je Suche-Aufruf
-const SCAN_KI_ANZAHL = [5, 10, 20];
+// 30 seit v235 (Tobias 26.11.), in beiden Arten - gezielt kommt dann eher weniger an.
+const SCAN_KI_ANZAHL = [5, 10, 20, 30];
 
 // OpenAI-Schluessel (sk-..., sk-proj-...). Ein alter Claude-Schluessel
 // (sk-ant-) geht NIE an OpenAI - er wuerde einem fremden Anbieter gezeigt.
@@ -7786,6 +7790,26 @@ const SCAN_KI_TECHNIK =
   '{"firmen":[{"name":"…","website":"…","instagram":"…","warum":"…","signal":"…","beleg":"…"}]} — ' +
   "website und instagram als Link oder leer, warum = ein kurzer Satz, " +
   "weshalb die Marke passt.";
+// v235 (Tobias 26.11.): Andrea will mehr mitnehmen. "Breit" lockert die Regeln
+// fuer einen Lauf - Beleg keine Pflicht, Vorbilder nur Richtung, von "Nicht
+// passend" nur das Harte. Haengt HINTER Zielbild + Technik, geht beiden vor.
+// Welcher Modus lief, steht am Treffer (modus) und im Log - die Auswertung
+// vergleicht beide Arten.
+const SCAN_KI_MODI = [["gezielt", "🎯 Gezielt"], ["breit", "🌐 Breit"]];
+// Nennt Aufhebungen und Restausschluesse selbst: das Zielbild ist Andreas
+// Text und muss die Ueberschriften von SCAN_KI_ZIEL nicht haben (Code-Review 26.11.).
+const SCAN_KI_BREIT =
+  "Diesmal BREIT suchen - das geht allen Regeln oben vor: Lieber mehr Marken " +
+  "als zu wenige. Eine Marke muss NICHT erkennbar Geld für Werbung oder " +
+  "Content ausgeben, es reicht, dass sie zu mir passen könnte. Die Vorbilder " +
+  "geben nur die grobe Richtung, eine Marke muss ihnen nicht ähneln. " +
+  "Ein Beleg ist erwünscht, aber keine Pflicht: Findest du keinen, lass " +
+  "signal und beleg leer und nenne die Firma trotzdem. Die verlangte Anzahl " +
+  "gilt für alle Firmen, belegt oder nicht. Ausgeschlossen bleiben nur: " +
+  "Konzerne und große internationale Marken, Agenturen, Verzeichnisse, " +
+  "Vergleichs- und Listenseiten, Creator- und Influencer-Profile, Firmen " +
+  "aus „schon bekannt“, „So NICHT“ und „Niemals“. Weiterhin nur Firmen, " +
+  "die du in der Websuche wirklich gefunden hast.";
 const SCAN_KI_ZIEL_MAX = 3000;
 // v217 (C8): Pflicht-Beleg. Schluessel = was die KI liefert, Wert = Knopftext.
 const SCAN_KI_BELEG_MAX = 1000;   // v222: Werbebibliothek-Links sind oft laenger als 200
@@ -7798,7 +7822,7 @@ function scanZielbild() {
 
 // Baut den Request-Body. Liest den aktuellen Datenstand - bei jedem Scan neu,
 // damit neue Ratings sofort mitzaehlen.
-function scanKiAnfrage(anzahl) {
+function scanKiAnfrage(anzahl, modus) {
   const marken = (datenstand && datenstand.marken) || [];
   const sd = scanDaten();
   const vorbilder = marken.filter((x) => x.brandrating &&
@@ -7820,14 +7844,17 @@ function scanKiAnfrage(anzahl) {
   zeilen.push("Schon bekannt (nicht nennen): " + (bekannt.join(", ") || "–"));
   return {
     model: SCAN_KI_MODELL,
-    instructions: scanZielbild() + "\n\n---\n\n" + SCAN_KI_TECHNIK,
+    instructions: scanZielbild() + "\n\n---\n\n" + SCAN_KI_TECHNIK +
+      (modus === "breit" ? "\n\n---\n\n" + SCAN_KI_BREIT : ""),
     input: zeilen.join("\n\n"),   // String - eine Liste aus Strings waere 400 (Codex 13.11.)
     reasoning: { effort: "high" },
     tools: [{ type: "web_search", user_location: { type: "approximate", country: "DE" } }],
     // Zaehlt Suchen UND Seitenabrufe (Codex 13.11.). Probe 13.11.: 5 Firmen
     // brauchten 16 Suchen + 4 Seiten.
-    max_tool_calls: 25,
-    max_output_tokens: 32000,   // Denken zaehlt mit (Probe: 4.760 von 5.335)
+    // v235: 30 Firmen brauchen mehr (Code-Review 26.11.). Bis 20 unveraendert.
+    // ponytail: geschaetzt, nicht gemessen - nach den ersten 30er-Laeufen nachjustieren.
+    max_tool_calls: anzahl > 20 ? 45 : 25,
+    max_output_tokens: anzahl > 20 ? 48000 : 32000,   // Denken zaehlt mit (Probe: 4.760 von 5.335)
     store: false,
   };
 }
@@ -7844,7 +7871,8 @@ function scanKiJson(content) {
 }
 
 // Firmenliste aus der Antwort -> geprueft. null = unbrauchbar (nichts uebernehmen).
-function scanKiFirmen(content) {
+// `breit` (v235): ohne Beleg nicht verwerfen, signal/beleg bleiben leer.
+function scanKiFirmen(content, breit) {
   const roh = scanKiJson(content);
   if (!roh || !Array.isArray(roh.firmen)) return null;
   const feld = (w, max) => (typeof w === "string" ? w.trim().slice(0, max) : null);
@@ -7862,12 +7890,12 @@ function scanKiFirmen(content) {
     const signal = [].concat(f.signal).filter((x) => typeof x === "string")
       .flatMap((x) => x.toLowerCase().split(/[\s,;|/]+/))
       .find((x) => Object.hasOwn(SCAN_KI_SIGNALE, x));
-    if (!beleg || !signal) { ohneBeleg++; continue; }
+    if (!beleg || !signal) { ohneBeleg++; if (!breit) continue; }
     // Links nach derselben Regel wie bei der Kontakt-KI (v211): kaputter Link
     // -> leer, die Firma selbst bleibt brauchbar.
     firmen.push({ name, website: kontaktKiLink(f.website, "web"),
                   instagram: kontaktKiLink(f.instagram, "instagram"), warum: feld(f.warum, 300) || "",
-                  signal, beleg });
+                  signal: signal || "", beleg: beleg || "" });
   }
   return { firmen, ungueltig, ohneBeleg };
 }
@@ -7890,14 +7918,14 @@ function scanKiKosten(usages, preis = SCAN_KI_PREIS) {
 // Uebernimmt gepruefte Firmen. Speichert NICHT (wie alle scan*-Mutatoren).
 // Niemals-Treffer werden hier GESPERRT, nicht nur gewarnt: hier entscheidet
 // niemand mit (Code-Review 26.10.; den Handeintrag gibt es seit v211 nicht mehr).
-function scanKiUebernehmen(firmen) {
+function scanKiUebernehmen(firmen, modus) {
   let neu = 0, uebersprungen = 0;   // schon da, Niemals-Wort oder Name ohne Buchstaben
   const niemals = scanDaten().niemals;
   const lauf = lokalIso();   // v235: welcher Suchlauf, fuers Log
   for (const f of firmen) {
     const k = !scanNiemals([f.name, f.website, f.instagram].join(" "), niemals) &&
       scanAufnehmen(f.name, f.website, f.instagram, f.warum, f.signal, f.beleg);
-    if (k) { k.lauf = lauf; neu++; } else uebersprungen++;
+    if (k) { k.lauf = lauf; k.modus = modus || "gezielt"; neu++; } else uebersprungen++;
   }
   return { neu, uebersprungen };
 }
@@ -8143,30 +8171,32 @@ function scanKiKostenMerken(d) {
 // Lauf nicht abgebrochen wurde UND noch derselbe Datenstand gilt: ein
 // zurueckgespieltes Backup oder "Andreas Stand holen" tauscht das Objekt
 // an der Sperre vorbei (Codex 26.10., Fund 4) - dann lieber verwerfen.
-async function scanKiStarten(anzahl, zeige) {
+async function scanKiStarten(anzahl, zeige, modus) {
   if (scanKiLauf || !datenstand) return;    // Sperre VOR dem ersten await
   const lauf = { ctrl: new AbortController(), stand: datenstand, zuLang: false };
   scanKiLauf = lauf;
   // Codex Runde 2, Fund 3: ohne Obergrenze hielte ein haengender fetch die
   // Abgleich-Sperre fuer immer. v222: 10 Minuten (25 Suchen, hohe Denktiefe).
-  const uhr = setTimeout(() => { lauf.zuLang = true; lauf.ctrl.abort(); }, 10 * 60000);
+  // v235: 30er-Lauf (45 Aufrufe) bekommt 15 Minuten.
+  const uhr = setTimeout(() => { lauf.zuLang = true; lauf.ctrl.abort(); },
+    (anzahl > 20 ? 15 : 10) * 60000);
   const abbruch = () => lauf.zuLang ? "dauerte zu lange — nichts übernommen."
                                     : "abgebrochen — nichts übernommen.";
   const usages = [];
   let text;
   try {
-    const j = await scanKiLaufen(scanKiAnfrage(anzahl), lauf.ctrl.signal, usages);
-    const erg = !j || j.stop_reason === "refusal" ? null : scanKiFirmen(j.content);
+    const j = await scanKiLaufen(scanKiAnfrage(anzahl, modus), lauf.ctrl.signal, usages);
+    const erg = !j || j.stop_reason === "refusal" ? null : scanKiFirmen(j.content, modus === "breit");
     // Ab hier kein await, bis uebernommen ist - und direkt davor geprueft.
     if (lauf.ctrl.signal.aborted) text = abbruch();
     else if (datenstand !== lauf.stand) text = "der Datenstand wurde inzwischen ersetzt — nichts übernommen.";
     else if (!j) text = "die Suche wurde nicht fertig — nichts übernommen.";
     else if (!erg) text = "kein brauchbares Ergebnis — nichts übernommen.";
     else {
-      const r = scanKiUebernehmen(erg.firmen);
+      const r = scanKiUebernehmen(erg.firmen, modus);
       text = `${r.neu} neu · ${r.uebersprungen} übersprungen` +
         (erg.ungueltig ? ` · ${erg.ungueltig} unbrauchbar` : "") +
-        (erg.ohneBeleg ? ` · ${erg.ohneBeleg} ohne Beleg verworfen` : "");
+        (erg.ohneBeleg && modus !== "breit" ? ` · ${erg.ohneBeleg} ohne Beleg verworfen` : "");
       if (r.neu) {
         listeVeraltet = true;
         // Sperre haelt bis gespeichert ist - OHNE Zeitgrenze. Eine Minute
@@ -8223,6 +8253,7 @@ function sheetScanKi() {
   const wrap = el("div");
   if (!SCAN_KI_ANZAHL.includes(einst.kiAnzahl)) einst.kiAnzahl = 10;   // Standard sichtbar markiert
   const anzahl = () => einst.kiAnzahl;
+  if (!SCAN_KI_MODI.some(([m]) => m === einst.kiModus)) einst.kiModus = "gezielt";
   const status = el("div", "stand");
   status.id = "ki-status";
   const startZ = el("div", "chips");
@@ -8234,18 +8265,21 @@ function sheetScanKi() {
   startZ.append(start, stopp);
   start.onclick = () => {
     if (scanKiLauf) return;
-    scanKiStarten(anzahl(), scanKiZeige);
+    scanKiStarten(anzahl(), scanKiZeige, einst.kiModus);
     listeVeraltet = true;   // Scanner zeigt nach dem Schliessen "läuft …"
     scanKiSheetStand();
   };
   const sd = scanDaten();
-  wrap.append(einstZeile("Wie viele?", SCAN_KI_ANZAHL.map((n) => [n, `${n} Firmen`]), "kiAnzahl"),
+  wrap.append(einstZeile("Wie suchen?", SCAN_KI_MODI, "kiModus"),
+    einstZeile("Wie viele?", SCAN_KI_ANZAHL.map((n) => [n, `${n} Firmen`]), "kiAnzahl"),
     startZ, status,
     erklaerung("KI-Suche",
       "ChatGPT sucht im Netz nach Marken, die zu deiner Beschreibung und deinen " +
       "A- und B-Marken passen" +
       (sd.suche.length ? ` (Schwerpunkt: ${sd.suche.join(", ")})` : "") +
-      ". Firmen, die schon in der App oder im Scanner stehen, werden übersprungen. " +
+      ". Gezielt: nur Firmen mit Beleg (Anzeigen, Creator-Suche, UGC-Videos), " +
+      "nah an deinen Vorbildern. Breit: mehr und lockerer, auch ohne Beleg. " +
+      "Firmen, die schon in der App oder im Scanner stehen, werden übersprungen. " +
       "Solange die Suche läuft, wartet der Abgleich mit OneDrive. Wechselst du " +
       "in eine andere App, kann Android die Suche anhalten."));
   sheetOeffnen("KI-Suche", erklaerungenAnsEnde(wrap));
@@ -8518,6 +8552,7 @@ function scanInfo(karte, k) {
   // v217: beim Zeichnen nochmal pruefen - datenstand.json wird auch von Hand bearbeitet
   const beleg = kontaktKiLink(k.beleg, "web", SCAN_KI_BELEG_MAX);
   if (beleg) links.append(scanKnopf("🔎 Beleg: " + (SCAN_KI_SIGNALE[k.signal] || "Quelle"), beleg));
+  else if (k.modus === "breit") karte.append(el("div", "stand", "🌐 Breite Suche, ohne Beleg"));
   links.append(scanKnopf("📚 Werbebibliothek", werbeLink(k.name)));
   karte.append(links);
 }
