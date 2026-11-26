@@ -7669,8 +7669,12 @@ function scanAufnehmen(name, website, instagram, warum, signal, beleg) {
 function scanSetzen(name, status, bis, gruende) {
   const k = scanFinde(name);
   if (!k) return false;
+  const neuBis = status === "pausiert" ? String(bis || "") : "";
+  // Codex v235 Fund 2: Doppeltipp, bevor history.back() das Sheet schliesst,
+  // haette dieselbe Entscheidung zweimal geloggt. Nichts geaendert = keine Zeile.
+  if (k.status === status && (k.bis || "") === neuBis) return true;
   k.status = status;
-  k.bis = status === "pausiert" ? String(bis || "") : "";
+  k.bis = neuBis;
   scanLog(k, status === "offen" ? "zurueckgeholt" : status, { gruende });
   return true;
 }
